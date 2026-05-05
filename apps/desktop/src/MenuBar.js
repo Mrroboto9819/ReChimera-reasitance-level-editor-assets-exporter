@@ -38,7 +38,7 @@ export function Menu({ label, children }) {
         if (ctx.openId !== null && ctx.openId !== label)
             ctx.setOpenId(label);
     }, [ctx, label]);
-    return (_jsxs("div", { className: "menu", children: [_jsx("button", { type: "button", className: `menu-trigger ${open ? "open" : ""}`, onClick: onTriggerClick, onMouseEnter: onTriggerHover, children: label }), open && (_jsx("div", { className: "menu-popover", onClick: () => ctx.setOpenId(null), children: children }))] }));
+    return (_jsxs("div", { className: "menu", children: [_jsx("button", { type: "button", className: `menu-trigger ${open ? "open" : ""}`, onClick: onTriggerClick, onMouseEnter: onTriggerHover, "data-tauri-drag-region": "false", children: label }), open && (_jsx("div", { className: "menu-popover", onClick: () => ctx.setOpenId(null), "data-tauri-drag-region": "false", children: children }))] }));
 }
 export function MenuItem({ onSelect, disabled, shortcut, children }) {
     return (_jsxs("button", { type: "button", className: "menu-item", onClick: onSelect, disabled: disabled, children: [_jsx("span", { children: children }), shortcut && _jsx("span", { className: "kbd", children: shortcut })] }));

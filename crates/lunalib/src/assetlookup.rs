@@ -16,11 +16,9 @@ const ASSET_POINTER_SIZE: u32 = 0x10;
 
 /// Section IDs used by the new (Future / Resistance 2+) engine generation.
 ///
-/// Confirmed against R&C Future via LibLunacy. Resistance 2/3 use the same
-/// engine generation but exact section presence and ordering should be
-/// cross-checked against InsomniaToolset's
-/// `common/include/insomnia/classes/` headers when porting the per-asset
-/// decoders.
+/// Confirmed against R&C Future via LibLunacy + cross-checked against
+/// InsomniaToolset's [resource.hpp](../../../../InsomniaToolset/common/include/insomnia/classes/resource.hpp)
+/// `ResourceLookup<>` aliases for the IDs we hadn't yet mapped (Animset).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetKind {
     Shader,
@@ -28,6 +26,11 @@ pub enum AssetKind {
     Tie,
     Moby,
     Zone,
+    /// Animation sets — pointers into `animsets.dat`. One animset typically
+    /// corresponds to one character/weapon's full clip library (idle, walk,
+    /// run, fire, …). Section ID confirmed against IT's
+    /// `ResourceAnimsets = ResourceLookup<0x1d700>`.
+    Animset,
 }
 
 impl AssetKind {
@@ -37,6 +40,7 @@ impl AssetKind {
             AssetKind::HighMip => 0x1D1C0,
             AssetKind::Tie => 0x1D300,
             AssetKind::Moby => 0x1D600,
+            AssetKind::Animset => 0x1D700,
             AssetKind::Zone => 0x1DA00,
         }
     }
@@ -47,6 +51,7 @@ impl AssetKind {
             AssetKind::HighMip,
             AssetKind::Tie,
             AssetKind::Moby,
+            AssetKind::Animset,
             AssetKind::Zone,
         ]
     }
@@ -57,6 +62,7 @@ impl AssetKind {
             AssetKind::HighMip => "highmip",
             AssetKind::Tie => "tie",
             AssetKind::Moby => "moby",
+            AssetKind::Animset => "animset",
             AssetKind::Zone => "zone",
         }
     }

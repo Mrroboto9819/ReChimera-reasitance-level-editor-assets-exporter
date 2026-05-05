@@ -78,11 +78,16 @@ export function Menu({ label, children }: MenuProps) {
         className={`menu-trigger ${open ? "open" : ""}`}
         onClick={onTriggerClick}
         onMouseEnter={onTriggerHover}
+        data-tauri-drag-region="false"
       >
         {label}
       </button>
       {open && (
-        <div className="menu-popover" onClick={() => ctx.setOpenId(null)}>
+        <div
+          className="menu-popover"
+          onClick={() => ctx.setOpenId(null)}
+          data-tauri-drag-region="false"
+        >
           {children}
         </div>
       )}

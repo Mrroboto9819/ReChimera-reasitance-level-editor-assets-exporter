@@ -89,26 +89,48 @@ pub struct UFrag {
 /// Read every zone from `<level_folder>/zones.dat`, returning their tie
 /// instances. Zones referenced by `assetlookup.dat`'s zone section.
 pub fn read_zones(level_folder: &Path) -> Result<Vec<Zone>> {
+    let mut out = Vec::new();
+    read_zones_streaming(level_folder, |z| out.push(z))?;
+    Ok(out)
+}
+
+/// Streaming variant — invokes `on_each` once per parsed zone.
+pub fn read_zones_streaming<F>(level_folder: &Path, mut on_each: F) -> Result<()>
+where
+    F: FnMut(Zone),
+{
+    read_zones_with_total(level_folder, |_| {}, |z| on_each(z))
+}
+
+pub fn read_zones_with_total<T, F>(
+    level_folder: &Path,
+    mut on_total: T,
+    mut on_each: F,
+) -> Result<()>
+where
+    T: FnMut(usize),
+    F: FnMut(Zone),
+{
     let assetlookup_path = level_folder.join("assetlookup.dat");
     let mut lookup = AssetLookup::open(BufReader::new(File::open(&assetlookup_path)?))?;
     let zone_ptrs = lookup.pointers(AssetKind::Zone)?;
 
+    on_total(zone_ptrs.len());
     if zone_ptrs.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let zones_dat_path = level_folder.join("zones.dat");
     let mut zones_file = File::open(&zones_dat_path)?;
 
-    let mut zones = Vec::with_capacity(zone_ptrs.len());
     for ptr in zone_ptrs {
         zones_file.seek(SeekFrom::Start(u64::from(ptr.offset)))?;
         let mut buf = vec![0u8; ptr.length as usize];
         zones_file.read_exact(&mut buf)?;
         let mut zone_ig = IgFile::open(Cursor::new(buf))?;
-        zones.push(parse_zone(&mut zone_ig, ptr.tuid)?);
+        on_each(parse_zone(&mut zone_ig, ptr.tuid)?);
     }
-    Ok(zones)
+    Ok(())
 }
 
 fn parse_zone<R: Read + Seek>(zone: &mut IgFile<R>, zone_tuid: u64) -> Result<Zone> {

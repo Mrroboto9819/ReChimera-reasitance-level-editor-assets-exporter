@@ -60,35 +60,62 @@ pub struct TieMeshGeom {
 }
 
 pub fn read_tie_assets(level_folder: &Path, tuids: Option<&[u64]>) -> Result<Vec<TieAsset>> {
+    let mut out = Vec::new();
+    read_tie_assets_streaming(level_folder, tuids, |tie| out.push(tie))?;
+    Ok(out)
+}
+
+/// Streaming variant — see `read_moby_assets_streaming` for the rationale.
+pub fn read_tie_assets_streaming<F>(
+    level_folder: &Path,
+    tuids: Option<&[u64]>,
+    mut on_each: F,
+) -> Result<()>
+where
+    F: FnMut(TieAsset),
+{
+    read_tie_assets_with_total(level_folder, tuids, |_| {}, |t| on_each(t))
+}
+
+pub fn read_tie_assets_with_total<T, F>(
+    level_folder: &Path,
+    tuids: Option<&[u64]>,
+    mut on_total: T,
+    mut on_each: F,
+) -> Result<()>
+where
+    T: FnMut(usize),
+    F: FnMut(TieAsset),
+{
     let assetlookup_path = level_folder.join("assetlookup.dat");
     let mut lookup = AssetLookup::open(BufReader::new(File::open(&assetlookup_path)?))?;
     let ptrs = lookup.pointers(AssetKind::Tie)?;
-    if ptrs.is_empty() {
-        return Ok(Vec::new());
+
+    let filtered: Vec<_> = ptrs
+        .into_iter()
+        .filter(|p| tuids.map_or(true, |allowed| allowed.contains(&p.tuid)))
+        .collect();
+    on_total(filtered.len());
+    if filtered.is_empty() {
+        return Ok(());
     }
 
     let ties_path = level_folder.join("ties.dat");
     let mut ties_file = File::open(&ties_path)?;
 
-    let mut out = Vec::new();
-    for ptr in ptrs {
-        if let Some(allowed) = tuids {
-            if !allowed.contains(&ptr.tuid) {
-                continue;
-            }
-        }
+    for ptr in filtered {
         ties_file.seek(SeekFrom::Start(u64::from(ptr.offset)))?;
         let mut buf = vec![0u8; ptr.length as usize];
         ties_file.read_exact(&mut buf)?;
         let mut tie_ig = IgFile::open(Cursor::new(buf))?;
         match parse_tie(&mut tie_ig, ptr.tuid) {
-            Ok(tie) => out.push(tie),
+            Ok(tie) => on_each(tie),
             Err(e) => {
                 eprintln!("warn: tie 0x{:016X} skipped: {e}", ptr.tuid);
             }
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 fn parse_tie<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<TieAsset> {

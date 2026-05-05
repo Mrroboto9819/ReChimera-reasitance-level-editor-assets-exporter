@@ -11,6 +11,7 @@ rust-version.workspace = true
 [dependencies]
 byteorder.workspace = true
 thiserror.workspace = true
+rayon.workspace = true
 texpresso = "2"
 image = { version = "0.25", default-features = false, features = ["png"] }
 

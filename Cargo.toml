@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/lunalib", "apps/desktop/src-tauri"]
+members = ["crates/lunalib", "crates/psarc", "apps/desktop/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,3 +13,6 @@ rust-version = "1.75"
 [workspace.dependencies]
 byteorder = "1.5"
 thiserror = "2.0"
+flate2 = "1.0"
+md-5 = "0.10"
+rayon = "1.10"

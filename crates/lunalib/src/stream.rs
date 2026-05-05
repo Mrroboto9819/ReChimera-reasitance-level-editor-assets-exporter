@@ -42,6 +42,10 @@ impl<R: Read + Seek> StreamHelper<R> {
         Ok(self.inner.read_u8()?)
     }
 
+    pub fn read_i8(&mut self) -> Result<i8> {
+        Ok(self.inner.read_i8()?)
+    }
+
     pub fn read_u16(&mut self) -> Result<u16> {
         Ok(match self.endian {
             Endian::Big => self.inner.read_u16::<BigEndian>()?,
@@ -60,6 +64,13 @@ impl<R: Read + Seek> StreamHelper<R> {
         Ok(match self.endian {
             Endian::Big => self.inner.read_u64::<BigEndian>()?,
             Endian::Little => self.inner.read_u64::<LittleEndian>()?,
+        })
+    }
+
+    pub fn read_i16(&mut self) -> Result<i16> {
+        Ok(match self.endian {
+            Endian::Big => self.inner.read_i16::<BigEndian>()?,
+            Endian::Little => self.inner.read_i16::<LittleEndian>()?,
         })
     }
 

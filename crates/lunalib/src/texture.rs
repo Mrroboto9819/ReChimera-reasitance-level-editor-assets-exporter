@@ -91,6 +91,41 @@ impl Texture {
 /// Decode every texture in the level. Heavy — call once per level open and
 /// cache the result; PNG-encode in the caller if shipping over IPC.
 pub fn read_textures(level_folder: &Path) -> Result<Vec<Texture>> {
+    let mut out = Vec::new();
+    read_textures_streaming(level_folder, |_| true, |t| out.push(t))?;
+    Ok(out)
+}
+
+/// Streaming variant. `accept` is consulted before decoding so the caller can
+/// skip textures it doesn't need (the lower 32 bits of TUID is what shaders
+/// reference). The skipped textures are not delivered to `on_each`.
+///
+/// Decoding is the expensive step; gating it cuts most of the cost when only
+/// a handful of textures end up referenced. The total count emitted via
+/// `on_total` is the count *after* filtering.
+pub fn read_textures_streaming<A, F>(
+    level_folder: &Path,
+    accept: A,
+    mut on_each: F,
+) -> Result<()>
+where
+    A: Fn(u32) -> bool,
+    F: FnMut(Texture),
+{
+    read_textures_with_total(level_folder, accept, |_| {}, |t| on_each(t))
+}
+
+pub fn read_textures_with_total<A, T, F>(
+    level_folder: &Path,
+    accept: A,
+    mut on_total: T,
+    mut on_each: F,
+) -> Result<()>
+where
+    A: Fn(u32) -> bool,
+    T: FnMut(usize),
+    F: FnMut(Texture),
+{
     let assetlookup_path = level_folder.join("assetlookup.dat");
     let mut lookup = IgFile::open(BufReader::new(File::open(&assetlookup_path)?))?;
 
@@ -133,18 +168,27 @@ pub fn read_textures(level_folder: &Path) -> Result<Vec<Texture>> {
         pointers.push((tuid, offset, length));
     }
 
+    let accepted_count = pointers.iter().filter(|(t, _, _)| accept(*t as u32)).count();
+    on_total(accepted_count);
+    if accepted_count == 0 {
+        return Ok(());
+    }
+
     // Stream textures from highmips.dat.
     let highmips_path = level_folder.join("highmips.dat");
     let mut highmips = File::open(&highmips_path)?;
 
-    let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let (format, mip_count, width, height) = metas[i];
         let (tuid, offset, length) = pointers[i];
         let id = tuid as u32;
 
+        if !accept(id) {
+            continue;
+        }
+
         if length == 0 {
-            out.push(Texture {
+            on_each(Texture {
                 id,
                 tuid,
                 width: 0,
@@ -171,7 +215,7 @@ pub fn read_textures(level_folder: &Path) -> Result<Vec<Texture>> {
 
         let (w, h) = if rgba.is_empty() { (0, 0) } else { (width, height) };
 
-        out.push(Texture {
+        on_each(Texture {
             id,
             tuid,
             width: w,
@@ -182,7 +226,7 @@ pub fn read_textures(level_folder: &Path) -> Result<Vec<Texture>> {
         });
     }
 
-    Ok(out)
+    Ok(())
 }
 
 /// `texpresso::decompress_image` expects the on-disk DXT bytes — PS3 stores
@@ -285,4 +329,37 @@ pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
         return Vec::new();
     }
     out.into_inner()
+}
+
+/// Downsample an RGBA buffer to fit within `max_dim` on the larger side.
+/// Returns the original buffer if it's already small enough or the resize
+/// fails. This is purely a UI-preview optimization — the editor doesn't need
+/// 1024² textures most of the time, and shrinking them cuts the JSON payload
+/// over the IPC channel by ~16× for full-res PS3 textures.
+pub fn downsample_rgba(
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    max_dim: u32,
+) -> (Vec<u8>, u32, u32) {
+    if width <= max_dim && height <= max_dim {
+        return (rgba, width, height);
+    }
+    let img = match image::RgbaImage::from_raw(width, height, rgba) {
+        Some(i) => i,
+        None => return (Vec::new(), 0, 0),
+    };
+    let (new_w, new_h) = if width >= height {
+        (max_dim, ((height as u64 * max_dim as u64) / width as u64) as u32)
+    } else {
+        (((width as u64 * max_dim as u64) / height as u64) as u32, max_dim)
+    };
+    let resized = image::imageops::resize(
+        &img,
+        new_w.max(1),
+        new_h.max(1),
+        image::imageops::FilterType::Triangle,
+    );
+    let (w, h) = (resized.width(), resized.height());
+    (resized.into_raw(), w, h)
 }
