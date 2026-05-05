@@ -1,0 +1,47 @@
+[package]
+name = "lunalib"
+description = "Parser for Insomniac's IGHW asset containers (Resistance 2/3, Ratchet & Clank Future)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+byteorder.workspace = true
+thiserror.workspace = true
+texpresso = "2"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[[example]]
+name = "dump_assetlookup"
+path = "examples/dump_assetlookup.rs"
+
+[[example]]
+name = "dump_gameplay"
+path = "examples/dump_gameplay.rs"
+
+[[example]]
+name = "dump_zones"
+path = "examples/dump_zones.rs"
+
+[[example]]
+name = "dump_ufrags"
+path = "examples/dump_ufrags.rs"
+
+[[example]]
+name = "dump_moby_meshes"
+path = "examples/dump_moby_meshes.rs"
+
+[[example]]
+name = "dump_tie_meshes"
+path = "examples/dump_tie_meshes.rs"
+
+[[example]]
+name = "dump_textures"
+path = "examples/dump_textures.rs"
+
+[[example]]
+name = "dump_shaders"
+path = "examples/dump_shaders.rs"

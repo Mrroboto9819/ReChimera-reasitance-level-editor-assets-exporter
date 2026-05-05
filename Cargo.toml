@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/lunalib", "apps/desktop/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+authors = ["ReChimera contributors"]
+repository = "https://github.com/Mrroboto9819/ReChimera"
+rust-version = "1.75"
+
+[workspace.dependencies]
+byteorder = "1.5"
+thiserror = "2.0"
