@@ -51,6 +51,7 @@ import { PsarcTools } from "./PsarcTools";
 import { SoundPlayer, type NowPlaying } from "./SoundPlayer";
 import { Splash } from "./Splash";
 import { UpdateChecker } from "./UpdateChecker";
+import { useUpdater } from "./useUpdater";
 import { StatusBar } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
 import { Toolbar } from "./Toolbar";
@@ -103,6 +104,7 @@ export function App() {
   const [completedPhases, setCompletedPhases] = useState<PhaseId[]>([]);
   const [consoleLog, setConsoleLog] = useState<ConsoleEntry[]>([]);
   const [psarcOpen, setPsarcOpen] = useState(false);
+  const updater = useUpdater();
   // About / credits modal — opened from `Help → About ReChimera…`.
   // Rendered always (not gated on level state) so Help is reachable
   // from a fresh splash.
@@ -866,15 +868,25 @@ export function App() {
 
           <MenuSpacer />
 
-          <button
-            className="btn btn-primary"
-            onClick={() => setOpenLevelModalOpen(true)}
-            disabled={busy}
-            title="Open a level folder"
-            data-tauri-drag-region="false"
-          >
-            {busy ? "Loading…" : summary ? "Open another…" : "Open Level…"}
-          </button>
+          {updater.phase.kind === "available" && (
+            <button
+              className="btn btn-update"
+              onClick={() => void updater.install()}
+              title={`Update available — v${updater.phase.update.version}`}
+              data-tauri-drag-region="false"
+            >
+              ↑ Update available
+            </button>
+          )}
+          {updater.phase.kind === "downloading" && (
+            <button
+              className="btn"
+              disabled
+              data-tauri-drag-region="false"
+            >
+              Downloading update…
+            </button>
+          )}
         </MenuBar>
       </TitleBar>
 
@@ -961,23 +973,21 @@ export function App() {
                       overrideAnimsetHash={overrideAnimsetHash}
                     />
                     {!summary && (
-                      <div className="viewport-empty-hint">
-                        <p className="dim">
-                          Open a level to begin
-                        </p>
+                      <div className="viewport-empty-toast">
+                        <div className="viewport-empty-title">No level loaded</div>
                         <button
                           type="button"
-                          className="btn btn-primary"
+                          className="btn btn-primary btn-sm"
                           onClick={() => setOpenLevelModalOpen(true)}
                         >
                           Open Level…
                         </button>
-                        <p className="small dim" style={{ marginTop: 12 }}>
+                        <div className="viewport-empty-sub small dim">
                           Pick any folder containing{" "}
                           <code>assetlookup.dat</code> — Resistance 2/3,
                           Ratchet &amp; Clank Future, and other Insomniac
                           PS3 titles.
-                        </p>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1091,10 +1101,15 @@ export function App() {
         open={loadPhase !== null}
         dismissable={false}
         title="Loading level"
-        subtitle="Decoding meshes, terrain, and textures from disk"
+        subtitle="Reading the level summary from disk"
         size="md"
       >
         <LoadProgress active={loadPhase} completed={completedPhases} />
+        <p className="small dim" style={{ marginTop: 16, lineHeight: 1.5 }}>
+          Heavy decoding may briefly freeze the window.{" "}
+          <strong>Don't close the app</strong> — it keeps working in the
+          background and will return as soon as the current phase finishes.
+        </p>
       </Modal>
 
       <Modal
@@ -1112,7 +1127,44 @@ export function App() {
         onClose={() => setAboutModalOpen(false)}
       />
 
-      <UpdateChecker />
+      <UpdateChecker state={updater} />
+
+      {meshLoadPhase && (
+        <div className="loading-banner" role="status" aria-live="polite">
+          <span className="loading-banner-spinner" aria-hidden />
+          <div className="loading-banner-body">
+            <div className="loading-banner-title">
+              Loading assets — {meshLoadPhase.label}
+            </div>
+            {meshLoadPhase.total > 0 && (
+              <>
+                <div className="loading-banner-bar">
+                  <div
+                    className="loading-banner-fill"
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        Math.round(
+                          (meshLoadPhase.current / meshLoadPhase.total) * 100,
+                        ),
+                      )}%`,
+                    }}
+                  />
+                </div>
+                <div className="loading-banner-progress small dim mono">
+                  {meshLoadPhase.current.toLocaleString()} /{" "}
+                  {meshLoadPhase.total.toLocaleString()}
+                </div>
+              </>
+            )}
+            <div className="loading-banner-warning small dim">
+              Heavy decoding — the window may briefly freeze.{" "}
+              <strong>Don't close the app</strong>; it keeps working in the
+              background and will return when the current phase finishes.
+            </div>
+          </div>
+        </div>
+      )}
 
       <Modal
         // Stay open while in-flight; auto-close when done or cancelled.
