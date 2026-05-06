@@ -252,9 +252,6 @@ and the art.
 - **[7th igRewrite](https://github.com/NefariousTechSupport/7thigRewrite)** —
   the Skylanders level editor whose viewport / scene-graph design
   influenced ReChimera's renderer.
-- **[Replanetizer](https://github.com/RatchetModding/Replanetizer)** —
-  the editor whose Frames-based pane architecture shaped the layout of
-  the editor UI here.
 
 ### Runtime stack — open-source libraries we ship
 
