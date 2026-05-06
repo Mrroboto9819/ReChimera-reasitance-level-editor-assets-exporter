@@ -10,32 +10,65 @@ interface SplashProps {
 }
 
 /**
- * Boot splash. Shows the app logo + name big and centered while the rest
- * of the React tree mounts (Redux rehydrate, font load, IDE shell layout).
+ * Boot splash. Shows the chimera-skull logo + the "ReChimera" wordmark
+ * + a pulsing loader, all fading in in sequence while the rest of the
+ * React tree mounts (Redux rehydrate, font load, IDE shell layout).
  *
- * Lives in the same React tree as App but renders ABOVE everything via a
- * full-screen fixed positioning + high z-index. GSAP handles the entrance
- * pulse and the exit fade so the timing is consistent across machines.
+ * Lives in the same React tree as App but renders ABOVE everything via
+ * a full-screen fixed positioning + high z-index. GSAP drives the
+ * entry sequence so timing is consistent across machines; the exit is
+ * a single opacity tween triggered when the parent flips `visible`.
  */
 export function Splash({ visible, onExit }: SplashProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const logoRef = useRef<HTMLDivElement>(null);
   const nameRef = useRef<HTMLHeadingElement>(null);
+  const loaderRef = useRef<HTMLDivElement>(null);
 
-  // Entry: short fade + scale-in for the logo, slide-up for the wordmark.
-  // Runs once on mount.
+  // Entry sequence:
+  //   1. Backdrop fades in (root opacity 0→1) immediately.
+  //   2. Logo scales up + fades in.
+  //   3. Wordmark slides up + fades in (slight overlap with logo).
+  //   4. Loader fades in last so the dots only start their pulse
+  //      after the rest is settled — feels more polished than having
+  //      everything animate simultaneously.
   useEffect(() => {
     const tl = gsap.timeline();
-    tl.from(logoRef.current, {
+    tl.from(rootRef.current, {
       opacity: 0,
-      scale: 0.85,
-      duration: 0.5,
-      ease: "power3.out",
+      duration: 0.25,
+      ease: "power2.out",
     })
       .from(
+        logoRef.current,
+        {
+          opacity: 0,
+          scale: 0.7,
+          y: -8,
+          duration: 0.6,
+          ease: "back.out(1.4)",
+        },
+        "-=0.1",
+      )
+      .from(
         nameRef.current,
-        { opacity: 0, y: 8, duration: 0.4, ease: "power2.out" },
-        "-=0.25",
+        {
+          opacity: 0,
+          y: 14,
+          duration: 0.45,
+          ease: "power3.out",
+        },
+        "-=0.30",
+      )
+      .from(
+        loaderRef.current,
+        {
+          opacity: 0,
+          y: 6,
+          duration: 0.35,
+          ease: "power2.out",
+        },
+        "-=0.15",
       );
     return () => {
       tl.kill();
@@ -70,10 +103,7 @@ export function Splash({ visible, onExit }: SplashProps) {
         <h1 ref={nameRef} className="splash-name">
           ReChimera
         </h1>
-        <div className="splash-tagline">
-          Insomniac PS3 level viewer
-        </div>
-        <div className="splash-loader" aria-hidden>
+        <div ref={loaderRef} className="splash-loader" aria-hidden>
           <span className="splash-loader-dot" />
           <span className="splash-loader-dot" />
           <span className="splash-loader-dot" />

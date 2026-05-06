@@ -1465,16 +1465,23 @@ textarea {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 16px;
+  /* Tight stack — logo, name, loader. The gap below is small so the
+     three pieces read as a single composition rather than three
+     unrelated rows. */
+  gap: 18px;
 }
 
 .splash-logo {
-  width: 140px;
-  height: 140px;
+  width: 160px;
+  height: 160px;
   display: flex;
   align-items: center;
   justify-content: center;
-  filter: drop-shadow(0 12px 32px rgba(0, 0, 0, 0.6));
+  /* Soft red glow under the chimera skull mirrors the brand red and
+     adds depth without competing with the logo itself. */
+  filter:
+    drop-shadow(0 14px 40px rgba(220, 38, 38, 0.35))
+    drop-shadow(0 4px 12px rgba(0, 0, 0, 0.55));
 }
 
 .splash-logo img {
@@ -1485,7 +1492,7 @@ textarea {
 }
 
 .splash-name {
-  margin: 4px 0 0;
+  margin: 0;
   font-size: 56px;
   font-weight: 600;
   letter-spacing: 0.5px;
@@ -1495,16 +1502,12 @@ textarea {
   line-height: 1;
 }
 
-.splash-tagline {
-  font-size: 13px;
-  color: var(--text-3);
-  letter-spacing: 0.3px;
-}
-
+/* Loader sits directly under the wordmark — small extra margin so it
+   doesn't crowd the title's descender area. */
 .splash-loader {
-  margin-top: 10px;
+  margin-top: 4px;
   display: inline-flex;
-  gap: 6px;
+  gap: 8px;
 }
 
 .splash-loader-dot {
