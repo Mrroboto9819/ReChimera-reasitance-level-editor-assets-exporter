@@ -2,11 +2,21 @@ import { useEffect, useMemo } from "react";
 import { Canvas } from "@react-three/fiber";
 import { Bounds, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
-import type { AssetMeshes, Instance, LevelMeshes } from "./api";
+import {
+  decodeMeshGeom,
+  type AssetMeshes,
+  type Instance,
+  type LevelMeshes,
+  type TextureBlobMap,
+} from "./api";
 
 interface AssetPreviewProps {
   instance: Instance | null;
   meshes: LevelMeshes | null;
+  /** Texture PNG bytes keyed by id, fetched in one binary IPC call
+   *  after the level streams in. Null while in flight — preview
+   *  renders untextured during that window. */
+  textureBlobs: TextureBlobMap | null;
 }
 
 interface BuiltSubmesh {
@@ -24,7 +34,7 @@ interface BuiltSubmesh {
  * The user can drag to orbit / scroll to zoom interactively — these
  * controls are local to the preview and do not affect the main viewport.
  */
-export function AssetPreview({ instance, meshes }: AssetPreviewProps) {
+export function AssetPreview({ instance, meshes, textureBlobs }: AssetPreviewProps) {
   if (!instance) {
     return (
       <div className="asset-preview asset-preview-empty">
@@ -34,26 +44,57 @@ export function AssetPreview({ instance, meshes }: AssetPreviewProps) {
   }
   if (!meshes) {
     return (
-      <div className="asset-preview asset-preview-empty">
-        <span className="dim small">Mesh data not loaded yet</span>
+      <div className="asset-preview">
+        <ProxyPreview kind={instance.kind} />
+        <span className="asset-preview-tag mono small">proxy</span>
       </div>
     );
   }
 
   return (
     <div className="asset-preview">
-      <PreviewScene instance={instance} meshes={meshes} />
+      <PreviewScene instance={instance} meshes={meshes} textureBlobs={textureBlobs} />
       <span className="asset-preview-tag mono small">{instance.tuid.split("#")[0]}</span>
     </div>
+  );
+}
+
+function ProxyPreview({ kind }: { kind: Instance["kind"] }) {
+  const color = kind === "moby" ? "#55b3ff" : "#5fc992";
+  const scale: [number, number, number] =
+    kind === "moby" ? [1.4, 1.4, 1.4] : [2.2, 1.2, 2.2];
+
+  return (
+    <Canvas camera={{ position: [3, 2.4, 3], fov: 42, near: 0.01, far: 100 }}>
+      <color attach="background" args={["#0b0c0e"]} />
+      <ambientLight intensity={0.8} />
+      <directionalLight position={[5, 8, 5]} intensity={0.9} />
+      <gridHelper args={[5, 10, "#20242a", "#15181d"]} position={[0, -0.75, 0]} />
+      <group scale={scale}>
+        <mesh>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshBasicMaterial color={color} wireframe transparent opacity={0.72} />
+        </mesh>
+      </group>
+      <OrbitControls
+        makeDefault
+        enableDamping
+        dampingFactor={0.1}
+        autoRotate
+        autoRotateSpeed={0.8}
+      />
+    </Canvas>
   );
 }
 
 function PreviewScene({
   instance,
   meshes,
+  textureBlobs,
 }: {
   instance: Instance;
   meshes: LevelMeshes;
+  textureBlobs: TextureBlobMap | null;
 }) {
   const asset = useMemo<AssetMeshes | undefined>(() => {
     return (
@@ -65,25 +106,20 @@ function PreviewScene({
   const submeshes = useMemo<BuiltSubmesh[]>(() => {
     if (!asset) return [];
     return asset.submeshes.map((s) => {
+      const decoded = decodeMeshGeom(s);
       const geom = new THREE.BufferGeometry();
-      geom.setAttribute(
-        "position",
-        new THREE.Float32BufferAttribute(s.positions, 3),
-      );
-      if (s.uvs.length > 0) {
-        geom.setAttribute("uv", new THREE.Float32BufferAttribute(s.uvs, 2));
+      geom.setAttribute("position", new THREE.BufferAttribute(decoded.positions, 3));
+      if (decoded.uvs.length > 0) {
+        geom.setAttribute("uv", new THREE.BufferAttribute(decoded.uvs, 2));
       }
-      geom.setIndex(s.indices);
+      geom.setIndex(new THREE.BufferAttribute(decoded.indices, 1));
       geom.computeVertexNormals();
       geom.computeBoundingSphere();
 
       let texture: THREE.Texture | null = null;
       if (s.albedo_id != null) {
-        const payload = meshes.textures.find((t) => t.id === s.albedo_id);
-        if (payload) {
-          const blob = new Blob([new Uint8Array(payload.png)], {
-            type: "image/png",
-          });
+        const blob = textureBlobs?.get(s.albedo_id);
+        if (blob) {
           const url = URL.createObjectURL(blob);
           const img = new Image();
           texture = new THREE.Texture(img);
@@ -108,7 +144,7 @@ function PreviewScene({
       });
       return { geom, material };
     });
-  }, [asset, meshes.textures]);
+  }, [asset, textureBlobs]);
 
   // Dispose GPU-backed resources when this asset changes or unmounts.
   useEffect(() => {

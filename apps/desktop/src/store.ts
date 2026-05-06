@@ -35,6 +35,9 @@ export interface ViewSettingsState {
    *  IGHW chunk includes section 0xD300. Useful for verifying skeleton
    *  parse before skin weights / animation playback land. */
   showBones: boolean;
+  /** Drive the selected character's SkinnedMesh via AnimationMixer using
+   *  its animset clip. Off → bind pose. */
+  playAnimation: boolean;
 }
 
 const DEFAULT_VIEW: ViewSettingsState = {
@@ -46,6 +49,7 @@ const DEFAULT_VIEW: ViewSettingsState = {
   showAxes: true,
   showStats: false,
   showBones: false,
+  playAnimation: true,
 };
 
 const viewSlice = createSlice({

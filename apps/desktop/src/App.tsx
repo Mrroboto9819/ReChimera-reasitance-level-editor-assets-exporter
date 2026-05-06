@@ -1,26 +1,39 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
+  dumpSoundBank,
+  extractLevelSounds,
+  extractLevelStreamSounds,
+  extractRawStreamingSounds,
   levelLayout,
+  listAnimsetClips,
   listEntitiesGltfs,
   listGltfsInFolder,
+  getLevelTexturesBulk,
+  listLevelFiles,
+  listLevelSounds,
   openLevel,
-  streamCharacterLibrary,
   streamLevelMeshes,
+  wavBlobUrl,
+  type AnimsetSummary,
   type AssetMeshes,
+  type ExtractedSound,
   type GltfFile,
   type Instance,
+  type LevelFile,
   type LevelMeshes,
   type LevelSummary,
   type PhaseId,
+  type SoundEntry,
+  type TextureBlobMap,
   type TexturePayload,
   type UFragBounds,
   type UFragMesh,
 } from "./api";
 import { BottomPanel, type ConsoleEntry } from "./BottomPanel";
-import { CharacterPreviewModal } from "./CharacterPreviewModal";
 import { GltfCharacterModal } from "./GltfCharacterModal";
+import { RawCharacterModal } from "./RawCharacterModal";
 import { Hierarchy } from "./Hierarchy";
 import { Inspector } from "./Inspector";
 import { LoadProgress, type LoadPhaseState } from "./LoadProgress";
@@ -28,6 +41,7 @@ import { Menu, MenuBar, MenuCheckItem, MenuItem, MenuSpacer } from "./MenuBar";
 import { Modal } from "./Modal";
 import { OpenLevelModal } from "./OpenLevelModal";
 import { PsarcTools } from "./PsarcTools";
+import { SoundPlayer, type NowPlaying } from "./SoundPlayer";
 import { Splash } from "./Splash";
 import { StatusBar } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
@@ -62,6 +76,12 @@ export function App() {
   const [instances, setInstances] = useState<Instance[]>([]);
   const [ufrags, setUFrags] = useState<UFragBounds[]>([]);
   const [meshes, setMeshes] = useState<LevelMeshes | null>(null);
+  // Texture bytes — fetched in one binary IPC call after the streaming
+  // pipeline finishes emitting metadata events. Keyed by texture id.
+  // Null until the bulk fetch resolves; consumers (Viewport, export,
+  // AssetPreview, RawCharacterModal) treat null as "no textures yet"
+  // and render with placeholder materials until it arrives.
+  const [textureBlobs, setTextureBlobs] = useState<TextureBlobMap | null>(null);
   const selection = useSelection(useCallback(() => instances, [instances]));
   const edits = useEdits();
   const primaryInstance = selection.primary
@@ -70,26 +90,81 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadPhase, setLoadPhase] = useState<LoadPhaseState | null>(null);
+  const [meshLoadPhase, setMeshLoadPhase] = useState<LoadPhaseState | null>(null);
   const [completedPhases, setCompletedPhases] = useState<PhaseId[]>([]);
   const [consoleLog, setConsoleLog] = useState<ConsoleEntry[]>([]);
   const [psarcOpen, setPsarcOpen] = useState(false);
   const [openLevelModalOpen, setOpenLevelModalOpen] = useState(false);
   const [exportState, setExportState] = useState<ExportProgressState | null>(null);
-  // Character / weapon / enemy mobys from `<level>/character/` if present.
-  // Decoupled from the main `meshes` state because they're not placed in
-  // the world — they're a browseable asset library shown in the Hierarchy.
-  const [characterLib, setCharacterLib] = useState<{
-    assets: AssetMeshes[];
-    textures: TexturePayload[];
-  } | null>(null);
-  const [characterLibStatus, setCharacterLibStatus] = useState<string | null>(null);
-  // Currently-previewed character (opens a modal). null when closed.
-  const [previewCharTuid, setPreviewCharTuid] = useState<string | null>(null);
+  // (Removed: legacy `<level>/character/` filesystem lookup state. The
+  // path-grouped Asset Library tree built from `assetlookup.dat` is
+  // the canonical browser now — no filesystem dependency.)
   // GLTF library — files from InsomniaToolset's extract_assets command.
   // Preferred path because they already include skeleton + animations.
   const [gltfLibrary, setGltfLibrary] = useState<GltfFile[] | null>(null);
   const [gltfLibraryStatus, setGltfLibraryStatus] = useState<string | null>(null);
   const [previewGltfFile, setPreviewGltfFile] = useState<GltfFile | null>(null);
+  // Browseable list of every animset in the open level. Loaded once on
+  // level open via `list_animset_clips`. Drives the Hierarchy's
+  // "Animations" section — user clicks any clip to override the active
+  // playback on the primary-selected character.
+  const [animsetClips, setAnimsetClips] = useState<AnimsetSummary[]>([]);
+  // When non-null, the primary-selected SkinnedMesh plays this clip
+  // instead of the moby's own `animset_hash` clip. Cleared on selection
+  // change. Also fed into the export pipeline so the chosen clip lands
+  // in the .glb as a Blender Action.
+  const [overrideAnimsetHash, setOverrideAnimsetHash] = useState<string | null>(null);
+  // Asset library preview — when non-null, the RawCharacterModal opens
+  // for this asset_tuid. Sourced from a Hierarchy click on the Asset
+  // Library tree; lets the user preview ANY asset from `assetlookup.dat`
+  // (including ones not placed in the world) with mesh + textures +
+  // animations + export.
+  const [previewAssetTuid, setPreviewAssetTuid] = useState<string | null>(null);
+  // Level sounds — listed cheaply on level open from `resident_sound.dat`
+  // headers. Drives the Hierarchy's Sounds section. The actual WAV
+  // bytes are fetched lazily on first click via `extractLevelSounds`
+  // and cached so subsequent clicks just re-find the entry by name.
+  const [levelSounds, setLevelSounds] = useState<SoundEntry[]>([]);
+  // File-level inventory — every notable file in the level folder
+  // categorized by type, including ones we don't parse yet (streaming
+  // dialogue, lighting, vfx, cinematics). Drives the Hierarchy's
+  // "Files" section, which acts as a survey of the level's full
+  // contents + a visible roadmap of what's left to port.
+  const [levelFiles, setLevelFiles] = useState<LevelFile[]>([]);
+  // Per-source cache keyed by `${kind}:${filename}`. Separates bank
+  // and stream extracts so re-clicking a stream sound doesn't trigger
+  // a fresh bank decode and vice-versa. Stream extracts can be slow
+  // (multi-GB streaming files) so caching matters even more there.
+  const [extractedSoundsCache, setExtractedSoundsCache] = useState<
+    Map<string, ExtractedSound[]>
+  >(new Map());
+  // Currently-playing sound. State (not ref) so the SoundPlayer can
+  // re-render when it changes — the player UI subscribes to the live
+  // Audio element's events for transport state. Setting to null both
+  // stops playback (handled in handlePlaySound / handleClosePlayer)
+  // and hides the player bar.
+  const [nowPlaying, setNowPlaying] = useState<NowPlaying | null>(null);
+  const playingSoundName = nowPlaying?.name ?? null;
+
+  // (handlePlaySound is defined further down — needs `log` + `summary`
+  // both declared first. See block right after `log = useCallback(...)`.)
+
+  // Cleanup any in-flight audio when the App unmounts. Captured into
+  // a ref-style closure: we read `nowPlaying` at unmount time via a
+  // ref mirror so we don't have to re-run this effect on every state
+  // change. Without the mirror, putting `nowPlaying` in deps would
+  // tear down the audio on every play/pause UI tick.
+  const nowPlayingMirror = useRef<NowPlaying | null>(null);
+  nowPlayingMirror.current = nowPlaying;
+  useEffect(() => {
+    return () => {
+      const np = nowPlayingMirror.current;
+      if (np) {
+        np.audio.pause();
+        URL.revokeObjectURL(np.blobUrl);
+      }
+    };
+  }, []);
   // Bumps every time the user explicitly asks to re-frame on the selection
   // (e.g. via the Inspector's "Go to" button). The Viewport's CameraFocus
   // watches it as a dep so it re-runs the focus tween even when the
@@ -149,8 +224,11 @@ export function App() {
         selection.ids,
         instances,
         meshes,
+        textureBlobs,
         path,
         (state) => setExportState(state),
+        summary?.folder ?? null,
+        overrideAnimsetHash,
       );
       log(
         "ok",
@@ -170,6 +248,112 @@ export function App() {
   const toggle = useCallback(
     (key: keyof ViewSettingsState) => dispatch(toggleView(key)),
     [dispatch],
+  );
+
+  // Click a sound row → play it. First click on any sound triggers a
+  // bulk extraction (the whole bank decoded server-side, returned as
+  // a list of WAV blobs). After that, we just look up the WAV by name
+  // and play it. Re-clicking the same sound stops it; clicking a
+  // different one swaps. Single-Audio policy keeps the playback
+  // model trivial — no overlapping clips.
+  const handlePlaySound = useCallback(
+    async (name: string) => {
+      // Same sound clicked again → stop playback + close player.
+      if (nowPlayingMirror.current?.name === name) {
+        const np = nowPlayingMirror.current;
+        np.audio.pause();
+        URL.revokeObjectURL(np.blobUrl);
+        setNowPlaying(null);
+        return;
+      }
+      // Stop the previous sound (if any) before starting a new one.
+      if (nowPlayingMirror.current) {
+        const prev = nowPlayingMirror.current;
+        prev.audio.pause();
+        URL.revokeObjectURL(prev.blobUrl);
+      }
+
+      if (!summary) return;
+      // Find the SoundEntry to know whether this is a bank or stream
+      // sound + which source file backs it. Different cache keys for
+      // each kind keep bank and stream extracts independent.
+      const entry = levelSounds.find((s) => s.name === name);
+      if (!entry) {
+        log("warn", `Sound metadata missing: ${name}`);
+        return;
+      }
+      const cacheKey = `${entry.kind}:${entry.source}`;
+      let extracted: ExtractedSound[];
+      const cached = extractedSoundsCache.get(cacheKey);
+      if (cached) {
+        extracted = cached;
+      } else {
+        try {
+          // Dispatch on entry.kind:
+          //   bank   → in-bank SCREAM, source = bank file
+          //   stream → bank-paired stream, source = bank file (sibling
+          //            stream file resolved server-side)
+          //   raw    → orphan stream (no bank in folder), source =
+          //            stream file itself; brute-force header scan
+          if (entry.kind === "raw") {
+            extracted = await extractRawStreamingSounds(summary.folder, entry.source);
+            log(
+              "ok",
+              `Raw streams decoded from ${entry.source}: ${extracted.length} WAVs`,
+            );
+          } else if (entry.kind === "stream") {
+            extracted = await extractLevelStreamSounds(summary.folder, entry.source);
+            log(
+              "ok",
+              `Stream sounds decoded for ${entry.source}: ${extracted.length} WAVs`,
+            );
+          } else {
+            extracted = await extractLevelSounds(summary.folder);
+            log("ok", `Sound bank decoded: ${extracted.length} WAVs`);
+          }
+          const fresh = extracted;
+          setExtractedSoundsCache((prev) => {
+            const next = new Map(prev);
+            next.set(cacheKey, fresh);
+            return next;
+          });
+        } catch (e) {
+          log("error", `Sound extract failed: ${e}`);
+          // Self-diagnose: dump the bank structure into the Console so
+          // bad pointers / wrong section IDs are visible without
+          // manual hexdumping. Skip for "raw" — that path doesn't go
+          // through a SCREAM bank, so the dumper has nothing to read.
+          if (entry.kind !== "raw" && summary) {
+            dumpSoundBank(summary.folder, entry.source)
+              .then((dump) => log("info", `Bank dump for ${entry.source}:\n${dump}`))
+              .catch((de) => log("warn", `Bank dump failed: ${de}`));
+          }
+          return;
+        }
+      }
+
+      const found = extracted.find((s) => s.name === name);
+      if (!found) {
+        log("warn", `Sound not found: ${name}`);
+        return;
+      }
+      const blobUrl = wavBlobUrl(found.wav_b64);
+      const audio = new Audio(blobUrl);
+      audio.addEventListener("ended", () => {
+        // After a track finishes, leave the player visible so the
+        // user can re-play / export — only revoke the blob URL +
+        // close if they explicitly dismissed it elsewhere.
+      });
+      audio.play().catch((e) => log("error", `Audio play failed: ${e}`));
+      setNowPlaying({
+        name,
+        source: entry.source,
+        audio,
+        blobUrl,
+        entry: found,
+      });
+    },
+    [extractedSoundsCache, levelSounds, summary, log],
   );
 
   /** Manual GLTF library entry point. Opens an OS folder picker, scans
@@ -209,6 +393,141 @@ export function App() {
     }
   }, [log]);
 
+  const loadFullMeshes = useCallback(async (sum: LevelSummary) => {
+    setError(null);
+    setBusy(true);
+    setMeshes(null);
+    setTextureBlobs(null);
+    setMeshLoadPhase({
+      phase: "layout",
+      label: "Preparing mesh stream",
+      current: 0,
+      total: 1,
+      chunkSize: 1,
+    });
+    setCompletedPhases([]);
+
+    // Give the proxy editor a paint before starting the expensive path.
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+
+    const acc: LevelMeshes = {
+      moby_assets: [],
+      tie_assets: [],
+      ufrag_meshes: [],
+      textures: [],
+    };
+    let flushPending = false;
+    const flushMeshes = () => {
+      setMeshes({
+        moby_assets: [...acc.moby_assets],
+        tie_assets: [...acc.tie_assets],
+        ufrag_meshes: [...acc.ufrag_meshes],
+        textures: [...acc.textures],
+      });
+    };
+    const scheduleMeshFlush = () => {
+      if (flushPending) return;
+      flushPending = true;
+      requestAnimationFrame(() => {
+        flushPending = false;
+        flushMeshes();
+      });
+    };
+
+    const completedLocal: PhaseId[] = [];
+    let activePhase: PhaseId | null = null;
+
+    try {
+      await streamLevelMeshes(sum.folder, (e) => {
+        switch (e.type) {
+          case "phase":
+            if (activePhase && activePhase !== e.phase) {
+              completedLocal.push(activePhase);
+              log("ok", `Phase complete: ${activePhase}`);
+            }
+            activePhase = e.phase;
+            setMeshLoadPhase({
+              phase: e.phase,
+              label: e.label,
+              current: 0,
+              total: e.total,
+              chunkSize: e.chunk_size,
+            });
+            setCompletedPhases([...completedLocal]);
+            log("info", `${e.label} (${e.total.toLocaleString()})`);
+            break;
+          case "progress":
+            setMeshLoadPhase((p) => (p ? { ...p, current: e.current } : p));
+            break;
+          case "moby_asset":
+            acc.moby_assets.push(e.asset as AssetMeshes);
+            scheduleMeshFlush();
+            break;
+          case "tie_asset":
+            acc.tie_assets.push(e.asset as AssetMeshes);
+            scheduleMeshFlush();
+            break;
+          case "ufrag_mesh":
+            acc.ufrag_meshes.push(e.mesh as UFragMesh);
+            scheduleMeshFlush();
+            break;
+          case "texture":
+            acc.textures.push(e.texture as TexturePayload);
+            scheduleMeshFlush();
+            break;
+          case "done":
+            if (activePhase) completedLocal.push(activePhase);
+            setCompletedPhases([...completedLocal]);
+            flushMeshes();
+            setMeshLoadPhase(null);
+            log(
+              "ok",
+              `Level decode finished: ${acc.moby_assets.length} mobys, ${acc.tie_assets.length} ties, ${acc.ufrag_meshes.length} terrain, ${acc.textures.length} textures`,
+            );
+            // Fetch every texture's PNG bytes in one binary IPC call.
+            // The streaming pipeline now ships only metadata, so this
+            // is where the actual pixels arrive. We deliberately do
+            // NOT await — the level can render with placeholder
+            // materials until bytes arrive, and a hung fetch
+            // shouldn't keep the busy spinner stuck.
+            {
+              const ids = acc.textures.map((t) => t.id);
+              if (ids.length > 0) {
+                const t0 = performance.now();
+                getLevelTexturesBulk(sum.folder, ids)
+                  .then((map) => {
+                    const dt = performance.now() - t0;
+                    let totalBytes = 0;
+                    for (const b of map.values()) totalBytes += b.size;
+                    console.log(
+                      `[texture-bulk-ipc] ${map.size}/${ids.length} textures · ${(totalBytes / 1024 / 1024).toFixed(2)} MB · ${dt.toFixed(0)} ms`,
+                    );
+                    setTextureBlobs(map);
+                  })
+                  .catch((err) => {
+                    log("error", `Texture bulk fetch failed: ${err}`);
+                  });
+              } else {
+                setTextureBlobs(new Map());
+              }
+            }
+            break;
+          case "error":
+            setError(e.message);
+            setMeshLoadPhase(null);
+            break;
+        }
+      });
+    } catch (e) {
+      setError(`Mesh decode failed: ${e}`);
+      setMeshLoadPhase(null);
+    } finally {
+      setBusy(false);
+    }
+  }, [log]);
+
 
   const handleOpen = useCallback(async (rawFolder: string) => {
     const folder = rawFolder.trim();
@@ -219,13 +538,25 @@ export function App() {
     selection.clear();
     edits.resetAll();
     setMeshes(null);
-    setCharacterLib(null);
-    setCharacterLibStatus(null);
-    setPreviewCharTuid(null);
+    setTextureBlobs(null);
     setGltfLibrary(null);
     setGltfLibraryStatus(null);
     setPreviewGltfFile(null);
+    setAnimsetClips([]);
+    setOverrideAnimsetHash(null);
+    setPreviewAssetTuid(null);
+    // Stop any playing sound + drop cached extraction state — the
+    // new level has its own sound bank.
+    if (nowPlayingMirror.current) {
+      nowPlayingMirror.current.audio.pause();
+      URL.revokeObjectURL(nowPlayingMirror.current.blobUrl);
+    }
+    setNowPlaying(null);
+    setLevelSounds([]);
+    setExtractedSoundsCache(new Map());
+    setLevelFiles([]);
     setLoadPhase(null);
+    setMeshLoadPhase(null);
     setCompletedPhases([]);
     log("info", `Opening level: ${folder}`);
     try {
@@ -255,163 +586,76 @@ export function App() {
           `, ${lyt.ufrags.length} UFrags`,
       );
 
-      const acc: LevelMeshes = {
-        moby_assets: [],
-        tie_assets: [],
-        ufrag_meshes: [],
-        textures: [],
-      };
-      // NOTE: deliberately NOT calling setMeshes(acc) here. During the
-      // load, every setMeshes triggers a React re-render of the entire
-      // workspace (Viewport, Hierarchy, etc.) — even with the AssetGroup
-      // pause it still walks the tree, runs effects, etc. With 35+ events
-      // arriving fast, those re-renders pile up and freeze the JS thread.
+      setBusy(false);
+
+      // Kick off the full mesh decode automatically. Safe now that:
+      //   1. Texture uploads skip mipmap generation (was the #1 cause of
+      //      WebGL context loss on bayou)
+      //   2. Geometry build runs in `requestIdleCallback` slots, one
+      //      asset at a time, off the render path
+      //   3. `computeVertexNormals` is skipped (~150ms saved per moby)
+      //   4. WebGL context-loss handler shows a banner instead of
+      //      letting the canvas silently freeze
       //
-      // Instead: accumulate silently into `acc`. The progress modal updates
-      // via setLoadPhase only. Once the Done event arrives, ONE setMeshes
-      // call hands React the full level — and only then does AssetGroup
-      // build geometries (chunked, in the background, with paused=false).
-      const flushOnce = () => {
-        setMeshes({
-          moby_assets: acc.moby_assets,
-          tie_assets: acc.tie_assets,
-          ufrag_meshes: acc.ufrag_meshes,
-          textures: acc.textures,
+      // The decode runs concurrently with idle-time mesh building, so
+      // the proxy-box view stays responsive while real meshes stream in
+      // and progressively replace the boxes. No await — let it run in
+      // the background.
+      log("info", "Auto-loading meshes (idle-paced; safe to interact while it runs)");
+      void loadFullMeshes(sum);
+
+      // Pre-fetch the animset directory in parallel with the mesh
+      // decode. Cheap (only the 0x40 header per animset, 39 entries
+      // on bayou ≈ < 100 KB read) and lets the Hierarchy populate the
+      // Animations section immediately instead of waiting for the
+      // user to open a preview modal.
+      listAnimsetClips(sum.folder)
+        .then((clips) => {
+          setAnimsetClips(clips);
+          log("ok", `Animset library: ${clips.length} clips`);
+        })
+        .catch((e) => {
+          log("warn", `Animset list failed: ${e}`);
         });
-      };
 
-      const completedLocal: PhaseId[] = [];
-      let activePhase: PhaseId | null = null;
-
-      try {
-        await streamLevelMeshes(sum.folder, (e) => {
-          switch (e.type) {
-            case "phase":
-              if (activePhase && activePhase !== e.phase) {
-                completedLocal.push(activePhase);
-                log("ok", `Phase complete: ${activePhase}`);
-              }
-              activePhase = e.phase;
-              setLoadPhase({
-                phase: e.phase,
-                label: e.label,
-                current: 0,
-                total: e.total,
-                chunkSize: e.chunk_size,
-              });
-              setCompletedPhases([...completedLocal]);
-              log("info", `${e.label} (${e.total.toLocaleString()})`);
-              break;
-            case "progress":
-              setLoadPhase((p) =>
-                p ? { ...p, current: e.current } : p,
-              );
-              break;
-            case "moby_asset":
-              // Silent accumulation — no console.log (DevTools choked on 35
-              // huge mesh payloads), no setMeshes (would re-render the
-              // workspace on every event).
-              acc.moby_assets.push(e.asset as AssetMeshes);
-              break;
-            case "tie_asset":
-              acc.tie_assets.push(e.asset as AssetMeshes);
-              break;
-            case "ufrag_mesh":
-              acc.ufrag_meshes.push(e.mesh as UFragMesh);
-              break;
-            case "texture":
-              acc.textures.push(e.texture as TexturePayload);
-              break;
-            case "done":
-              if (activePhase) completedLocal.push(activePhase);
-              setCompletedPhases([...completedLocal]);
-              // Single setMeshes call — hands the WHOLE level to React at
-              // once. AssetGroup then builds geometries chunked (BUILD_BATCH
-              // per render with setTimeout(0) continuation) AFTER the modal
-              // has closed.
-              flushOnce();
-              setLoadPhase(null);
-              log(
-                "ok",
-                `Level decode finished: ${acc.moby_assets.length} mobys, ${acc.tie_assets.length} ties, ${acc.ufrag_meshes.length} terrain, ${acc.textures.length} textures`,
-              );
-              break;
-            case "error":
-              setError(e.message);
-              setLoadPhase(null);
-              break;
+      // Sound table — cheap header read of resident_sound.dat. The
+      // ADPCM decoding for any specific sound happens lazily on first
+      // play; this just gives the UI the names + indices.
+      listLevelSounds(sum.folder)
+        .then((sounds) => {
+          setLevelSounds(sounds);
+          if (sounds.length > 0) {
+            log("ok", `Sound bank: ${sounds.length} entries`);
           }
+        })
+        .catch((e) => {
+          log("warn", `Sound list failed: ${e}`);
         });
-      } catch (e) {
-        setError(`Mesh decode failed: ${e}`);
-        setLoadPhase(null);
-      }
 
-      // Step 3: try to load the character/weapon library if the level has
-      // a `<level>/character/` folder. Doesn't block the main flow — if it
-      // fails or is absent we just skip silently.
-      const libAcc = {
-        assets: [] as AssetMeshes[],
-        textures: [] as TexturePayload[],
-      };
-      let libPending = false;
-      const libFlush = () => {
-        if (libPending) return;
-        libPending = true;
-        requestAnimationFrame(() => {
-          libPending = false;
-          setCharacterLib({
-            assets: libAcc.assets,
-            textures: libAcc.textures,
-          });
-        });
-      };
-      try {
-        setCharacterLibStatus("Looking for character library…");
-        await streamCharacterLibrary(folder, (e) => {
-          switch (e.type) {
-            case "missing":
-              setCharacterLibStatus(null);
-              log("info", "No entities/character folder found near this level");
-              break;
-            case "located":
-              log("ok", `Character library found: ${e.path}`);
-              setCharacterLibStatus("Character library found, decoding…");
-              break;
-            case "total":
-              setCharacterLibStatus(
-                `Decoding character library (${e.total.toLocaleString()})…`,
-              );
-              setCharacterLib({ assets: [], textures: [] });
-              log("info", `Character library: ${e.total} assets`);
-              break;
-            case "asset":
-              libAcc.assets.push(e.asset);
-              libFlush();
-              break;
-            case "texture":
-              libAcc.textures.push(e.texture);
-              libFlush();
-              break;
-            case "done":
-              setCharacterLibStatus(null);
-              if (libAcc.assets.length > 0) {
-                log(
-                  "ok",
-                  `Character library decoded: ${libAcc.assets.length} assets, ${libAcc.textures.length} textures`,
-                );
-              }
-              break;
-            case "error":
-              setCharacterLibStatus(null);
-              log("warn", `Character library: ${e.message}`);
-              break;
+      // Survey the level folder — every notable file classified by
+      // type, with a `parsed` flag so the user can see at a glance
+      // which formats we already extract vs which are still on the
+      // roadmap. Cheap (one read_dir).
+      listLevelFiles(sum.folder)
+        .then((files) => {
+          setLevelFiles(files);
+          if (files.length > 0) {
+            const parsedCount = files.filter((f) => f.parsed).length;
+            log(
+              "info",
+              `Level files: ${files.length} total · ${parsedCount} parsed · ${files.length - parsedCount} roadmap`,
+            );
           }
+        })
+        .catch((e) => {
+          log("warn", `File listing failed: ${e}`);
         });
-      } catch (e) {
-        setCharacterLibStatus(null);
-        log("warn", `Character library skipped: ${e}`);
-      }
+
+      // The old `<level>/character/` filesystem lookup
+      // (streamCharacterLibrary) is gone — the path-grouped Asset
+      // Library tree built directly from `assetlookup.dat` is the
+      // canonical source now. No filesystem dependency, works on any
+      // level whether or not InsomniaToolset has been run.
 
       // Step 4: scan ALL of the `entities/` tree (character, object,
       // unique, …) for InsomniaToolset GLTF outputs. Files come back
@@ -448,26 +692,29 @@ export function App() {
       setInstances([]);
       setUFrags([]);
       setLoadPhase(null);
+      setMeshLoadPhase(null);
     } finally {
       setBusy(false);
     }
-  }, [log, selection, edits]);
+  }, [log, selection, edits, loadFullMeshes]);
 
   const handleClose = useCallback(() => {
     setSummary(null);
     setInstances([]);
     setUFrags([]);
     setMeshes(null);
-    setCharacterLib(null);
-    setCharacterLibStatus(null);
-    setPreviewCharTuid(null);
+    setTextureBlobs(null);
     setGltfLibrary(null);
     setGltfLibraryStatus(null);
     setPreviewGltfFile(null);
+    setPreviewAssetTuid(null);
+    setAnimsetClips([]);
+    setOverrideAnimsetHash(null);
     selection.clear();
     edits.resetAll();
     setError(null);
     setLoadPhase(null);
+    setMeshLoadPhase(null);
     setCompletedPhases([]);
     log("info", "Level closed");
   }, [log, selection, edits]);
@@ -524,6 +771,14 @@ export function App() {
           </Menu>
 
           <Menu label="Render">
+            <MenuItem
+              onSelect={() => {
+                if (summary) void loadFullMeshes(summary);
+              }}
+              disabled={!summary || busy || meshLoadPhase !== null}
+            >
+              {meshes ? "Reload Full Meshes" : "Load Full Meshes"}
+            </MenuItem>
             <MenuCheckItem
               checked={view.showMobys}
               onToggle={() => toggle("showMobys")}
@@ -622,12 +877,25 @@ export function App() {
               <Hierarchy
                 instances={instances}
                 selection={selection}
-                library={characterLib}
-                libraryStatus={characterLibStatus}
-                onPreviewLibraryAsset={(tuid) => setPreviewCharTuid(tuid)}
                 gltfLibrary={gltfLibrary}
                 gltfLibraryStatus={gltfLibraryStatus}
                 onPreviewGltfFile={(f) => setPreviewGltfFile(f)}
+                animsetClips={animsetClips}
+                activeAnimsetHash={overrideAnimsetHash}
+                onSelectAnimset={(hash) =>
+                  setOverrideAnimsetHash(
+                    overrideAnimsetHash === hash ? null : hash,
+                  )
+                }
+                mobyAssets={meshes?.moby_assets}
+                tieAssets={meshes?.tie_assets}
+                onPreviewRawAsset={(tuid) => setPreviewAssetTuid(tuid)}
+                sounds={levelSounds}
+                playingSoundName={playingSoundName}
+                onPlaySound={handlePlaySound}
+                textures={meshes?.textures}
+                levelFolder={summary?.folder}
+                levelFiles={levelFiles}
               />
             </Panel>
 
@@ -647,11 +915,14 @@ export function App() {
                       instances={instances}
                       ufrags={ufrags}
                       meshes={meshes}
+                      textureBlobs={textureBlobs}
                       selection={selection}
                       view={view}
                       focusVersion={focusVersion}
                       edits={edits}
-                      loading={loadPhase !== null}
+                      meshLoadPhase={meshLoadPhase}
+                      levelFolder={summary?.folder ?? null}
+                      overrideAnimsetHash={overrideAnimsetHash}
                     />
                   </div>
                 </Panel>
@@ -698,9 +969,14 @@ export function App() {
                 selected={primaryInstance}
                 selectionCount={selection.count}
                 meshes={meshes}
+                textureBlobs={textureBlobs}
                 instances={instances}
                 edits={edits}
                 onExportSelected={handleExportSelection}
+                onLoadMeshes={() => {
+                  if (summary) void loadFullMeshes(summary);
+                }}
+                loadingMeshes={meshLoadPhase !== null}
                 onFocusSelected={() => setFocusVersion((v) => v + 1)}
               />
             </Panel>
@@ -729,6 +1005,18 @@ export function App() {
         </div>
       )}
 
+      <SoundPlayer
+        nowPlaying={nowPlaying}
+        onLog={log}
+        onClose={() => {
+          if (nowPlayingMirror.current) {
+            nowPlayingMirror.current.audio.pause();
+            URL.revokeObjectURL(nowPlayingMirror.current.blobUrl);
+          }
+          setNowPlaying(null);
+        }}
+      />
+
       <StatusBar
         summary={summary}
         meshesCount={meshes?.moby_assets.length ?? 0}
@@ -736,6 +1024,7 @@ export function App() {
         ufragCount={ufrags.length}
         meshes={meshes}
         loadPhase={loadPhase}
+        meshLoadPhase={meshLoadPhase}
         error={error}
       />
 
@@ -749,68 +1038,20 @@ export function App() {
       <GltfCharacterModal
         file={previewGltfFile}
         onClose={() => setPreviewGltfFile(null)}
+        levelFolder={summary?.folder ?? null}
       />
 
-      <CharacterPreviewModal
-        charTuid={previewCharTuid}
-        library={characterLib}
-        onClose={() => setPreviewCharTuid(null)}
-        onExport={async (asset) => {
-          // Build a synthetic single-instance selection from the library
-          // asset, then run the existing GLB export pipeline. The
-          // exporter pulls geometry by asset_tuid from the meshes object,
-          // so we hand it the library-as-meshes mapping.
-          const synth: Instance = {
-            tuid: `${asset.asset_tuid}#library`,
-            asset_tuid: asset.asset_tuid,
-            kind: "moby",
-            name: `library_${asset.asset_tuid.slice(-10)}`,
-            position: [0, 0, 0],
-            quaternion: [0, 0, 0, 1],
-            scale: [1, 1, 1],
-            real: false,
-          };
-          const path = await pickGlbExportPath([synth]);
-          if (!path) {
-            log("info", "Library export cancelled");
-            return;
-          }
-          setExportState({
-            phase: "preparing",
-            label: "Building scene from library asset",
-            fraction: 0,
-            detail: path,
-          });
-          try {
-            const result = await exportToGlb(
-              new Set([synth.tuid]),
-              [synth],
-              characterLib
-                ? {
-                    moby_assets: characterLib.assets,
-                    tie_assets: [],
-                    ufrag_meshes: [],
-                    textures: characterLib.textures,
-                  }
-                : null,
-              path,
-              (state) => setExportState(state),
-            );
-            log(
-              "ok",
-              `Library exported ${result.bytes.toLocaleString()} bytes → ${result.path}`,
-            );
-          } catch (err) {
-            log("error", `Library export failed: ${err}`);
-            setExportState({
-              phase: "done",
-              label: `Library export failed: ${err}`,
-              fraction: 0,
-              cancelled: true,
-            });
-          }
-        }}
+      <RawCharacterModal
+        assetTuid={previewAssetTuid}
+        meshes={meshes}
+        textureBlobs={textureBlobs}
+        levelFolder={summary?.folder ?? null}
+        animsetClips={animsetClips}
+        onClose={() => setPreviewAssetTuid(null)}
       />
+
+      {/* CharacterPreviewModal removed — RawCharacterModal above
+          handles all asset previews from `assetlookup.dat` directly. */}
 
       <Modal
         open={loadPhase !== null}

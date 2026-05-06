@@ -6,12 +6,14 @@ use std::path::{Path, PathBuf};
 
 use std::collections::{HashMap, HashSet};
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use lunalib::math::zyx_euler_to_quat;
 use lunalib::{
-    decode_animation, downsample_rgba, encode_png, read_animation_control, read_animation_header,
-    read_gameplay, read_moby_assets_with_total, read_shaders, read_textures_with_total,
+    bulk_extract_pngs, decode_animation, downsample_rgba, encode_png, extract_bank_sounds,
+    list_sounds as list_sounds_in, read_animation_control, read_animation_header, read_gameplay,
+    read_moby_assets_with_total, read_shaders, read_textures_with_total,
     read_tie_assets_with_total, read_zones, read_zones_streaming, AssetKind, AssetLookup, IgFile,
-    ShaderInfo,
+    ShaderInfo, SoundKind,
 };
 use serde::Serialize;
 use tauri::ipc::Channel;
@@ -83,17 +85,19 @@ struct LevelLayoutDto {
     ufrags: Vec<UFragDto>,
 }
 
-/// Self-contained mesh: positions + uvs + triangle indices. Sent as plain
-/// number arrays — TypeScript builds a `BufferGeometry` directly.
+/// Self-contained mesh: positions + uvs + triangle indices. Large numeric
+/// arrays are sent as base64-encoded little-endian binary buffers instead of
+/// JSON number arrays. That keeps Tauri IPC parsing from freezing the WebView
+/// before the loading progress can repaint.
 ///
 /// Each `*_id` is the lower 32 bits of a highmip TUID; the frontend looks
 /// it up in the same texture cache (filled by `LevelEvent::Texture`) for
 /// all three slots. `None` means the shader/asset doesn't reference one.
 #[derive(Serialize)]
 struct MeshDto {
-    positions: Vec<f32>,
-    uvs: Vec<f32>,
-    indices: Vec<u32>,
+    positions_b64: String,
+    uvs_b64: String,
+    indices_b64: String,
     /// Albedo / base color map.
     albedo_id: Option<u32>,
     /// Tangent-space normal map.
@@ -106,19 +110,22 @@ struct MeshDto {
     /// entries. Empty when the submesh isn't skinned (rigless props). The
     /// frontend wires these into `THREE.SkinnedMesh.skinIndex` when
     /// non-empty.
-    bone_indices: Vec<u16>,
+    bone_indices_b64: String,
     /// Per-vertex weights as u8 (0..255). Same length as `bone_indices`.
     /// Frontend normalizes to 0..1 for `THREE.SkinnedMesh.skinWeight`.
-    bone_weights: Vec<u8>,
+    bone_weights_b64: String,
 }
 
+/// Texture metadata — id + dimensions only. PNG bytes are no longer
+/// inlined here; the frontend fetches them via `get_level_textures_bulk`
+/// (binary IPC) once the streaming `done` event fires. Keeping bytes
+/// out of the streaming JSON cut the per-event JSON payload by ~33%
+/// (base64 overhead) plus the JSON-parse cost of every PNG byte.
 #[derive(Serialize)]
 struct TextureDto {
     id: u32,
     width: u32,
     height: u32,
-    /// PNG-encoded RGBA8 — three.js loads via `URL.createObjectURL`.
-    png: Vec<u8>,
 }
 
 /// Compact skeleton hierarchy + bind pose, sent per-asset alongside the
@@ -155,6 +162,11 @@ struct SkeletonDto {
 #[derive(Serialize)]
 struct AssetMeshesDto {
     asset_tuid: String,
+    /// Path-style name from section 0xD200 (e.g.
+    /// `"entities/character/weapon/sawgun"`). Empty for mobys whose
+    /// chunk has no name section. Drives the Hierarchy's path-grouped
+    /// Asset Library tree.
+    name: String,
     submeshes: Vec<MeshDto>,
     /// Optional rig — present for animated mobys (characters, weapons,
     /// enemies), `None` for static props.
@@ -176,6 +188,73 @@ struct UFragMeshDto {
     /// World-space position offset (apply to vertices when rendering).
     position: [f32; 3],
     mesh: MeshDto,
+}
+
+fn encode_f32_buffer(values: &[f32]) -> String {
+    let mut bytes = Vec::with_capacity(values.len() * std::mem::size_of::<f32>());
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    BASE64.encode(bytes)
+}
+
+fn encode_u32_buffer(values: &[u32]) -> String {
+    let mut bytes = Vec::with_capacity(values.len() * std::mem::size_of::<u32>());
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    BASE64.encode(bytes)
+}
+
+fn encode_u16_buffer(values: &[u16]) -> String {
+    let mut bytes = Vec::with_capacity(values.len() * std::mem::size_of::<u16>());
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    BASE64.encode(bytes)
+}
+
+fn encode_u8_buffer(values: &[u8]) -> String {
+    BASE64.encode(values)
+}
+
+/// Mirror of `downsample_rgba`'s output dimensions, without doing the
+/// resize itself. The streaming texture pipeline emits these dims in
+/// the metadata event so the frontend knows the final aspect ratio
+/// without waiting for the bytes; the actual resize + PNG encode runs
+/// later in `get_level_textures_bulk`.
+fn downsample_dims(width: u32, height: u32, max_dim: u32) -> (u32, u32) {
+    if width <= max_dim && height <= max_dim {
+        return (width, height);
+    }
+    let (new_w, new_h) = if width >= height {
+        (max_dim, ((height as u64 * max_dim as u64) / width as u64) as u32)
+    } else {
+        (((width as u64 * max_dim as u64) / height as u64) as u32, max_dim)
+    };
+    (new_w.max(1), new_h.max(1))
+}
+
+fn mesh_dto(
+    positions: Vec<f32>,
+    uvs: Vec<f32>,
+    indices: Vec<u32>,
+    albedo_id: Option<u32>,
+    normal_id: Option<u32>,
+    emissive_id: Option<u32>,
+    bone_indices: Vec<u16>,
+    bone_weights: Vec<u8>,
+) -> MeshDto {
+    MeshDto {
+        positions_b64: encode_f32_buffer(&positions),
+        uvs_b64: encode_f32_buffer(&uvs),
+        indices_b64: encode_u32_buffer(&indices),
+        albedo_id,
+        normal_id,
+        emissive_id,
+        bone_indices_b64: encode_u16_buffer(&bone_indices),
+        bone_weights_b64: encode_u8_buffer(&bone_weights),
+    }
 }
 
 /// Build a SkeletonDto from the lib's Skeleton, or None for rigless mobys.
@@ -378,19 +457,13 @@ fn debug_spiral_layout(folder: &str) -> Result<Vec<InstanceDto>, String> {
     Ok(out)
 }
 
-/// Items per chunk. We yield a longer pause between chunks so the JS
-/// thread has time to parse + render what it already has before we drown
-/// it in the next batch. Diagnostic showed JS chokes on bursts of large
-/// mesh JSON, so chunks are kept small + pauses long enough for the
-/// frontend's BUILD_BATCH=2 to drain a few mobys per chunk.
+/// Items per progress chunk. Mesh buffers are sent as compact base64 binary,
+/// so we can hand manageable groups to the WebView and viewport.
 const CHUNK_SIZE: usize = 4;
-/// Sleep between chunks. Picked to match ~6 frames at 60Hz so the
+/// Yield roughly one frame between chunks so the WebView can decode the
+/// queued messages, commit React state, and let the viewport build geometry.
+const CHUNK_PAUSE_MS: u64 = 16;
 /// frontend can build BUILD_BATCH=2 mobys × 3 renders per chunk window.
-const CHUNK_PAUSE_MS: u64 = 100;
-
-/// Helper called by every per-item streaming loop. After every CHUNK_SIZE
-/// items it pauses for CHUNK_PAUSE_MS — that's the actual freeze fix.
-/// Inline so the closure overhead is zero.
 #[inline(always)]
 fn chunk_yield(counter: usize) {
     if counter > 0 && counter % CHUNK_SIZE == 0 {
@@ -545,21 +618,22 @@ fn run_level_stream(folder: &str, on_event: &Channel<LevelEvent>) -> Result<(), 
                         for id in [albedo, normal, emissive].into_iter().flatten() {
                             needed_albedo.insert(id);
                         }
-                        submeshes.push(MeshDto {
-                            positions: m.positions,
-                            uvs: m.uvs,
-                            indices: m.indices,
-                            albedo_id: albedo,
-                            normal_id: normal,
-                            emissive_id: emissive,
-                            bone_indices: m.bone_indices,
-                            bone_weights: m.bone_weights,
-                        });
+                        submeshes.push(mesh_dto(
+                            m.positions,
+                            m.uvs,
+                            m.indices,
+                            albedo,
+                            normal,
+                            emissive,
+                            m.bone_indices,
+                            m.bone_weights,
+                        ));
                     }
                 }
                 let skeleton = build_skeleton_dto(&asset.skeleton);
                 let dto = AssetMeshesDto {
                     asset_tuid: format!("0x{:016X}", asset.tuid),
+                    name: asset.name.clone(),
                     submeshes,
                     skeleton,
                     animset_hash: asset.animset_hash.map(|h| format!("0x{:016X}", h)),
@@ -598,22 +672,27 @@ fn run_level_stream(folder: &str, on_event: &Channel<LevelEvent>) -> Result<(), 
                         for id in [albedo, normal, emissive].into_iter().flatten() {
                             needed_albedo.insert(id);
                         }
-                        MeshDto {
-                            positions: m.positions,
-                            uvs: m.uvs,
-                            indices: m.indices,
-                            albedo_id: albedo,
-                            normal_id: normal,
-                            emissive_id: emissive,
+                        mesh_dto(
+                            m.positions,
+                            m.uvs,
+                            m.indices,
+                            albedo,
+                            normal,
+                            emissive,
                             // Ties are static — no per-vertex skinning.
-                            bone_indices: Vec::new(),
-                            bone_weights: Vec::new(),
-                        }
+                            Vec::new(),
+                            Vec::new(),
+                        )
                     })
                     .collect();
                 // Ties are static — no skeleton, no animset.
+                // TieAsset doesn't currently have a name section parsed —
+                // ties don't carry path-style names like mobys do, so we
+                // ship empty here and the frontend falls back to a
+                // truncated TUID for the Asset Library leaf label.
                 let dto = AssetMeshesDto {
                     asset_tuid: format!("0x{:016X}", asset.tuid),
+                    name: String::new(),
                     submeshes,
                     skeleton: None,
                     animset_hash: None,
@@ -665,17 +744,17 @@ fn run_level_stream(folder: &str, on_event: &Channel<LevelEvent>) -> Result<(), 
                 tuid: format!("0x{:016X}", u.tuid),
                 zone_tuid: zone_tuid_hex.clone(),
                 position: u.position,
-                mesh: MeshDto {
-                    positions: u.positions,
-                    uvs: u.uvs,
-                    indices: u.indices,
-                    albedo_id: albedo,
-                    normal_id: normal,
-                    emissive_id: emissive,
+                mesh: mesh_dto(
+                    u.positions,
+                    u.uvs,
+                    u.indices,
+                    albedo,
+                    normal,
+                    emissive,
                     // Terrain ufrags aren't skinned.
-                    bone_indices: Vec::new(),
-                    bone_weights: Vec::new(),
-                },
+                    Vec::new(),
+                    Vec::new(),
+                ),
             };
             let _ = on_event.send(LevelEvent::UfragMesh { mesh: dto });
             ufrag_done += 1;
@@ -710,23 +789,17 @@ fn run_level_stream(folder: &str, on_event: &Channel<LevelEvent>) -> Result<(), 
                 if !t.is_decoded() {
                     return;
                 }
-                // Downsample to 512px max — full-res PS3 textures balloon the
-                // JSON payload over the IPC channel and freeze the JS thread
-                // while parsing. 512² is plenty for an editor preview.
-                let (rgba, w, h) = downsample_rgba(t.rgba, t.width, t.height, 512);
-                if rgba.is_empty() {
-                    return;
-                }
-                let png = encode_png(&rgba, w, h);
-                if png.is_empty() {
-                    return;
-                }
+                // Compute the dimensions we'll downsample to, but skip
+                // the actual PNG encode here — that's the expensive
+                // step (RGBA pack + deflate) and we no longer ship
+                // bytes through the streaming channel. Frontend fetches
+                // bytes via `get_level_textures_bulk` after `done`.
+                let (w, h) = downsample_dims(t.width, t.height, 512);
                 let _ = on_event.send(LevelEvent::Texture {
                     texture: TextureDto {
                         id: t.id,
                         width: w,
                         height: h,
-                        png,
                     },
                 });
                 tex_done += 1;
@@ -892,16 +965,16 @@ fn run_library_stream(
                     for id in [albedo, normal, emissive].into_iter().flatten() {
                         needed_albedo.insert(id);
                     }
-                    submeshes.push(MeshDto {
-                        positions: m.positions,
-                        uvs: m.uvs,
-                        indices: m.indices,
-                        albedo_id: albedo,
-                        normal_id: normal,
-                        emissive_id: emissive,
-                        bone_indices: m.bone_indices,
-                        bone_weights: m.bone_weights,
-                    });
+                    submeshes.push(mesh_dto(
+                        m.positions,
+                        m.uvs,
+                        m.indices,
+                        albedo,
+                        normal,
+                        emissive,
+                        m.bone_indices,
+                        m.bone_weights,
+                    ));
                 }
             }
             // Library mobys (characters / weapons / enemies) are exactly
@@ -909,6 +982,7 @@ fn run_library_stream(
             let skeleton = build_skeleton_dto(&asset.skeleton);
             let dto = AssetMeshesDto {
                 asset_tuid: format!("0x{:016X}", asset.tuid),
+                name: asset.name.clone(),
                 submeshes,
                 skeleton,
                 animset_hash: asset.animset_hash.map(|h| format!("0x{:016X}", h)),
@@ -935,20 +1009,15 @@ fn run_library_stream(
             if !t.is_decoded() {
                 return;
             }
-            let (rgba, w, h) = downsample_rgba(t.rgba, t.width, t.height, 512);
-            if rgba.is_empty() {
-                return;
-            }
-            let png = encode_png(&rgba, w, h);
-            if png.is_empty() {
-                return;
-            }
+            // Same as the level path: skip the encode here, ship only
+            // metadata. Frontend fetches bytes via the bulk binary IPC
+            // command once it has the full id list.
+            let (w, h) = downsample_dims(t.width, t.height, 512);
             let _ = on_event.send(LibraryEvent::Texture {
                 texture: TextureDto {
                     id: t.id,
                     width: w,
                     height: h,
-                    png,
                 },
             });
             tex_done += 1;
@@ -1113,7 +1182,15 @@ fn write_bytes_to_path(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             } else {
                 std::env::current_dir()?.join(path)
             };
-            let prefixed = format!(r"\\?\{}", abs.display());
+            // CRITICAL: paths under the `\\?\` prefix are LITERAL — Windows
+            // skips normalization, so forward slashes are NOT auto-converted
+            // to backslashes and the API returns ERROR_INVALID_NAME (123).
+            // PSARC entry names are Unix-style ("levels/iceland_invasion/
+            // level_cached.toc"), so a join with the user's Windows output
+            // dir produces a mixed-slash path. Normalize everything to `\`
+            // before applying the prefix.
+            let normalized = abs.display().to_string().replace('/', "\\");
+            let prefixed = format!(r"\\?\{}", normalized);
             return std::fs::write(prefixed, bytes);
         }
     }
@@ -1384,6 +1461,201 @@ struct DecodedClipDto {
     bones: Vec<DecodedBoneDto>,
 }
 
+/// Per-material texture lookup result. The frontend passes a list of
+/// material names (parsed from a GLB's `materials[*].name`) and gets
+/// back the absolute paths of matching `_c.dds` / `_n.dds` / `_e.dds`
+/// files in the level's `textures/` tree.
+///
+/// IT (InsomniaToolset's `extract_assets`) writes character textures as
+/// external `.dds` files instead of embedding them in the `.glb`, so the
+/// preview modal sees grey untextured meshes by default. This command
+/// re-attaches them by name.
+#[derive(Serialize)]
+struct GlbMaterialTexturesDto {
+    /// Same name the frontend sent in (e.g. `"coopmedicnew/coopmedicnew"`).
+    material_name: String,
+    /// Absolute path to the `_c.dds` (color/albedo) file, if present.
+    albedo_path: Option<String>,
+    /// Absolute path to the `_n.dds` (tangent-space normal map), if present.
+    normal_path: Option<String>,
+    /// Absolute path to the `_e.dds` (emissive / "expensive" pack), if
+    /// present.
+    emissive_path: Option<String>,
+}
+
+/// Search `<level>/textures/` recursively for DDS files matching each
+/// requested material name. Material names are matched by their last
+/// path segment (e.g. `coopmedicnew/coopmedicnew` → look for files
+/// starting with `coopmedicnew_`).
+///
+/// Returns one entry per input name, with whichever channel files were
+/// found set to their absolute paths. Channels not on disk stay `None`
+/// — the frontend leaves those material slots null, so the mesh just
+/// renders without that channel.
+#[tauri::command]
+fn find_glb_textures(
+    level_folder: String,
+    material_names: Vec<String>,
+) -> Result<Vec<GlbMaterialTexturesDto>, String> {
+    let textures_root = Path::new(&level_folder).join("textures");
+    if !textures_root.is_dir() {
+        // No `textures/` folder near this level — return empty entries
+        // so the frontend can carry on rendering grey materials.
+        eprintln!(
+            "find_glb_textures: no textures/ at {}",
+            textures_root.display()
+        );
+        return Ok(material_names
+            .into_iter()
+            .map(|n| GlbMaterialTexturesDto {
+                material_name: n,
+                albedo_path: None,
+                normal_path: None,
+                emissive_path: None,
+            })
+            .collect());
+    }
+
+    // Single full walk of `textures/` — much cheaper than per-name walks
+    // when the user has many materials. Build a map keyed on the file
+    // stem (e.g. `coopmedicnew_c` → full path).
+    let mut by_stem: HashMap<String, std::path::PathBuf> = HashMap::new();
+    walk_dds_files(&textures_root, &mut by_stem).map_err(|e| e.to_string())?;
+
+    let mut out = Vec::with_capacity(material_names.len());
+    for name in material_names {
+        // Material names look like `coopmedicnew/coopmedicnew`. Take the
+        // basename (last segment after `/` or `\`).
+        let base = name
+            .rsplit(|c: char| c == '/' || c == '\\')
+            .next()
+            .unwrap_or(&name)
+            .to_string();
+        let albedo_path = by_stem
+            .get(&format!("{}_c", base))
+            .map(|p| p.display().to_string());
+        let normal_path = by_stem
+            .get(&format!("{}_n", base))
+            .map(|p| p.display().to_string());
+        let emissive_path = by_stem
+            .get(&format!("{}_e", base))
+            .map(|p| p.display().to_string());
+        out.push(GlbMaterialTexturesDto {
+            material_name: name,
+            albedo_path,
+            normal_path,
+            emissive_path,
+        });
+    }
+
+    Ok(out)
+}
+
+/// Walk a textures tree, indexing every `.dds` file by its file stem.
+fn walk_dds_files(
+    dir: &Path,
+    out: &mut HashMap<String, std::path::PathBuf>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let ftype = entry.file_type()?;
+        if ftype.is_dir() {
+            walk_dds_files(&path, out)?;
+        } else if ftype.is_file() {
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_lowercase());
+            if matches!(ext.as_deref(), Some("dds")) {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    // Last write wins — there shouldn't be duplicates,
+                    // but if there are this just keeps a deterministic
+                    // ordering (whichever read_dir hits last).
+                    out.insert(stem.to_string(), path.clone());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One animset entry — header-only metadata. Returned by
+/// `list_animset_clips` so the frontend can show a dropdown of available
+/// clips without paying the full decode cost up front.
+#[derive(Serialize)]
+struct AnimsetSummaryDto {
+    /// `"0x"`-prefixed 16-hex u64 — pass back to `fetch_animset_clip`.
+    tuid_hex: String,
+    /// Clip name from the Animation header (e.g. "titan_agg-idle"). Empty
+    /// when the chunk has no `0xF000` Animation section.
+    name: String,
+    /// Sometimes 0 if the chunk is metadata-only.
+    num_frames: u16,
+    frame_rate: f32,
+    /// Number of bones the clip drives (≤ moby's bone count usually).
+    num_bones: u16,
+    looping: bool,
+}
+
+/// List every animset in `<level>/animsets.dat` with its header metadata.
+/// Drives the GLTF-preview modal's animation-source dropdown — Option B
+/// (raw `.dat` instead of IT-bundled clips).
+///
+/// Skips chunks that fail IGHW open (returns `Err` for them in the log
+/// but keeps walking) and chunks without a `0xF000` section (those are
+/// metadata-only animsets).
+#[tauri::command]
+fn list_animset_clips(level_folder: String) -> Result<Vec<AnimsetSummaryDto>, String> {
+    let mut lookup = open_lookup(&level_folder)?;
+    let ptrs = lookup
+        .pointers(AssetKind::Animset)
+        .map_err(|e| format!("read animset table: {e}"))?;
+
+    let path = Path::new(&level_folder).join("animsets.dat");
+    let mut file = match File::open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            // No animsets.dat → empty list, not an error.
+            eprintln!("list_animset_clips: no animsets.dat at {} ({e})", path.display());
+            return Ok(Vec::new());
+        }
+    };
+
+    let mut out: Vec<AnimsetSummaryDto> = Vec::new();
+    use std::io::{Read, Seek, SeekFrom};
+    for ptr in ptrs {
+        if let Err(e) = file.seek(SeekFrom::Start(u64::from(ptr.offset))) {
+            eprintln!("list_animset_clips: seek failed for 0x{:016X}: {e}", ptr.tuid);
+            continue;
+        }
+        let mut buf = vec![0u8; ptr.length as usize];
+        if let Err(e) = file.read_exact(&mut buf) {
+            eprintln!("list_animset_clips: read failed for 0x{:016X}: {e}", ptr.tuid);
+            continue;
+        }
+        let mut ig = match IgFile::open(std::io::Cursor::new(buf)) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let h = match read_animation_header(&mut ig) {
+            Ok(Some(h)) => h,
+            _ => continue, // chunk without an Animation section — skip
+        };
+        out.push(AnimsetSummaryDto {
+            tuid_hex: format!("0x{:016X}", ptr.tuid),
+            name: h.name.clone(),
+            num_frames: h.num_frames,
+            frame_rate: h.frame_rate,
+            num_bones: h.num_bones,
+            looping: h.is_looping(),
+        });
+    }
+    // Sort by name so the UI shows a stable alphabetical list.
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(out)
+}
+
 /// Fetch + fully decode the animation clip referenced by a moby's
 /// `animset_hash`. Used by the frontend animation browser + the export
 /// path. Scoped to one clip per call because most animsets in
@@ -1535,6 +1807,561 @@ fn list_gltfs_in_folder(path: String) -> Result<GltfLibraryDto, String> {
     })
 }
 
+/// One sound entry — name + index + which file it lives in. Returned
+/// by `list_sounds` for UI display.
+#[derive(Serialize)]
+struct SoundEntryDto {
+    name: String,
+    /// Sound table index (within the source `.dat`). Pass back to
+    /// `extract_sound` to fetch its WAV.
+    index: usize,
+    /// "bank" = inline SCREAM bank (extractable now). "stream" =
+    /// references a sibling streaming file (not yet supported).
+    kind: &'static str,
+    /// Source file relative to the level folder (e.g. "resident_sound.dat").
+    source: String,
+}
+
+/// List every named sound across every recognised sound-bank file in
+/// the level folder. Cheap — only reads IGHW headers (Sounds + names),
+/// not the SCREAM data. Each entry carries its actual source filename
+/// so playback / extraction can route to the right file.
+///
+/// Scanned patterns (per InsomniaToolset's `AppProcessFile`):
+///   - `resident_sound.dat`      (V2 SFX bank — R2/R3/RCF main banks)
+///   - `resident_dialogue*.dat`  (V2 dialogue banks, per-language variants)
+///   - `ps3sound.dat`            (V1 SFX bank — RFOM, some R2 multiplayer)
+///   - `ps3dialogue*.dat`        (V1 dialogue banks)
+///
+/// Per-file errors are logged to stderr (so they show up in the Tauri
+/// dev console) but don't abort the scan — a missing or corrupt
+/// dialogue bank shouldn't hide the SFX bank that lives next to it.
+#[tauri::command]
+fn list_level_sounds(level_folder: String) -> Result<Vec<SoundEntryDto>, String> {
+    let folder = Path::new(&level_folder);
+    let read_dir = match std::fs::read_dir(folder) {
+        Ok(d) => d,
+        Err(e) => return Err(format!("read_dir {}: {e}", folder.display())),
+    };
+    // Collect candidate bank filenames first (sorted for stable
+    // ordering — the frontend Hierarchy renders entries in this
+    // order, and reproducible output makes debugging easier).
+    let mut candidates: Vec<String> = Vec::new();
+    for entry in read_dir.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let lower = name.to_ascii_lowercase();
+        let is_bank = lower == "resident_sound.dat"
+            || lower == "ps3sound.dat"
+            || lower.starts_with("resident_dialogue")
+            || lower.starts_with("ps3dialogue");
+        if is_bank && lower.ends_with(".dat") {
+            candidates.push(name);
+        }
+    }
+    candidates.sort();
+
+    let mut out: Vec<SoundEntryDto> = Vec::new();
+    for filename in &candidates {
+        let path = folder.join(filename);
+        let file = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("[list_level_sounds] open {}: {e}", path.display());
+                continue;
+            }
+        };
+        let mut ig = match IgFile::open(BufReader::new(file)) {
+            Ok(ig) => ig,
+            Err(e) => {
+                eprintln!("[list_level_sounds] IgFile {}: {e}", path.display());
+                continue;
+            }
+        };
+        let summaries = match list_sounds_in(&mut ig) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[list_level_sounds] list_sounds {}: {e}", path.display());
+                continue;
+            }
+        };
+        // Stream-kind entries reference a sibling streaming file
+        // (e.g. `streaming_dialogue.us.dat` next to `resident_dialogue.us.dat`).
+        // If the sibling isn't in this folder, the user clicking on
+        // such an entry will hit `extract_level_stream_sounds` →
+        // "missing stream sibling" error. Mark them as
+        // `stream-missing` instead so the Hierarchy can render them
+        // disabled with a clear badge — visibility without false
+        // affordance.
+        let sibling_exists = lunalib::streaming_sibling_for(filename)
+            .map(|s| folder.join(s).is_file())
+            .unwrap_or(false);
+        for s in summaries {
+            let kind = match s.kind {
+                SoundKind::Bank => "bank",
+                SoundKind::Stream => {
+                    if sibling_exists { "stream" } else { "stream-missing" }
+                }
+            };
+            out.push(SoundEntryDto {
+                name: s.name,
+                index: s.index,
+                kind,
+                source: filename.clone(),
+            });
+        }
+    }
+
+    // Phase 2 — orphan streaming files. Walk the folder again for
+    // stream files (`streaming_sound.dat`, `streaming_dialogue*.dat`,
+    // `ps3soundstream*.dat`, `ps3dialoguestream*.dat`) and check
+    // whether their expected bank pair was found in Phase 1. If not,
+    // the stream is "orphan" — its offset table is missing, so we
+    // brute-force-scan it for VAGp/XVAG/VPK headers and surface each
+    // hit as a synthetic SoundEntry with `kind = "raw"`.
+    let bank_lookup: HashSet<String> =
+        candidates.iter().map(|s| s.to_ascii_lowercase()).collect();
+    let read_dir2 = std::fs::read_dir(folder)
+        .map_err(|e| format!("read_dir {}: {e}", folder.display()))?;
+    let mut stream_candidates: Vec<String> = Vec::new();
+    for entry in read_dir2.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let lower = name.to_ascii_lowercase();
+        let is_stream = lower.starts_with("streaming_sound")
+            || lower.starts_with("streaming_dialogue")
+            || lower.starts_with("ps3soundstream")
+            || lower.starts_with("ps3dialoguestream");
+        if is_stream && lower.ends_with(".dat") {
+            stream_candidates.push(name);
+        }
+    }
+    stream_candidates.sort();
+    for stream_name in &stream_candidates {
+        let expected_bank = lunalib::bank_pair_for(stream_name);
+        if let Some(bank) = expected_bank {
+            if bank_lookup.contains(&bank.to_ascii_lowercase()) {
+                continue; // paired — Phase 1 already covered this stream
+            }
+        }
+        let stream_path = folder.join(stream_name);
+        let summaries = match lunalib::list_raw_streaming(&stream_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "[list_level_sounds] raw scan {}: {e}",
+                    stream_path.display()
+                );
+                continue;
+            }
+        };
+        for s in summaries {
+            out.push(SoundEntryDto {
+                name: s.name,
+                index: s.index,
+                kind: "raw",
+                source: stream_name.clone(),
+            });
+        }
+    }
+
+    Ok(out)
+}
+
+/// One extracted WAV blob — base64 to keep the IPC layer happy. The
+/// frontend decodes via `atob` + Blob → audio element.
+#[derive(Serialize)]
+struct ExtractedSoundDto {
+    name: String,
+    sample_rate: u32,
+    /// Channel count baked into the WAV. 1 for SCREAM bank sounds and
+    /// VAGp streams; can be 2+ for VPK or multi-channel XVAG streams.
+    channels: u16,
+    sample_count: u32,
+    /// Base64-encoded RIFF/WAVE bytes.
+    wav_b64: String,
+}
+
+/// Extract every SCREAM-bank sound from `resident_sound.dat` to WAV.
+/// Returns the full list in one call — bayou's bank is small enough
+/// (< 5 MB total post-decode) that this is fine. For larger banks we
+/// can swap to per-name fetching, but the current API trades a one-
+/// time extract cost for trivial frontend code.
+#[tauri::command]
+fn extract_level_sounds(level_folder: String) -> Result<Vec<ExtractedSoundDto>, String> {
+    let path = Path::new(&level_folder).join("resident_sound.dat");
+    if !path.is_file() {
+        return Err(format!("missing {}", path.display()));
+    }
+    let file = File::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let mut ig = IgFile::open(BufReader::new(file)).map_err(|e| e.to_string())?;
+    let extracted = extract_bank_sounds(&mut ig).map_err(|e| {
+        // Self-diagnose: when extract returns an error (typically
+        // an EOF read-past-buffer on a misresolved pointer), dump
+        // the bank's structure to stderr so the next debug round
+        // doesn't need a manual hexdump.
+        let dump = lunalib::dump_sound_bank_info(&mut ig)
+            .unwrap_or_else(|de| format!("(dump itself failed: {de})"));
+        eprintln!("[extract_level_sounds] {} failed: {e}\n{dump}", path.display());
+        e.to_string()
+    })?;
+    if extracted.is_empty() {
+        // Empty result on a >1MB bank is almost always a parser bug.
+        // Surface the diagnostic dump so we can iterate from logs.
+        let dump = lunalib::dump_sound_bank_info(&mut ig)
+            .unwrap_or_else(|e| format!("(dump failed: {e})"));
+        eprintln!(
+            "[extract_level_sounds] {} returned 0 sounds — dumping structure:\n{dump}",
+            path.display()
+        );
+    }
+    Ok(extracted
+        .into_iter()
+        .map(|s| ExtractedSoundDto {
+            name: s.name,
+            sample_rate: s.sample_rate,
+            channels: s.channels,
+            sample_count: s.sample_count,
+            wav_b64: BASE64.encode(&s.wav),
+        })
+        .collect())
+}
+
+/// Diagnostic dump for a SCREAM bank file. Walks the IGHW sections,
+/// SCREAMBankHeader pointers, SCREAMBank fields, and the first few
+/// Sounds/Names/Stream offsets — each printed with both the on-disk
+/// u32 and the resolved file-absolute address. Use this whenever an
+/// extract command returns "io: failed to fill whole buffer" or an
+/// empty list: the dump shows exactly which pointer is bad without
+/// any manual hexdumping.
+///
+/// Returns the dump as a UTF-8 string so the frontend can show it in
+/// the bottom Console panel.
+#[tauri::command]
+fn dump_sound_bank(
+    level_folder: String,
+    bank_filename: String,
+) -> Result<String, String> {
+    let path = Path::new(&level_folder).join(&bank_filename);
+    if !path.is_file() {
+        return Err(format!("missing bank {}", path.display()));
+    }
+    let file = File::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let mut ig = IgFile::open(BufReader::new(file)).map_err(|e| e.to_string())?;
+    lunalib::dump_sound_bank_info(&mut ig).map_err(|e| e.to_string())
+}
+
+/// Extract every streaming sound for a given bank file. The bank
+/// stores only an offset table; the audio bytes live in a sibling
+/// streaming file (e.g. `streaming_sound.dat` next to
+/// `resident_sound.dat`). Decode formats: VAGp (LE/BE), VPK,
+/// XVAG (PS_ADPCM with interleave=1). MPEG-encoded XVAG entries
+/// are skipped with the error captured per-name in `errors_out`.
+///
+/// `bank_filename` should be one of `resident_sound.dat`,
+/// `resident_dialogue*.dat`, `ps3sound.dat`, or `ps3dialogue*.dat`.
+/// We pair it with the matching streaming file via
+/// `streaming_sibling_for`. Returns an error when the streaming file
+/// is missing — the frontend should only show streaming entries when
+/// the file exists, but this is a defense in depth.
+#[tauri::command]
+fn extract_level_stream_sounds(
+    level_folder: String,
+    bank_filename: String,
+) -> Result<Vec<ExtractedSoundDto>, String> {
+    let folder = Path::new(&level_folder);
+    let bank_path = folder.join(&bank_filename);
+    if !bank_path.is_file() {
+        return Err(format!("missing bank {}", bank_path.display()));
+    }
+    let stream_filename = lunalib::streaming_sibling_for(&bank_filename)
+        .ok_or_else(|| format!("unrecognized bank filename '{bank_filename}'"))?;
+    let stream_path = folder.join(&stream_filename);
+    if !stream_path.is_file() {
+        return Err(format!("missing stream sibling {}", stream_path.display()));
+    }
+    let file =
+        File::open(&bank_path).map_err(|e| format!("open {}: {e}", bank_path.display()))?;
+    let mut ig = IgFile::open(BufReader::new(file)).map_err(|e| e.to_string())?;
+    let mut errors: Vec<String> = Vec::new();
+    let extracted = lunalib::extract_stream_sounds(&mut ig, &stream_path, &mut errors)
+        .map_err(|e| e.to_string())?;
+    if !errors.is_empty() {
+        // Keep going — partial extracts are still useful — but log
+        // the per-name failures to stderr so they show up in the
+        // Tauri dev log. The frontend only sees the successful list.
+        eprintln!(
+            "[extract_level_stream_sounds] {} entries failed:",
+            errors.len()
+        );
+        for e in &errors {
+            eprintln!("  · {e}");
+        }
+    }
+    Ok(extracted
+        .into_iter()
+        .map(|s| ExtractedSoundDto {
+            name: s.name,
+            sample_rate: s.sample_rate,
+            channels: s.channels,
+            sample_count: s.sample_count,
+            wav_b64: BASE64.encode(&s.wav),
+        })
+        .collect())
+}
+
+/// Extract every raw-scanned audio container from an orphan
+/// streaming file (no paired bank). Brute-force-scans for VAGp /
+/// XVAG / VPK magic bytes and decodes each hit. Synthetic names of
+/// the form `stream_NNNNN_0xOFFSET` so multiple hits at different
+/// offsets stay distinguishable.
+///
+/// Use this when `list_level_sounds` reports entries with
+/// `kind = "raw"` — the bank-paired `extract_level_stream_sounds`
+/// path won't work for those because there's no offset table to
+/// drive it.
+#[tauri::command]
+fn extract_raw_streaming_sounds(
+    level_folder: String,
+    stream_filename: String,
+) -> Result<Vec<ExtractedSoundDto>, String> {
+    let path = Path::new(&level_folder).join(&stream_filename);
+    if !path.is_file() {
+        return Err(format!("missing stream {}", path.display()));
+    }
+    let mut errors: Vec<String> = Vec::new();
+    let extracted =
+        lunalib::extract_raw_streaming(&path, &mut errors).map_err(|e| e.to_string())?;
+    if !errors.is_empty() {
+        eprintln!(
+            "[extract_raw_streaming_sounds] {} entries failed (false-positive magics or unsupported formats):",
+            errors.len()
+        );
+        for e in &errors {
+            eprintln!("  · {e}");
+        }
+    }
+    Ok(extracted
+        .into_iter()
+        .map(|s| ExtractedSoundDto {
+            name: s.name,
+            sample_rate: s.sample_rate,
+            channels: s.channels,
+            sample_count: s.sample_count,
+            wav_b64: BASE64.encode(&s.wav),
+        })
+        .collect())
+}
+
+/// Lazy single-texture fetch using Tauri 2's binary IPC. Returns the
+/// raw PNG bytes — no base64, no JSON serialization. The frontend
+/// receives an `ArrayBuffer` directly and wraps it in a Blob URL.
+///
+/// Why this exists alongside the streaming texture pipeline: the
+/// streaming flow eagerly decodes every texture in the level and ships
+/// each as base64 inside a JSON event. That's right for the Viewport
+/// (every texture is needed to render placed assets) but wasteful for
+/// previews — clicking a single Hierarchy texture row to inspect it
+/// shouldn't have required holding ~tens of MB of base64 strings in JS
+/// memory just in case. This command re-reads + decodes the requested
+/// texture on demand and ships only its PNG bytes, exercising the
+/// binary IPC path that we'll roll out to other consumers (Viewport,
+/// GLB export) once it's proven.
+///
+/// Cost: one re-open of `assetlookup.dat` + `highmips.dat` per call,
+/// plus decode of the single texture. The `accept` filter on
+/// `read_textures_with_total` skips decoding for every other texture,
+/// so the per-call cost is genuinely O(1) in the texture count.
+#[tauri::command]
+fn get_level_texture_png(
+    level_folder: String,
+    texture_id: u32,
+) -> Result<tauri::ipc::Response, String> {
+    let path = Path::new(&level_folder);
+    let mut found: Option<(Vec<u8>, u32, u32)> = None;
+    read_textures_with_total(
+        path,
+        |id| id == texture_id,
+        |_| {},
+        |t| {
+            if t.id == texture_id && t.is_decoded() {
+                let (rgba, w, h) = downsample_rgba(t.rgba, t.width, t.height, 512);
+                if !rgba.is_empty() {
+                    let png = encode_png(&rgba, w, h);
+                    if !png.is_empty() {
+                        found = Some((png, w, h));
+                    }
+                }
+            }
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    let (png, _w, _h) = found.ok_or_else(|| {
+        format!(
+            "texture id {texture_id:#010x} not found in {}",
+            path.display()
+        )
+    })?;
+    Ok(tauri::ipc::Response::new(png))
+}
+
+/// Bulk binary fetch — primary path for moving texture bytes to the
+/// frontend. The streaming pipeline (`level_meshes_stream`) ships only
+/// metadata events now; once the frontend has the full id list it
+/// makes one call to this command to get every texture's PNG bytes in
+/// a single Tauri 2 binary response, then parses the flat blob into a
+/// `Map<id, Blob>` and feeds it to the Three.js texture cache.
+///
+/// Wire format (little-endian, no padding):
+///   [u32 count]
+///   for each texture:
+///     [u32 id][u32 png_len][png_len bytes]
+///
+/// Why one call instead of N: each invoke round-trip pays a fixed
+/// overhead (event loop hop, command dispatch, response packaging).
+/// On a level with 200+ textures, batching cuts the overhead by ~200×
+/// while keeping the bytes binary the entire way (no JSON, no base64).
+///
+/// Memory: we hold the entire response in RAM while building it. For
+/// a 200-texture level at 512² each, post-PNG that's typically ~30 MB
+/// — well within budget. If we ever ship 4K levels we should switch
+/// to a streamed binary channel instead of one big response.
+#[tauri::command]
+fn get_level_textures_bulk(
+    level_folder: String,
+    texture_ids: Vec<u32>,
+) -> Result<tauri::ipc::Response, String> {
+    let path = Path::new(&level_folder);
+    // Heavy lifting (per-texture decode + downsample + PNG encode) runs
+    // in parallel via rayon inside `bulk_extract_pngs`. On a 200-texture
+    // level this typically finishes in a fraction of the serial time
+    // because PNG encode is CPU-bound and fully independent per texture.
+    let collected =
+        bulk_extract_pngs(path, Some(&texture_ids), 512).map_err(|e| e.to_string())?;
+
+    // Pre-size the output buffer: 4 bytes header + per-entry 8 bytes
+    // header + actual PNG bytes. Avoids reallocations on the hot path.
+    let payload_bytes: usize = collected.iter().map(|(_, p)| p.len()).sum();
+    let mut out = Vec::with_capacity(4 + collected.len() * 8 + payload_bytes);
+    out.extend_from_slice(&(collected.len() as u32).to_le_bytes());
+    for (id, png) in &collected {
+        out.extend_from_slice(&id.to_le_bytes());
+        out.extend_from_slice(&(png.len() as u32).to_le_bytes());
+        out.extend_from_slice(png);
+    }
+    Ok(tauri::ipc::Response::new(out))
+}
+
+/// One entry in the level's file inventory — drives the "Files" section
+/// in the Hierarchy. Distinct from the Asset Library tree (which shows
+/// assetlookup.dat-resolved geometry) — this is a survey of EVERY
+/// file the level ships, classified by what we DO and DON'T parse yet.
+#[derive(Serialize)]
+struct LevelFileDto {
+    /// File name relative to the level folder (e.g. "dialogue.us.pkg").
+    name: String,
+    /// Size in bytes — useful in the UI for "this is a big file" cues.
+    size_bytes: u64,
+    /// Category we recognize: "audio", "audio-stream", "localization",
+    /// "lighting", "vfx", "cinematic", "lipsync", "core", "lookup",
+    /// "other". Drives icon + grouping in the Hierarchy.
+    category: &'static str,
+    /// Whether ReChimera currently has a parser for this file. False
+    /// means we surface its existence but the user can't extract or
+    /// preview its contents yet — a roadmap signal more than anything.
+    parsed: bool,
+}
+
+/// Enumerate notable files in the level folder. We classify by name
+/// patterns rather than file content because most of these are
+/// proprietary IGHW variants where mis-classification just means a
+/// different icon — no risk.
+#[tauri::command]
+fn list_level_files(level_folder: String) -> Result<Vec<LevelFileDto>, String> {
+    let dir = Path::new(&level_folder);
+    if !dir.is_dir() {
+        return Err(format!("not a directory: {level_folder}"));
+    }
+    let mut out: Vec<LevelFileDto> = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
+            continue;
+        }
+        let name_os = entry.file_name();
+        let name = name_os.to_string_lossy().to_string();
+        let lower = name.to_lowercase();
+        let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+
+        // Classification by name pattern. Order matters — more specific
+        // names check first (resident_dialogue before dialogue, etc).
+        let (category, parsed) = if lower == "assetlookup.dat" || lower == "assetstats.dat" {
+            ("lookup", true)
+        } else if lower == "mobys.dat"
+            || lower == "ties.dat"
+            || lower == "animsets.dat"
+            || lower == "shaders.dat"
+            || lower == "highmips.dat"
+            || lower == "textures.dat"
+            || lower == "zones.dat"
+            || lower == "gameplay.dat"
+        {
+            ("core", true)
+        } else if lower == "resident_sound.dat" || lower == "ps3sound.dat" {
+            // V2 (R2/R3 SP, RCF) uses resident_sound.dat; V1 (RFOM, R2
+            // multiplayer maps like chicago_coop) uses ps3sound.dat.
+            // Both decode through the same SCREAM-bank path.
+            ("audio", true)
+        } else if lower.starts_with("streaming_sound")
+            || lower.starts_with("ps3soundstream")
+        {
+            ("audio-stream", true)
+        } else if lower.starts_with("resident_dialogue")
+            || lower.starts_with("ps3dialogue")
+        {
+            // Dialogue banks — same SCREAM-bank format, different file
+            // pairing (sibling streaming_dialogue / ps3dialoguestream
+            // file holds the actual VAGp/XVAG bytes).
+            ("audio", true)
+        } else if lower.starts_with("streaming_dialogue")
+            || lower.starts_with("ps3dialoguestream")
+        {
+            ("audio-stream", true)
+        } else if lower.starts_with("dialogue.") && lower.ends_with(".pkg") {
+            ("localization", false)
+        } else if lower.starts_with("lipsync.") {
+            ("lipsync", false)
+        } else if lower == "lighting.dat" || lower == "cubemaps.dat" {
+            ("lighting", false)
+        } else if lower == "effect.dat" || lower.starts_with("vfx_system") || lower == "fxconduit_packed.dat" {
+            ("vfx", false)
+        } else if lower == "cinematics.dat" {
+            ("cinematic", false)
+        } else if lower == "shrubs.dat" || lower == "foliages.dat" {
+            ("foliage", false)
+        } else if lower.ends_with(".lc") {
+            ("config", false)
+        } else if lower.ends_with(".dat") || lower.ends_with(".pkg") {
+            ("other", false)
+        } else {
+            continue; // skip unknown extensions
+        };
+        out.push(LevelFileDto {
+            name,
+            size_bytes,
+            category,
+            parsed,
+        });
+    }
+    // Sort: parsed first (so the things we CAN do float to top), then
+    // by category, then by name.
+    out.sort_by(|a, b| {
+        b.parsed
+            .cmp(&a.parsed)
+            .then(a.category.cmp(b.category))
+            .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(out)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_os::init())
@@ -1550,6 +2377,16 @@ fn main() {
             list_gltfs_in_folder,
             read_file_bytes,
             fetch_animset_clip,
+            list_animset_clips,
+            find_glb_textures,
+            list_level_sounds,
+            dump_sound_bank,
+            extract_level_sounds,
+            extract_level_stream_sounds,
+            extract_raw_streaming_sounds,
+            get_level_texture_png,
+            get_level_textures_bulk,
+            list_level_files,
             psarc_list,
             psarc_extract_stream,
             write_bytes,

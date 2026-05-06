@@ -37,6 +37,7 @@ const VIEW_TOGGLES: ToggleSpec[] = [
   { key: "showStats", label: "Stats" },
   { key: "showUFragBounds", label: "UFrag bounds" },
   { key: "showBones", label: "Bones" },
+  { key: "playAnimation", label: "Play" },
 ];
 
 const EDIT_MODES: { mode: EditMode; label: string; icon: string }[] = [

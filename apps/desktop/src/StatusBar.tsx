@@ -8,6 +8,7 @@ interface StatusBarProps {
   ufragCount: number;
   meshes: LevelMeshes | null;
   loadPhase: LoadPhaseState | null;
+  meshLoadPhase?: LoadPhaseState | null;
   error: string | null;
 }
 
@@ -28,11 +29,13 @@ export function StatusBar({
   ufragCount,
   meshes,
   loadPhase,
+  meshLoadPhase,
   error,
 }: StatusBarProps) {
+  const activePhase = loadPhase ?? meshLoadPhase ?? null;
   const dotClass = error
     ? "error"
-    : loadPhase
+    : activePhase
       ? "busy"
       : summary
         ? "ok"
@@ -40,8 +43,8 @@ export function StatusBar({
 
   const dotLabel = error
     ? "Error"
-    : loadPhase
-      ? loadPhase.label
+    : activePhase
+      ? activePhase.label
       : summary
         ? "Ready"
         : "Idle";

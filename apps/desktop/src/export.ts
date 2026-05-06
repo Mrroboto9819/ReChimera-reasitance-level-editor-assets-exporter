@@ -2,7 +2,19 @@ import * as THREE from "three";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-import type { Instance, LevelMeshes } from "./api";
+import {
+  decodeMeshGeom,
+  fetchAnimsetClip,
+  type AssetMeshes,
+  type Instance,
+  type LevelMeshes,
+  type TextureBlobMap,
+} from "./api";
+import {
+  buildAnimationClipFromDecoded,
+  buildSkinnedAsset,
+  isSkinnedAsset,
+} from "./skinning";
 
 /** Phase the export pipeline is currently in. */
 export type ExportPhase =
@@ -95,8 +107,19 @@ export async function exportToGlb(
   selectedIds: Set<string>,
   instances: Instance[],
   meshes: LevelMeshes | null,
+  /** Texture PNG bytes keyed by id. Required when the selection
+   *  references textures — null is allowed when the bulk fetch hasn't
+   *  resolved yet, but the export will skip texture maps in that case. */
+  textureBlobs: TextureBlobMap | null,
   path: string,
   onProgress?: (s: ExportProgressState) => void,
+  levelFolder?: string | null,
+  /** Optional clip override (TUID hex) — when set, every skinned
+   *  character in the export gets THIS animset baked in instead of
+   *  the moby's own `animset_hash`. Drives the "selected animation
+   *  in the Hierarchy" → "Blender Action" path. Pass `null` to use
+   *  each moby's own animset. */
+  overrideAnimsetHash?: string | null,
 ): Promise<ExportResult> {
   const emit = (s: ExportProgressState) => onProgress?.(s);
 
@@ -117,7 +140,7 @@ export async function exportToGlb(
   });
   await yieldToBrowser();
 
-  const assetLib = new Map<string, (typeof meshes.moby_assets)[number]>();
+  const assetLib = new Map<string, AssetMeshes>();
   for (const a of meshes.moby_assets) assetLib.set(a.asset_tuid, a);
   for (const a of meshes.tie_assets) assetLib.set(a.asset_tuid, a);
 
@@ -126,6 +149,14 @@ export async function exportToGlb(
 
   // Track which texture ids we'll need.
   const neededAlbedos = new Set<number>();
+  // Animation clips collected across the whole export. Blender's glTF
+  // importer reads each as a separate Action (NLA strip), so a character
+  // with one animset → one Action; a multi-character export ends up
+  // with one Action per character.
+  const animationClips: THREE.AnimationClip[] = [];
+  // Track skinned-asset rigs we've already built so we can dispose them
+  // after the GLTFExporter has serialized everything.
+  const skinnedRigsToDispose: Array<{ dispose: () => void }> = [];
 
   for (let idx = 0; idx < selectedInstances.length; idx++) {
     const inst = selectedInstances[idx]!;
@@ -148,41 +179,82 @@ export async function exportToGlb(
       kind: inst.kind,
     };
 
-    for (let i = 0; i < asset.submeshes.length; i++) {
-      const s = asset.submeshes[i]!;
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute(
-        "position",
-        new THREE.Float32BufferAttribute(s.positions, 3),
-      );
-      if (s.uvs.length > 0) {
-        geom.setAttribute("uv", new THREE.Float32BufferAttribute(s.uvs, 2));
+    if (isSkinnedAsset(asset)) {
+      // Skinned path — build a real SkinnedMesh + Skeleton and (when an
+      // animset is linked + we know the level folder) fetch + bake the
+      // animation clip into the export. Blender opens the resulting .glb
+      // with the rig + Action populated.
+      const built = buildSkinnedAsset(asset);
+      if (built) {
+        skinnedRigsToDispose.push(built);
+        node.add(built.root);
+        for (const s of asset.submeshes) {
+          if (s.albedo_id != null) neededAlbedos.add(s.albedo_id);
+          if (s.normal_id != null) neededAlbedos.add(s.normal_id);
+          if (s.emissive_id != null) neededAlbedos.add(s.emissive_id);
+        }
+
+        // Pick which animset to bake. Override wins (user picked a
+        // specific clip in the Hierarchy); else fall back to the moby's
+        // own animset_hash; else skip animations entirely.
+        const targetHash = overrideAnimsetHash ?? asset.animset_hash;
+        if (targetHash && levelFolder) {
+          try {
+            const decoded = await fetchAnimsetClip(
+              levelFolder,
+              targetHash,
+              asset.bind_pose_inverse_offset ?? 0,
+              asset.skeleton?.scale_shift ?? 0,
+            );
+            const aclip = buildAnimationClipFromDecoded(
+              decoded,
+              built.bones.length,
+            );
+            if (aclip.tracks.length > 0) {
+              // Name the clip after the moby + animset clip name so
+              // Blender's Action list shows something legible.
+              aclip.name = `${inst.name || inst.tuid}_${decoded.name || "clip"}`;
+              animationClips.push(aclip);
+              // Attach to first SkinnedMesh so GLTFExporter's animation
+              // walker picks it up (it scans `.animations` arrays on
+              // every mesh).
+              const sm = built.skinnedMeshes[0];
+              if (sm) sm.animations = [aclip];
+            }
+          } catch (err) {
+            // Don't fail the whole export over one clip — log and move on.
+            console.warn(`Animset fetch failed for ${targetHash}:`, err);
+          }
+        }
       }
-      geom.setIndex(s.indices);
-      // Note: deliberately NOT calling computeVertexNormals() here. Three.js
-      // stores normals as Float32, but GLTFExporter wants them as normalized
-      // Int8 — the conversion produces a "Creating normalized normal
-      // attribute…" warning per mesh. Skipping the computation lets the
-      // importer (Blender / glTF viewer) generate them on load instead.
-      // The exported .glb is valid and smaller without baked normals.
+    } else {
+      // Static path — original behavior. One plain Mesh per submesh.
+      for (let i = 0; i < asset.submeshes.length; i++) {
+        const s = asset.submeshes[i]!;
+        const decoded = decodeMeshGeom(s);
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute("position", new THREE.BufferAttribute(decoded.positions, 3));
+        if (decoded.uvs.length > 0) {
+          geom.setAttribute("uv", new THREE.BufferAttribute(decoded.uvs, 2));
+        }
+        geom.setIndex(new THREE.BufferAttribute(decoded.indices, 1));
 
-      // Material name encodes all three texture slot ids so the post-export
-      // texture-attach pass below can wire each slot independently.
-      const material = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        roughness: 0.85,
-        metalness: 0,
-        emissive: s.emissive_id != null ? 0xffffff : 0x000000,
-        emissiveIntensity: s.emissive_id != null ? 0.7 : 0,
-        name: `slots_a${s.albedo_id ?? "_"}_n${s.normal_id ?? "_"}_e${s.emissive_id ?? "_"}`,
-      });
-      if (s.albedo_id != null) neededAlbedos.add(s.albedo_id);
-      if (s.normal_id != null) neededAlbedos.add(s.normal_id);
-      if (s.emissive_id != null) neededAlbedos.add(s.emissive_id);
+        const material = new THREE.MeshStandardMaterial({
+          color: 0xffffff,
+          roughness: 0.85,
+          metalness: 0,
+          emissive: s.emissive_id != null ? 0xffffff : 0x000000,
+          emissiveIntensity: s.emissive_id != null ? 0.7 : 0,
+          name: `slots_a${s.albedo_id ?? "_"}_n${s.normal_id ?? "_"}_e${s.emissive_id ?? "_"}`,
+        });
+        if (s.albedo_id != null) neededAlbedos.add(s.albedo_id);
+        if (s.normal_id != null) neededAlbedos.add(s.normal_id);
+        if (s.emissive_id != null) neededAlbedos.add(s.emissive_id);
 
-      const mesh = new THREE.Mesh(geom, material);
-      mesh.name = `${inst.name || inst.tuid}_sm${i}`;
-      node.add(mesh);
+        const mesh = new THREE.Mesh(geom, material);
+        mesh.name = `${inst.name || inst.tuid}_sm${i}`;
+        node.add(mesh);
+      }
     }
     root.add(node);
 
@@ -211,9 +283,9 @@ export async function exportToGlb(
   const textureMap = new Map<number, THREE.Texture>();
   let texCount = 0;
   for (const id of neededAlbedos) {
-    const payload = meshes.textures.find((t) => t.id === id);
-    if (!payload) continue;
-    const tex = await loadOneTexture(payload.png);
+    const blob = textureBlobs?.get(id);
+    if (!blob) continue;
+    const tex = await loadOneTexture(blob);
     textureMap.set(id, tex);
     texCount++;
     const frac = 0.35 + (texCount / Math.max(1, neededAlbedos.size)) * 0.2;
@@ -228,7 +300,12 @@ export async function exportToGlb(
   // Attach albedo / normal / emissive textures to materials. The material
   // name has format `slots_a<aId|_>_n<nId|_>_e<eId|_>`; we parse each slot
   // and look it up in the texture cache.
-  const slotRe = /^slots_a([^_]+)_n([^_]+)_e([^_]+)$/;
+  // `[^_]+|_` so the null marker (single `_`) matches its own group instead
+  // of failing the whole regex. Without this, any moby with even one missing
+  // slot (most non-character mobys) exported with NO textures at all — the
+  // available albedo never got attached because the regex bailed on the
+  // null normal/emissive slots.
+  const slotRe = /^slots_a([^_]+|_)_n([^_]+|_)_e([^_]+|_)$/;
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return;
     const mat = obj.material as THREE.MeshStandardMaterial;
@@ -283,11 +360,24 @@ export async function exportToGlb(
             reject(new Error("GLTFExporter returned JSON; expected binary"));
         },
         (err) => reject(err),
-        { binary: true, includeCustomExtensions: false, embedImages: true },
+        {
+          binary: true,
+          includeCustomExtensions: false,
+          embedImages: true,
+          // Pass each AnimationClip explicitly. The exporter also walks
+          // `.animations` arrays on meshes, but giving it the array up
+          // front guarantees nothing is missed even if a SkinnedMesh
+          // got reparented mid-build.
+          animations: animationClips,
+        },
       );
     });
   } finally {
     console.warn = origWarn;
+    // Now that GLTFExporter has serialized everything, free the GPU
+    // resources held by the SkinnedMesh rigs we built. This runs in the
+    // success AND failure paths so a partial export still cleans up.
+    for (const rig of skinnedRigsToDispose) rig.dispose();
   }
 
   // ── Phase 5: write to disk via the Tauri command.
@@ -325,9 +415,8 @@ function yieldToBrowser(): Promise<void> {
   });
 }
 
-function loadOneTexture(png: number[]): Promise<THREE.Texture> {
+function loadOneTexture(blob: Blob): Promise<THREE.Texture> {
   return new Promise((resolve, reject) => {
-    const blob = new Blob([new Uint8Array(png)], { type: "image/png" });
     const url = URL.createObjectURL(blob);
     const img = new Image();
     img.onload = () => {

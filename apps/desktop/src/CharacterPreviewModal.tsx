@@ -105,6 +105,7 @@ export function CharacterPreviewModal({
           <AssetPreview
             instance={syntheticInstance}
             meshes={previewMeshes}
+            textureBlobs={null}
           />
         </div>
         <div className="character-preview-meta">

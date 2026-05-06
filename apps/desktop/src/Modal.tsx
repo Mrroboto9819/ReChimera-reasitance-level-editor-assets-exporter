@@ -26,7 +26,14 @@ interface ModalProps {
   /** Footer slot (action buttons, status text). */
   footer?: ReactNode;
   /** Tailwind-ish width preset; defaults to "md". */
-  size?: "sm" | "md" | "lg";
+  size?: "sm" | "md" | "lg" | "xl";
+  /** Extra class on the body wrapper. Use `modal-body-flex` for modals
+   *  whose contents already manage their own scrolling region (e.g. the
+   *  character-preview modal where the canvas must fill the height and
+   *  the sidebar owns its own scrollbar). Default modal-body has its
+   *  own vertical scroll for short text dialogs — that fights inner
+   *  scrollers, hence the override. */
+  bodyClassName?: string;
   children: ReactNode;
 }
 
@@ -34,6 +41,9 @@ const SIZE_WIDTH: Record<NonNullable<ModalProps["size"]>, number> = {
   sm: 360,
   md: 480,
   lg: 640,
+  // Wide preset for the GLTF preview modal — the 3D canvas needs room
+  // to breathe alongside the inspector sidebar (animations + stats).
+  xl: 1100,
 };
 
 /**
@@ -53,6 +63,7 @@ export function Modal({
   subtitle,
   footer,
   size = "md",
+  bodyClassName,
   children,
 }: ModalProps) {
   const backdropRef = useRef<HTMLDivElement>(null);
@@ -176,7 +187,9 @@ export function Modal({
             )}
           </header>
         )}
-        <div className="modal-body">{children}</div>
+        <div className={`modal-body${bodyClassName ? ` ${bodyClassName}` : ""}`}>
+          {children}
+        </div>
         {footer && <footer className="modal-footer">{footer}</footer>}
       </div>
     </div>

@@ -117,11 +117,15 @@ textarea {
 
 .app {
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  /* The `soundplayer` row is `auto` and collapses to zero height
+     when the SoundPlayer returns null (no sound loaded). When a
+     sound is playing, the row sizes to the player's content. */
+  grid-template-rows: auto auto 1fr auto auto;
   grid-template-areas:
     "titlebar"
     "toolbar"
     "workspace"
+    "soundplayer"
     "statusbar";
   height: 100vh;
   background: var(--bg);
@@ -492,11 +496,9 @@ textarea {
   background: var(--surface-100);
   border: 1px solid var(--hairline);
   border-radius: 14px;
-  box-shadow:
-    rgba(0, 0, 0, 0.5) 0px 0px 0px 2px,
-    rgba(255, 255, 255, 0.16) 0px 0px 24px,
-    rgba(255, 255, 255, 0.06) 0px 1px 0px 0px inset,
-    rgba(0, 0, 0, 0.4) 0px 24px 60px -10px;
+  /* Shadow stripped — flat overlay matches the cleaner Sketchfab-style
+     reference UI. The hairline border alone provides edge separation
+     against the dim backdrop. */
   display: flex;
   flex-direction: column;
   max-height: calc(100vh - 80px);
@@ -569,6 +571,26 @@ textarea {
   color: var(--text-2);
   font-size: 13px;
   line-height: 1.5;
+  /* Let the body claim the dialog's remaining vertical space — without
+     this, a tall body would push the dialog past max-height because
+     the body has no flex-grow. With it, the body fills, and an inner
+     `modal-body-flex` modifier can disable the body's own scroll so
+     children manage their own scroll regions (e.g. canvas + sidebar). */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Modifier for modals that manage scrolling themselves. Disables the
+   body's own vertical scroll, drops the padding (children are full-
+   bleed), and switches the body to a flex column so its single child
+   can fill height. Used by the character-preview modal so the 3D
+   canvas owns the full body height and the sidebar scrolls
+   independently. */
+.modal-body.modal-body-flex {
+  overflow: hidden;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .modal-footer {
@@ -855,48 +877,138 @@ textarea {
 
 /* Inspector multi-select banner + action button strip. */
 .multi-select-banner {
-  margin: 0 12px 12px;
-  padding: 8px 10px;
+  margin: 0 16px 16px;
+  padding: 12px 16px;
   background: var(--tint-blue);
   border: 1px solid hsla(202, 100%, 67%, 0.35);
-  border-radius: var(--r-2);
+  border-radius: 8px;
   color: var(--text-1);
-  font-size: 12px;
+  font-size: 13px;
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 8px;
   align-items: baseline;
 }
 
-.inspector-actions {
-  padding: 0 12px 12px;
+.inspector-hero {
+  margin: 16px;
+  padding: 16px;
   display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #101111;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  box-shadow: rgb(27, 28, 30) 0px 0px 0px 1px, rgb(7, 8, 10) 0px 0px 0px 1px inset;
+}
+
+.inspector-hero-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.inspector-hero-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.inspector-hero-text strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.inspector-data-pill {
+  flex-shrink: 0;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid hsla(43, 100%, 60%, 0.35);
+  background: hsla(43, 100%, 60%, 0.12);
+  color: hsl(43, 100%, 72%);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.inspector-data-pill.ready {
+  border-color: hsla(151, 59%, 59%, 0.35);
+  background: hsla(151, 59%, 59%, 0.12);
+  color: hsl(151, 59%, 70%);
+}
+
+.inspector-actions {
+  padding: 0 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .inspector-actions .btn {
-  flex: 1;
+  width: 100%;
 }
 
 /* Export button — Primary visible affordance at the top of the inspector. */
+.inspector-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 16px;
+  border-radius: 86px;
+  background: transparent;
+  color: var(--text-1);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: rgba(0, 0, 0, 0.03) 0px 7px 3px;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  transition: opacity 0.2s ease;
+}
+
+.inspector-action-btn:hover {
+  opacity: 0.6;
+}
+
+.inspector-action-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--accent-blue);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+}
+
 .export-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 8px 12px;
-  font-size: 12px;
+  padding: 10px 16px;
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.3px;
-  border-radius: var(--r-2);
+  border-radius: 86px;
   width: 100%;
+  background: hsla(0, 0%, 100%, 0.815);
+  color: #18191a;
+  border: 0;
+  transition: background 0.2s ease;
 }
 
-.export-btn-icon {
-  font-size: 14px;
-  line-height: 1;
-  display: inline-block;
+.export-btn:hover:not(:disabled) {
+  background: hsl(0, 0%, 100%);
 }
 
 .export-btn:disabled,
@@ -910,7 +1022,7 @@ textarea {
 
 /* Asset preview at the top of the inspector. */
 .inspector-preview-wrap {
-  padding: 0 12px 8px;
+  padding: 0 16px 16px;
 }
 
 .asset-preview {
@@ -957,13 +1069,22 @@ textarea {
 
 /* Logical hierarchy path under the preview. */
 .inspector-path {
-  padding: 6px 12px 10px;
+  padding: 8px 16px 16px;
   color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   border-bottom: 1px solid var(--hairline);
-  margin-bottom: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  letter-spacing: 0.2px;
+}
+
+.inspector-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 0 16px 16px;
 }
 
 /* Editable transform fields — tight 3-axis grid like Unity / Blender. */
@@ -983,13 +1104,13 @@ textarea {
 
 .transform-row {
   display: grid;
-  grid-template-columns: 48px repeat(3, 1fr);
-  gap: 4px;
+  grid-template-columns: 56px repeat(3, 1fr);
+  gap: 8px;
   align-items: center;
 }
 
 .transform-row-label {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.4px;
   text-transform: uppercase;
@@ -1002,7 +1123,7 @@ textarea {
   align-items: center;
   background: var(--bg);
   border: 1px solid var(--hairline);
-  border-radius: var(--r-1);
+  border-radius: 6px;
   overflow: hidden;
   min-width: 0;
 }
@@ -1034,7 +1155,7 @@ textarea {
   border: 0;
   color: var(--text-1);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   padding: 4px 6px;
   outline: none;
   /* Hide the default browser spinners — they take too much space. */
@@ -1598,6 +1719,151 @@ textarea {
   50% { opacity: 0.35; }
 }
 
+/* Sound player — sits in its own grid row between workspace and
+   statusbar. Hidden when no sound is loaded (component returns null,
+   row collapses to 0 height). Single-line transport bar: play/pause,
+   name + meta, scrub bar, volume, export, close. */
+.sound-player {
+  grid-area: soundplayer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 12px;
+  background: var(--surface-100);
+  border-top: 1px solid var(--hairline);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.sp-toggle,
+.sp-action,
+.sp-close {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-2);
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  transition: background-color 120ms ease-out, color 120ms ease-out, border-color 120ms ease-out;
+}
+.sp-toggle:hover,
+.sp-action:hover,
+.sp-close:hover {
+  background: var(--surface-200);
+  color: var(--text-1);
+}
+.sp-toggle:disabled,
+.sp-action:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sp-info {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  /* Cap the name column so a very long sound name can't squeeze the
+     scrub bar to nothing. */
+  max-width: 240px;
+  flex-shrink: 0;
+}
+
+.sp-name {
+  font-weight: 500;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-meta {
+  font-size: 10.5px;
+  color: var(--text-4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-time {
+  color: var(--text-3);
+  flex-shrink: 0;
+  min-width: 38px;
+  text-align: center;
+}
+
+.sp-progress {
+  flex: 1 1 auto;
+  min-width: 80px;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--surface-200);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.sp-progress::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-1);
+  cursor: pointer;
+}
+.sp-progress::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-1);
+  border: 0;
+  cursor: pointer;
+}
+.sp-progress:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sp-volume-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.sp-volume {
+  flex-shrink: 0;
+  width: 70px;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--surface-200);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.sp-volume::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-2);
+  cursor: pointer;
+}
+.sp-volume::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-2);
+  border: 0;
+  cursor: pointer;
+}
+
 /* Hierarchy panel (tree of regions / instances) */
 .hierarchy-search {
   padding: 6px 8px;
@@ -1685,6 +1951,38 @@ textarea {
   gap: 4px;
 }
 
+/* Source dropdown for the GLTF preview modal — proper inline form,
+   not a clip-row button. The previous incarnation tried to reuse
+   `.anim-row` (a button-style grid) and ended up looking broken. */
+.anim-source-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.anim-source-row label {
+  font-size: 11px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+.anim-source-row select {
+  flex: 1;
+  background: var(--bg);
+  color: var(--text-1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-1);
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.anim-source-row select:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
 .anim-row {
   display: grid;
   grid-template-columns: 18px 1fr auto;
@@ -1737,21 +2035,34 @@ textarea {
   border-top: 1px solid var(--hairline);
 }
 
-/* Character preview modal — large preview + side metadata. */
+/* Character preview modal — large preview + side metadata. The
+   parent `.modal-body` carries `modal-body-flex`, so it's a column
+   flex container with no padding and no scroll. We fill the entire
+   available height (no fixed vh — we trust the dialog's max-height
+   to clamp the parent stack). */
 .character-preview-body {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr);
-  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  gap: 0;
   align-items: stretch;
-  min-height: 360px;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .character-preview-canvas {
-  border-radius: var(--r-3);
   overflow: hidden;
   background: #0b0c0e;
-  border: 1px solid var(--hairline);
-  min-height: 360px;
+  /* Hairline separator from the sidebar — replaces the gap we used to
+     have. The dialog itself is rounded, so this child is corner-flush
+     on the left and we don't add a radius. */
+  border-right: 1px solid var(--hairline);
+  /* Fill the grid cell. `min-height: 0` lets the cell actually shrink
+     to fit — without it, the canvas keeps its intrinsic size and
+     pushes the right column off-screen. */
+  height: 100%;
+  min-height: 0;
 }
 
 .character-preview-canvas .asset-preview {
@@ -1766,6 +2077,14 @@ textarea {
   gap: 12px;
   font-size: 12px;
   color: var(--text-2);
+  /* Properties column owns its own scrollbar — `min-height: 0` lets
+     `overflow-y: auto` actually clip when content exceeds the cell
+     height. The padding restores the breathing room the body used to
+     provide (modal-body-flex strips the body's own padding so the
+     canvas sits flush; the sidebar adds its own padding back). */
+  overflow-y: auto;
+  min-height: 0;
+  padding: 14px 14px 14px 14px;
 }
 
 .tree-label {
@@ -1872,6 +2191,33 @@ textarea {
   padding: 0 4px;
 }
 
+/* Per-frame renderer stats — draws, triangles, geometries, textures,
+   programs. Same overlay as FPS so the user can see all of it together
+   when the Stats toggle is on. */
+.fps-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 10px;
+  row-gap: 1px;
+  padding: 2px 4px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  margin-top: 2px;
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+}
+.fps-stats > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px;
+}
+.fps-stat-label {
+  color: rgba(255, 255, 255, 0.5);
+}
+.fps-stat-num {
+  color: rgba(255, 255, 255, 0.85);
+}
+
 .fps-dot {
   width: 6px;
   height: 6px;
@@ -1929,12 +2275,31 @@ textarea {
 .inspector-section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
+  /* Critical inside a flex-column scroll container: without
+     `flex-shrink: 0` each section squashes proportionally when total
+     content exceeds the container height, instead of letting the
+     parent scroll. Symptom: long animation lists pushed Stats + File
+     into "header only, no content" zombie state at the bottom.
+     `flex-shrink: 0` keeps sections at their natural height and lets
+     the parent's `overflow-y: auto` actually do its job. */
+  flex-shrink: 0;
   min-height: 0;
+  padding: 16px;
+  background: #101111;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  box-shadow: rgb(27, 28, 30) 0px 0px 0px 1px, rgb(7, 8, 10) 0px 0px 0px 1px inset;
+}
+
+.inspector-section-muted {
+  padding: 16px;
+  background: #07080a;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
 }
 
 .inspector-section:last-child {
-  flex: 1;
   min-height: 0;
 }
 
@@ -1950,10 +2315,11 @@ textarea {
 /* Key/value display */
 .kv {
   display: grid;
-  grid-template-columns: 72px 1fr;
-  gap: 4px 12px;
+  grid-template-columns: 80px 1fr;
+  gap: 8px 16px;
   margin: 0;
-  font-size: 12px;
+  font-size: 14px;
+  letter-spacing: 0.2px;
 }
 
 .kv dt {

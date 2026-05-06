@@ -72,9 +72,9 @@ export const levelLayout = (folder: string) =>
   invoke<LevelLayout>("level_layout", { folder });
 
 export interface MeshGeom {
-  positions: number[];
-  uvs: number[];
-  indices: number[];
+  positions_b64: string;
+  uvs_b64: string;
+  indices_b64: string;
   /** Albedo texture ID (lower 32 bits of highmip TUID), or null when none. */
   albedo_id: number | null;
   /** Tangent-space normal map ID, or null. */
@@ -84,9 +84,17 @@ export interface MeshGeom {
   emissive_id: number | null;
   /** Per-vertex global bone indices `[i0,i1,i2,i3, …]` (vertex_count * 4).
    *  Empty when this submesh isn't skinned. */
-  bone_indices: number[];
+  bone_indices_b64: string;
   /** Per-vertex weights as u8 (0..255). Same length as `bone_indices`. */
-  bone_weights: number[];
+  bone_weights_b64: string;
+}
+
+export interface DecodedMeshGeom {
+  positions: Float32Array;
+  uvs: Float32Array;
+  indices: Uint32Array;
+  bone_indices: Uint16Array;
+  bone_weights: Uint8Array<ArrayBuffer>;
 }
 
 export interface SkeletonInfo {
@@ -111,6 +119,10 @@ export interface SkeletonInfo {
 
 export interface AssetMeshes {
   asset_tuid: string;
+  /** Path-style asset name from moby section 0xD200, e.g.
+   *  `"entities/character/weapon/sawgun"`. Empty string for ties (no
+   *  name section in tie data) or for mobys whose chunk has no name. */
+  name: string;
   submeshes: MeshGeom[];
   /** Optional rig — present for animated mobys (characters, enemies,
    *  weapons), null for static props. Phase 1 surfaces metadata; full
@@ -134,13 +146,22 @@ export interface UFragMesh {
   mesh: MeshGeom;
 }
 
+/** Texture metadata only — `png_b64` is gone. The streaming pipeline
+ *  no longer ships PNG bytes; the frontend collects ids during
+ *  streaming and fetches every texture's bytes via a single
+ *  `getLevelTexturesBulk` call once the stream completes. The actual
+ *  Blob bytes live in a parallel `Map<number, Blob>` that's passed
+ *  alongside the metadata wherever a renderer needs the pixels. */
 export interface TexturePayload {
   id: number;
   width: number;
   height: number;
-  /** PNG-encoded RGBA8 bytes. */
-  png: number[];
 }
+
+/** Map keyed by texture id → PNG bytes wrapped in a Blob. Built by
+ *  `getLevelTexturesBulk`; consumed by every Three.js texture builder
+ *  (Viewport, AssetPreview, RawCharacterModal, export). */
+export type TextureBlobMap = Map<number, Blob>;
 
 export interface LevelMeshes {
   moby_assets: AssetMeshes[];
@@ -216,6 +237,45 @@ export function streamCharacterLibrary(
     folder,
     onEvent: ch,
   });
+}
+
+export function decodeMeshGeom(mesh: MeshGeom): DecodedMeshGeom {
+  return {
+    positions: decodeFloat32(mesh.positions_b64),
+    uvs: decodeFloat32(mesh.uvs_b64),
+    indices: decodeUint32(mesh.indices_b64),
+    bone_indices: decodeUint16(mesh.bone_indices_b64),
+    bone_weights: decodeUint8(mesh.bone_weights_b64),
+  };
+}
+
+function decodeBytes(b64: string): Uint8Array<ArrayBuffer> {
+  if (b64.length === 0) return new Uint8Array(new ArrayBuffer(0));
+  const bin = atob(b64);
+  const bytes = new Uint8Array(new ArrayBuffer(bin.length));
+  for (let i = 0; i < bin.length; i++) {
+    bytes[i] = bin.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function decodeFloat32(b64: string): Float32Array {
+  const bytes = decodeBytes(b64);
+  return new Float32Array(bytes.buffer);
+}
+
+function decodeUint32(b64: string): Uint32Array {
+  const bytes = decodeBytes(b64);
+  return new Uint32Array(bytes.buffer);
+}
+
+function decodeUint16(b64: string): Uint16Array {
+  const bytes = decodeBytes(b64);
+  return new Uint16Array(bytes.buffer);
+}
+
+function decodeUint8(b64: string): Uint8Array<ArrayBuffer> {
+  return decodeBytes(b64);
 }
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -311,6 +371,234 @@ export const fetchAnimsetClip = (
     positionScale: Math.pow(2, bind_pose_inverse_offset),
     scaleScale: Math.pow(2, scale_shift),
   });
+
+export interface AnimsetSummary {
+  tuid_hex: string;
+  name: string;
+  num_frames: number;
+  frame_rate: number;
+  num_bones: number;
+  looping: boolean;
+}
+
+/** List every animset clip header in a level's `animsets.dat`. Cheap
+ *  enough to call when a modal opens — only reads the 0x40 header per
+ *  animset, not the full track data. */
+export const listAnimsetClips = (level_folder: string) =>
+  invoke<AnimsetSummary[]>("list_animset_clips", {
+    levelFolder: level_folder,
+  });
+
+export interface GlbMaterialTextures {
+  material_name: string;
+  /** Absolute path to `_c.dds` (color), or null. */
+  albedo_path: string | null;
+  /** Absolute path to `_n.dds` (normal), or null. */
+  normal_path: string | null;
+  /** Absolute path to `_e.dds` (emissive / "expensive" pack), or null. */
+  emissive_path: string | null;
+}
+
+/** Look up sibling DDS textures for each GLB material name. IT writes
+ *  textures as external `.dds` files in `<level>/textures/...`, so the
+ *  modal needs to re-attach them after `GLTFLoader.parse()` returns
+ *  with empty maps. */
+export const findGlbTextures = (
+  level_folder: string,
+  material_names: string[],
+) =>
+  invoke<GlbMaterialTextures[]>("find_glb_textures", {
+    levelFolder: level_folder,
+    materialNames: material_names,
+  });
+
+/* ────────────────────────────────────────────────────────────────────────
+ * Sound extraction — `resident_sound.dat` SCREAM bank.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+export interface SoundEntry {
+  name: string;
+  /** Index into the source file's Sounds table — stable identifier. */
+  index: number;
+  /** "bank" = extractable now. "stream" = references a sibling
+   *  streaming file (not yet supported). */
+  /** Decode dispatch:
+   *  - `"bank"`            — in-bank SCREAM, fetched via `extractLevelSounds`.
+   *  - `"stream"`          — bank-paired streaming entry, fetched via
+   *    `extractLevelStreamSounds(folder, source)` where `source` is
+   *    the BANK file (e.g. `resident_dialogue.us.dat`).
+   *  - `"raw"`             — orphan streaming file with no bank pair.
+   *    Found by brute-force header scan; fetched via
+   *    `extractRawStreamingSounds(folder, source)` where `source` is
+   *    the STREAM file itself (e.g. `streaming_sound.dat`).
+   *  - `"stream-missing"`  — bank entry references a streaming
+   *    sibling that ISN'T in this level folder. Surfaced for
+   *    visibility (so the user sees what dialogue exists) but
+   *    cannot be played back here — the audio data lives in another
+   *    folder or PSARC the user hasn't extracted. */
+  kind: "bank" | "stream" | "raw" | "stream-missing";
+  /** Source filename relative to the level folder. For `"bank"` and
+   *  `"stream"` this is the bank file; for `"raw"` it's the stream
+   *  file directly. */
+  source: string;
+}
+
+export interface ExtractedSound {
+  name: string;
+  sample_rate: number;
+  /** Channel count baked into the WAV. 1 for SCREAM bank sounds and
+   *  VAGp streams; 2+ possible for VPK / multi-channel XVAG. */
+  channels: number;
+  sample_count: number;
+  /** Base64-encoded RIFF/WAVE bytes. */
+  wav_b64: string;
+}
+
+/** List sound metadata in the level's `resident_sound.dat`. Cheap —
+ *  only reads IGHW headers, not waveform data. */
+export const listLevelSounds = (level_folder: string) =>
+  invoke<SoundEntry[]>("list_level_sounds", { levelFolder: level_folder });
+
+/** Extract all SCREAM-bank sounds in the level to playable WAVs. */
+export const extractLevelSounds = (level_folder: string) =>
+  invoke<ExtractedSound[]>("extract_level_sounds", {
+    levelFolder: level_folder,
+  });
+
+/** Extract every streaming sound for the given bank file. Pairs the
+ *  bank with its sibling streaming file (e.g. `resident_sound.dat`
+ *  + `streaming_sound.dat`) and decodes VAGp / VPK / XVAG-PS_ADPCM
+ *  entries. MPEG-encoded XVAG entries are skipped server-side. */
+export const extractLevelStreamSounds = (level_folder: string, bank_filename: string) =>
+  invoke<ExtractedSound[]>("extract_level_stream_sounds", {
+    levelFolder: level_folder,
+    bankFilename: bank_filename,
+  });
+
+/** Extract every audio container found by brute-force scanning an
+ *  orphan streaming file (one with no paired bank in the same
+ *  folder). Synthetic names of the form `stream_NNNNN_0xOFFSET`. */
+export const extractRawStreamingSounds = (level_folder: string, stream_filename: string) =>
+  invoke<ExtractedSound[]>("extract_raw_streaming_sounds", {
+    levelFolder: level_folder,
+    streamFilename: stream_filename,
+  });
+
+/** Dump the SCREAM bank structure for a given file: detected version,
+ *  IGHW sections, SCREAMBankHeader pointers (with resolved file
+ *  addresses), SCREAMBank fields, first-N sounds/names/stream
+ *  offsets. Use this from the Console when an extract command fails
+ *  with cryptic I/O errors — the dump shows exactly which pointer
+ *  is bad without manual hexdumping. */
+export const dumpSoundBank = (level_folder: string, bank_filename: string) =>
+  invoke<string>("dump_sound_bank", {
+    levelFolder: level_folder,
+    bankFilename: bank_filename,
+  });
+
+/** Decode a base64 WAV string to raw bytes plus a Blob URL playable
+ *  in `<audio>`. Callers that only need playback can ignore `bytes`;
+ *  the export-to-disk path needs them so it can write the same buffer
+ *  via Tauri's `write_bytes` command. */
+export function wavBlobAndUrl(wav_b64: string): { url: string; bytes: Uint8Array } {
+  const bin = atob(wav_b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+  return { url, bytes };
+}
+
+/** Decode a base64 WAV string to a Blob URL playable in `<audio>`. */
+export function wavBlobUrl(wav_b64: string): string {
+  return wavBlobAndUrl(wav_b64).url;
+}
+
+export interface LevelFile {
+  name: string;
+  size_bytes: number;
+  /** Category — drives icon + grouping. */
+  category:
+    | "lookup"
+    | "core"
+    | "audio"
+    | "audio-stream"
+    | "localization"
+    | "lipsync"
+    | "lighting"
+    | "vfx"
+    | "cinematic"
+    | "foliage"
+    | "config"
+    | "other";
+  /** True when ReChimera has a parser; false = roadmap (file is
+   *  visible but contents not yet extractable). */
+  parsed: boolean;
+}
+
+/** Enumerate notable files in the level folder, classified by what we
+ *  do and don't parse. Drives the Hierarchy "Files" section so the
+ *  user can SEE the full level contents (audio streams, localization,
+ *  cinematics, etc.) even before each format gets a parser. */
+export const listLevelFiles = (level_folder: string) =>
+  invoke<LevelFile[]>("list_level_files", { levelFolder: level_folder });
+
+/** Lazy single-texture fetch using Tauri 2's binary IPC. Returns the
+ *  raw PNG bytes as an `ArrayBuffer` — no base64, no JSON parse. The
+ *  caller wraps it in a Blob URL or feeds it to `createImageBitmap`.
+ *
+ *  This bypasses the eager streaming pipeline (which currently sends
+ *  base64 inside JSON events). Use it for previews / on-demand
+ *  consumers where holding every texture's base64 in JS memory is
+ *  wasteful. The Viewport still uses the streaming pipeline because
+ *  it needs every texture to render placed assets. */
+export async function getLevelTexturePng(
+  level_folder: string,
+  texture_id: number,
+): Promise<Blob> {
+  const buf = await invoke<ArrayBuffer>("get_level_texture_png", {
+    levelFolder: level_folder,
+    textureId: texture_id,
+  });
+  return new Blob([buf], { type: "image/png" });
+}
+
+/** Bulk binary fetch — primary path for moving texture bytes to the
+ *  frontend. Pairs with the streaming pipeline's metadata-only texture
+ *  events: collect every texture id during streaming, then call this
+ *  once with the full id list to get all PNG bytes in one binary
+ *  Tauri response. Returns a `Map<id, Blob>` ready to feed Three.js.
+ *
+ *  Wire format (little-endian):
+ *    [u32 count]
+ *    for each: [u32 id][u32 png_len][png_len bytes]
+ *
+ *  The single round-trip avoids ~200× the per-call overhead of fetching
+ *  textures one at a time on a level with hundreds of them. */
+export async function getLevelTexturesBulk(
+  level_folder: string,
+  texture_ids: number[],
+): Promise<TextureBlobMap> {
+  const out: TextureBlobMap = new Map();
+  if (texture_ids.length === 0) return out;
+  const buf = await invoke<ArrayBuffer>("get_level_textures_bulk", {
+    levelFolder: level_folder,
+    textureIds: texture_ids,
+  });
+  const dv = new DataView(buf);
+  const count = dv.getUint32(0, true);
+  let offset = 4;
+  for (let i = 0; i < count; i++) {
+    const id = dv.getUint32(offset, true);
+    const len = dv.getUint32(offset + 4, true);
+    offset += 8;
+    // Slice without copying — Blob takes a view; the underlying
+    // ArrayBuffer stays alive as long as the Blob does.
+    const slice = new Uint8Array(buf, offset, len);
+    out.set(id, new Blob([slice], { type: "image/png" }));
+    offset += len;
+  }
+  return out;
+}
 
 /* ────────────────────────────────────────────────────────────────────────
  * PSARC tools — list / extract a PlayStation Archive.

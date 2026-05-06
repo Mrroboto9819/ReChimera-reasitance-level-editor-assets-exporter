@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Instance, LevelMeshes } from "./api";
+import type { Instance, LevelMeshes, TextureBlobMap } from "./api";
 import { AssetPreview } from "./AssetPreview";
 import type { useEdits } from "./edits";
 
@@ -12,6 +12,10 @@ interface InspectorProps {
   selectionCount: number;
   /** Needed by the export action — the cached mesh data. */
   meshes: LevelMeshes | null;
+  /** Texture PNG bytes keyed by id, fetched via the bulk binary IPC
+   *  command after streaming. Threaded through to AssetPreview. Null
+   *  while in flight. */
+  textureBlobs: TextureBlobMap | null;
   /** Full instance list (used by the parent's export helper). */
   instances: Instance[];
   /** Edits store — used to read the live (post-edit) transform AND to
@@ -19,6 +23,8 @@ interface InspectorProps {
   edits: Edits;
   /** Triggered by the export button. */
   onExportSelected?: () => void;
+  onLoadMeshes?: () => void;
+  loadingMeshes?: boolean;
   /** Triggered by the "Go to" button — re-frame the main viewport on the
    *  selected instance even if it's already the primary selection. */
   onFocusSelected?: () => void;
@@ -68,15 +74,20 @@ export function Inspector({
   selected,
   selectionCount,
   meshes,
+  textureBlobs,
   edits,
   onExportSelected,
+  onLoadMeshes,
+  loadingMeshes = false,
   onFocusSelected,
 }: InspectorProps) {
   const [exporting, setExporting] = useState(false);
 
   const canExport = selectionCount > 0 && meshes != null;
   const canFocus = selected != null;
+  const needsMeshes = selected != null && meshes == null;
   const isModified = selected ? edits.isModified(selected.tuid) : false;
+  const selectedName = selected?.name || selected?.tuid.split("#")[0] || "";
 
   // Live (with-edits-applied) view of the selected instance, so the
   // input fields reflect the in-progress drag from the viewport gizmo.
@@ -157,8 +168,27 @@ export function Inspector({
           </div>
         )}
 
+        {selected && (
+          <div className="inspector-hero">
+            <div className="inspector-hero-main">
+              <span className={`tree-icon kind-${selected.kind}`}>
+                {selected.kind[0]?.toUpperCase()}
+              </span>
+              <div className="inspector-hero-text">
+                <strong title={selectedName}>{selectedName}</strong>
+                <span className="mono small dim" title={selected.asset_tuid}>
+                  {selected.kind} asset {selected.asset_tuid.slice(0, 10)}
+                </span>
+              </div>
+            </div>
+            <span className={meshes ? "inspector-data-pill ready" : "inspector-data-pill"}>
+              {meshes ? "mesh ready" : "proxy"}
+            </span>
+          </div>
+        )}
+
         <div className="inspector-preview-wrap">
-          <AssetPreview instance={selected} meshes={meshes} />
+          <AssetPreview instance={selected} meshes={meshes} textureBlobs={textureBlobs} />
         </div>
 
         {hierarchyPath && (
@@ -170,7 +200,7 @@ export function Inspector({
         <div className="inspector-actions">
           <button
             type="button"
-            className="btn"
+            className="btn inspector-action-btn"
             onClick={() => onFocusSelected?.()}
             disabled={!canFocus}
             title={
@@ -179,8 +209,31 @@ export function Inspector({
                 : "Select an object to navigate to it"
             }
           >
+            <span className="inspector-action-icon" aria-hidden>
+              +
+            </span>
             Go to
           </button>
+          {needsMeshes && (
+            <button
+              type="button"
+              className="btn btn-primary export-btn"
+              onClick={() => onLoadMeshes?.()}
+              disabled={!onLoadMeshes || loadingMeshes}
+              title={
+                loadingMeshes
+                  ? "Mesh decode is running in the background — interact freely"
+                  : "Retry mesh decode if the auto-load failed"
+              }
+            >
+              <span className="export-btn-icon" aria-hidden>
+                *
+              </span>
+              <span className="export-btn-label">
+                {loadingMeshes ? "Loading meshes…" : "Reload meshes"}
+              </span>
+            </button>
+          )}
           <button
             type="button"
             className={`btn btn-primary export-btn ${canExport ? "" : "disabled"}`}
@@ -207,6 +260,15 @@ export function Inspector({
 
         {selected ? (
           <div className="inspector-content">
+            {!meshes && (
+              <div className="inspector-section inspector-section-muted">
+                <h4>Preview mode</h4>
+                <p className="dim small">
+                  Showing the proxy object. Load meshes when you need the real
+                  model, textures, or GLB export.
+                </p>
+              </div>
+            )}
             <div className="inspector-section">
               <h4>Identity</h4>
               <dl className="kv">

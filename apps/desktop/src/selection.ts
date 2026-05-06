@@ -21,6 +21,12 @@ const EMPTY: SelectionState = {
 export type ClickMods = {
   ctrl?: boolean;
   shift?: boolean;
+  /** Force-additive behavior — always adds the target to the selection,
+   *  never toggles off. The viewport's double-click sets this so picking
+   *  several meshes in a row accumulates them (Unity-style multi-pick)
+   *  without forcing the user to hold a modifier. Modifier-held clicks
+   *  go through the regular ctrl/shift paths and ignore this flag. */
+  forceAdd?: boolean;
 };
 
 /** Normalize cross-platform mod-keys: on macOS metaKey (⌘) acts as ctrl. */
@@ -65,6 +71,16 @@ export function useSelection(orderedItems: () => Instance[]) {
             }
             return { ids: next, primary: id, anchor: prev.anchor };
           }
+        }
+
+        // forceAdd: always accumulate. No toggle, no replace. Used by
+        // the viewport so plain picks build up a multi-selection without
+        // requiring the user to hold ctrl. Setting this also makes the
+        // newly-clicked instance the new primary + anchor.
+        if (mods.forceAdd) {
+          const next = new Set(prev.ids);
+          next.add(id);
+          return { ids: next, primary: id, anchor: id };
         }
 
         // Ctrl/Cmd+click: toggle this id, keep others.
