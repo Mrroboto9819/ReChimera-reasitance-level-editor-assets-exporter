@@ -19,9 +19,12 @@
 //! | 0x07 | DXT3 |
 //! | 0x08 | DXT5 |
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
+
+use rayon::prelude::*;
 
 use crate::error::{Error, Result};
 use crate::igfile::IgFile;
@@ -362,4 +365,155 @@ pub fn downsample_rgba(
     );
     let (w, h) = (resized.width(), resized.height());
     (resized.into_raw(), w, h)
+}
+
+/// Bulk-extract a subset of textures by id, returning each as PNG
+/// bytes. The expensive work — DXT/Morton decode, downsample, PNG
+/// encode — runs in parallel via rayon. The sequential phase is
+/// limited to reading the metadata + raw blobs from `highmips.dat`,
+/// which is cheap.
+///
+/// Designed for the `get_level_textures_bulk` Tauri command: gives us
+/// a wall-clock speedup proportional to core count on level loads
+/// where dozens-to-hundreds of textures need to be PNG-encoded all at
+/// once.
+///
+/// `wanted_ids` filters the texture set; pass `None` to extract every
+/// texture in the level. `max_dim` caps each output PNG (mirrors the
+/// preview-quality setting used elsewhere — 512 is the default).
+///
+/// Returned tuples are `(id, png_bytes)` in INPUT-ORDER of the lookup
+/// table (i.e. by the `assetlookup.dat` index), not by `wanted_ids`
+/// iteration order. Empty/invalid textures are silently dropped — the
+/// caller should treat a missing id in the result as "not decodable."
+pub fn bulk_extract_pngs(
+    level_folder: &Path,
+    wanted_ids: Option<&[u32]>,
+    max_dim: u32,
+) -> Result<Vec<(u32, Vec<u8>)>> {
+    let assetlookup_path = level_folder.join("assetlookup.dat");
+    let mut lookup = IgFile::open(BufReader::new(File::open(&assetlookup_path)?))?;
+
+    let meta_section = lookup.require_section(SECT_TEX_META)?;
+    let ptr_section = lookup.require_section(SECT_HIGHMIP_PTRS)?;
+
+    let count = (ptr_section.length / ASSET_POINTER_SIZE as u32) as usize;
+    if (meta_section.length / NEW_TEX_META_SIZE as u32) as usize != count {
+        return Err(Error::SectionLengthMismatch {
+            id: SECT_TEX_META,
+            length: meta_section.length,
+            entry: NEW_TEX_META_SIZE as u32,
+        });
+    }
+
+    // Sequential metadata read — single u64 + 3 u32 reads per entry.
+    let mut metas: Vec<(TexFormat, u8, u32, u32)> = Vec::with_capacity(count);
+    for i in 0..count {
+        lookup
+            .stream
+            .seek_to(u64::from(meta_section.offset) + (i as u64) * NEW_TEX_META_SIZE)?;
+        let format_byte = lookup.stream.read_u8()?;
+        let mip_count = lookup.stream.read_u8()?;
+        let w_pow = lookup.stream.read_u8()?;
+        let h_pow = lookup.stream.read_u8()?;
+        let format = TexFormat::from_byte(format_byte);
+        let width = 1u32 << w_pow;
+        let height = 1u32 << h_pow;
+        metas.push((format, mip_count, width, height));
+    }
+
+    let mut pointers: Vec<(u64, u32, u32)> = Vec::with_capacity(count);
+    for i in 0..count {
+        lookup
+            .stream
+            .seek_to(u64::from(ptr_section.offset) + (i as u64) * ASSET_POINTER_SIZE)?;
+        let tuid = lookup.stream.read_u64()?;
+        let offset = lookup.stream.read_u32()?;
+        let length = lookup.stream.read_u32()?;
+        pointers.push((tuid, offset, length));
+    }
+
+    let want_set: Option<HashSet<u32>> =
+        wanted_ids.map(|ids| ids.iter().copied().collect());
+    let want = |id: u32| -> bool {
+        match &want_set {
+            Some(set) => set.contains(&id),
+            None => true,
+        }
+    };
+
+    // Sequential phase 2: pull raw bytes for every accepted texture
+    // into RAM. We can't parallelize this without N file handles +
+    // duplicate seeks; the single sequential pass over highmips.dat
+    // is plenty fast (it's a contiguous read). We pay the memory cost
+    // of holding all raw bytes briefly — for a 200-texture level that
+    // peaks around ~50-100 MB, well within budget.
+    let highmips_path = level_folder.join("highmips.dat");
+    let mut highmips = File::open(&highmips_path)?;
+
+    struct Job {
+        id: u32,
+        format: TexFormat,
+        width: u32,
+        height: u32,
+        raw: Vec<u8>,
+    }
+    let mut jobs: Vec<Job> = Vec::new();
+    for i in 0..count {
+        let (format, _mip_count, width, height) = metas[i];
+        let (tuid, offset, length) = pointers[i];
+        let id = tuid as u32;
+        if !want(id) || length == 0 {
+            continue;
+        }
+        highmips.seek(SeekFrom::Start(u64::from(offset)))?;
+        let mut raw = vec![0u8; length as usize];
+        highmips.read_exact(&mut raw)?;
+        jobs.push(Job {
+            id,
+            format,
+            width,
+            height,
+            raw,
+        });
+    }
+
+    // Parallel phase: decode + downsample + PNG-encode. Each job is
+    // fully independent. PNG encode dominates wall time on most
+    // textures (Triangle resize + deflate), so this scales near-
+    // linearly with core count.
+    let pngs: Vec<(u32, Vec<u8>)> = jobs
+        .into_par_iter()
+        .filter_map(|job| {
+            let rgba = match job.format {
+                TexFormat::Dxt1 => {
+                    decode_dxt(&job.raw, job.width, job.height, texpresso::Format::Bc1)
+                }
+                TexFormat::Dxt3 => {
+                    decode_dxt(&job.raw, job.width, job.height, texpresso::Format::Bc2)
+                }
+                TexFormat::Dxt5 => {
+                    decode_dxt(&job.raw, job.width, job.height, texpresso::Format::Bc3)
+                }
+                TexFormat::R5G6B5 => decode_r5g6b5_morton(&job.raw, job.width, job.height),
+                TexFormat::A8R8G8B8 => {
+                    decode_a8r8g8b8_morton(&job.raw, job.width, job.height)
+                }
+                TexFormat::Unknown(_) => Vec::new(),
+            };
+            if rgba.is_empty() {
+                return None;
+            }
+            let (rgba, w, h) = downsample_rgba(rgba, job.width, job.height, max_dim);
+            if rgba.is_empty() {
+                return None;
+            }
+            let png = encode_png(&rgba, w, h);
+            if png.is_empty() {
+                return None;
+            }
+            Some((job.id, png))
+        })
+        .collect();
+    Ok(pngs)
 }

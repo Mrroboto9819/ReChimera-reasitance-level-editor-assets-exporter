@@ -15,6 +15,7 @@ pub mod math;
 pub mod moby;
 pub mod shader;
 pub mod skeleton;
+pub mod sound;
 pub mod stream;
 pub mod texture;
 pub mod tie;
@@ -34,9 +35,15 @@ pub use moby::{
 };
 pub use shader::{read_shaders, ShaderInfo};
 pub use skeleton::{read_skeleton, Bone, Skeleton};
+pub use sound::{
+    bank_pair_for, decode_adpcm_block, decode_adpcm_stream, dump_sound_bank_info,
+    extract_bank_sounds, extract_raw_streaming, extract_stream_sounds, list_raw_streaming,
+    list_sounds, scan_raw_audio_offsets, streaming_sibling_for, write_wav_pcm16,
+    write_wav_pcm16_mono, ExtractedSound, SoundKind, SoundSummary,
+};
 pub use stream::{Endian, StreamHelper};
 pub use texture::{
-    downsample_rgba, encode_png, read_textures, read_textures_streaming,
+    bulk_extract_pngs, downsample_rgba, encode_png, read_textures, read_textures_streaming,
     read_textures_with_total, TexFormat, Texture,
 };
 pub use tie::{
