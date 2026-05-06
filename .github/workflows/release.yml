@@ -1,0 +1,221 @@
+name: release
+
+on:
+  push:
+    branches:
+      - main
+  # Manual trigger — useful for re-running a release after fixing a build
+  # error or kicking the workflow without a fresh commit on main.
+  workflow_dispatch:
+
+# The Tauri app lives at apps/desktop with the package.json + tauri config.
+# The Cargo workspace root is the repo root (apps/desktop/src-tauri is a
+# workspace member), so target/ ends up at the repo root.
+
+jobs:
+  # Lightweight gate: read the version from apps/desktop/package.json and
+  # only proceed to the build matrix if a release for v{version} doesn't
+  # already exist. This means most pushes to main do nothing expensive —
+  # only a version bump triggers an actual cross-platform build.
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from apps/desktop/package.json
+        id: read
+        run: |
+          VERSION=$(jq -r '.version' apps/desktop/package.json)
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "::error::apps/desktop/package.json is missing a 'version' field"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
+
+      - name: Verify version matches tauri.conf.json + Cargo workspace
+        env:
+          PKG_VERSION: ${{ steps.read.outputs.version }}
+        run: |
+          TAURI_VERSION=$(jq -r '.version' apps/desktop/src-tauri/tauri.conf.json)
+          CARGO_VERSION=$(grep -E '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "package.json:    $PKG_VERSION"
+          echo "tauri.conf.json: $TAURI_VERSION"
+          echo "Cargo.toml:      $CARGO_VERSION"
+          # Hard-fail if any source disagrees so we don't ship a release
+          # tagged "v0.1.1" with a binary that reports "0.1.0" in the UI.
+          if [ "$PKG_VERSION" != "$TAURI_VERSION" ] || [ "$PKG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::Version mismatch — bump all three sources together."
+            exit 1
+          fi
+
+      - name: Check if release v${{ steps.read.outputs.version }} already exists
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.read.outputs.version }}
+        run: |
+          if gh release view "v$VERSION" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists — skipping build."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release v$VERSION does not exist — proceeding to build."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Pre-create a single draft release on the GitHub side BEFORE the matrix
+  # builds. Each matrix job then uploads to that release by ID, so they
+  # never race to create the same release.
+  create-release:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create draft release
+        id: create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          BODY=$(cat <<EOF
+          **ReChimera v$VERSION** — built from \`${{ github.sha }}\` on \`main\`.
+
+          Cross-platform desktop binaries built by the release workflow.
+          Pick the installer for your OS below.
+
+          See [NOTICE.md](https://github.com/${{ github.repository }}/blob/v$VERSION/NOTICE.md)
+          for upstream attributions and third-party licenses, and the
+          [commit log](https://github.com/${{ github.repository }}/commits/v$VERSION)
+          for changes since the previous release.
+
+          **Game data is not included.** Bring your own legitimately-acquired
+          extracted level folders.
+          EOF
+          )
+          RELEASE_ID=$(gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/releases" \
+            -f tag_name="v$VERSION" \
+            -f name="v$VERSION" \
+            -f body="$BODY" \
+            -F draft=true \
+            -F prerelease=false \
+            -F target_commitish="${{ github.sha }}" \
+            --jq '.id')
+          echo "Created draft release id=$RELEASE_ID"
+          echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: [check-version, create-release]
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      # Don't cancel the other platforms when one fails — partial uploads
+      # still land on the draft, and we get to see all platforms' errors
+      # in one workflow run.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-latest
+            args: ""
+            rust_targets: ""
+          - platform: windows-latest
+            args: ""
+            rust_targets: ""
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
+            rust_targets: aarch64-apple-darwin
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+            rust_targets: x86_64-apple-darwin
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - name: Cache Cargo registry & build
+        # Cache the WORKSPACE target dir at the repo root, not
+        # apps/desktop/src-tauri/target — `apps/desktop/src-tauri` is
+        # a workspace member, so its target/ resolves to the root.
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install JS deps
+        working-directory: apps/desktop
+        run: bun install
+
+      - name: Build & upload to release
+        uses: tauri-apps/tauri-action@v0.6.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing — leave the secrets unset and the action
+          # builds unsigned bundles (fine for a Beta release). Generate
+          # keys with `tauri signer generate` and add to repo secrets
+          # to enable auto-updates later.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          # Where the package.json + tauri config live. Without this,
+          # tauri-action assumes the repo root and fails to find the
+          # config.
+          projectPath: apps/desktop
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          # Emits `latest.json` alongside the bundles for Tauri's
+          # built-in updater. Harmless even when signing keys aren't
+          # set yet — the file is just a manifest.
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}
+
+  # Once every matrix job has uploaded its bundles, flip the draft to a
+  # real published release. If any build failed, the release stays as a
+  # draft so we don't ship a half-built version. (`fail-fast: false`
+  # above ensures every matrix job runs; this gate then requires ALL of
+  # them to have succeeded before publishing.)
+  publish-release:
+    needs: [check-version, create-release, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        run: |
+          gh api \
+            --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/releases/$RELEASE_ID" \
+            -F draft=false
+          echo "Release v${{ needs.check-version.outputs.version }} published."
