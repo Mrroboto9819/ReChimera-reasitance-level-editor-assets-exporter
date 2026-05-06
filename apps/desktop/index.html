@@ -4,6 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ReChimera</title>
+    <!-- Vite resolves /icon.png from the project root (next to
+         index.html) and serves it under / in dev. Suppresses the
+         /favicon.ico 404 the WebView2 + Chrome devtools log on every
+         load. -->
+    <link rel="icon" type="image/png" href="/icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

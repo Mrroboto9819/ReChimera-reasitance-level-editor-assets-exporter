@@ -249,6 +249,202 @@ textarea {
   padding: 0 8px 0 4px;
   margin-right: 4px;
   user-select: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: opacity 120ms ease-out;
+}
+.brand:hover {
+  opacity: 0.85;
+}
+
+/* Persistent logo in the title bar — static <img>, no animation, no
+   JS-driven state. Stays visible through main-thread freezes (heavy
+   level loads, etc.) because the browser handles the image as a
+   cached static resource that doesn't need React to re-render. */
+.brand-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  display: block;
+}
+
+.brand-version {
+  font-weight: 400;
+  font-size: 10.5px;
+  color: var(--text-4);
+  letter-spacing: 0;
+  align-self: center;
+}
+
+/* About modal — credits + version + repo links. Triggered from
+   `Help → About ReChimera…`. */
+.about-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.about-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.about-logo {
+  width: 64px;
+  height: 64px;
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+.about-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.about-name {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent-red);
+  letter-spacing: 0.2px;
+}
+
+.about-version {
+  color: var(--text-3);
+}
+
+.about-tagline {
+  margin-top: 4px;
+}
+
+.about-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.about-section-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.about-people {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.about-person {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.about-handle {
+  font-weight: 600;
+  color: var(--text-1);
+  text-decoration: none;
+}
+.about-handle:hover {
+  color: var(--accent-red);
+  text-decoration: underline;
+}
+
+.about-contribution {
+  color: var(--text-3);
+  line-height: 1.45;
+}
+
+.about-refs {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.about-refs a {
+  color: var(--text-2);
+  text-decoration: none;
+}
+.about-refs a:hover {
+  color: var(--accent-red);
+  text-decoration: underline;
+}
+
+/* Update banner — non-blocking notification pinned to bottom-right
+   when a newer release is available. Fixed-position so it doesn't
+   shift the IDE layout, low z-index relative to modals so dialogs
+   still cover it cleanly. */
+.update-banner {
+  position: fixed;
+  right: 16px;
+  bottom: 64px;
+  z-index: 800;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  padding: 14px 14px 12px;
+  background: var(--surface-100);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow:
+    0 18px 36px -16px rgba(0, 0, 0, 0.55),
+    0 6px 12px -6px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.update-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.update-banner-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+.update-banner-subtitle {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.update-banner-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* The downloading-phase progress bar is a thin gradient strip at the
+   bottom of the banner; width is driven inline by the React
+   component. */
+.update-banner-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background: linear-gradient(
+    90deg,
+    var(--accent-red),
+    rgba(255, 188, 51, 0.9)
+  );
+  transition: width 200ms linear;
 }
 
 .menu {

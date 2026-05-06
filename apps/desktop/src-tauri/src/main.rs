@@ -2366,6 +2366,15 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_dialog::init())
+        // Auto-updater + process restart. Frontend calls
+        // `check()` on boot (and periodically) via the JS plugin
+        // bindings; if a newer release is available the user gets
+        // a non-blocking banner with Install / Remind-Later choices.
+        // The actual binary swap + signature verification runs
+        // server-side inside this plugin — the JS side just drives
+        // the UX.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             open_level,
             list_assets,
