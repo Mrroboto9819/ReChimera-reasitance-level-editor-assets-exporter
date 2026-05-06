@@ -221,11 +221,6 @@ and the art.
   original developer of **Lunacy**, the project that started all of this,
   and one of the key reverse engineers for the PS3-era Insomniac titles.
   ReChimera's renderer is **directly inspired by their
-- **[@MilchRatchet](https://github.com/MilchRatchet)** — maintainer of
-  **[Replanetizer](https://github.com/RatchetModding/Replanetizer)**.
-  ReLunacy's global level editor draws strongly from Replanetizer's
-  *Frames* architecture; that influence carries through into ReChimera's
-  panel layout and split-region UX.
 - **[@PredatorCZ](https://github.com/PredatorCZ)** (Lukas Cone) — one of
   the pioneers of Ratchet & Clank: Future-series reverse engineering and
   the author of **[InsomniaToolset](https://github.com/PredatorCZ/InsomniaToolset)**
