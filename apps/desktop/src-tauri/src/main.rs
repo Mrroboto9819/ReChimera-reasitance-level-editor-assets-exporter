@@ -2375,6 +2375,11 @@ fn main() {
         // the UX.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Routes external URLs / file paths to the OS default
+        // handler — `<a href>` clicks and `openUrl()` calls from JS
+        // open in the user's default browser instead of inside the
+        // WebView2 frame.
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             open_level,
             list_assets,

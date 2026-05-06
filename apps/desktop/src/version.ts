@@ -31,3 +31,20 @@ export const APP_REPO_URL = "https://github.com/Mrroboto9819/ReChimera";
 /** Direct link to the issue tracker — Help menu uses this for bug
  *  reports and feature requests. */
 export const APP_ISSUES_URL = `${APP_REPO_URL}/issues`;
+
+/** Open an external URL in the user's default browser via Tauri's
+ *  opener plugin. `window.open()` and `<a target="_blank">` don't
+ *  behave well inside WebView2 / WKWebView — they either open
+ *  in-place or get caught by the webview's popup blocker. Routing
+ *  through the opener plugin shells out to the OS handler
+ *  (Chrome / Safari / whatever the user has set as default) so
+ *  links land where the user expects.
+ *
+ *  Bind to `<a>` clicks via:
+ *    onClick={(e) => { e.preventDefault(); void openExternal(href); }}
+ *
+ *  Or call directly from menu handlers / button onClicks. */
+export async function openExternal(url: string): Promise<void> {
+  const { openUrl } = await import("@tauri-apps/plugin-opener");
+  await openUrl(url);
+}

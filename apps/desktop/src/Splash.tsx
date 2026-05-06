@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import gsap from "gsap";
 import iconUrl from "../icon.png?url";
 
@@ -25,46 +25,51 @@ export function Splash({ visible, onExit }: SplashProps) {
   const nameRef = useRef<HTMLHeadingElement>(null);
   const loaderRef = useRef<HTMLDivElement>(null);
 
-  // Entry sequence:
-  //   1. Backdrop fades in (root opacity 0→1) immediately.
-  //   2. Logo scales up + fades in.
+  // Entry sequence — runs in useLayoutEffect (synchronous, before
+  // browser paint) so the user never sees a flash of fully-visible
+  // splash before GSAP grabs it. The inline `opacity: 0` styles in
+  // JSX below hide each element on first paint; GSAP then animates
+  // them to their final state in this sequence:
+  //   1. Backdrop fades in.
+  //   2. Logo scales up + slides down + fades in (with a soft bounce
+  //      via back.out for personality).
   //   3. Wordmark slides up + fades in (slight overlap with logo).
   //   4. Loader fades in last so the dots only start their pulse
-  //      after the rest is settled — feels more polished than having
-  //      everything animate simultaneously.
-  useEffect(() => {
+  //      after the rest has settled — feels more polished than
+  //      animating everything at once.
+  useLayoutEffect(() => {
     const tl = gsap.timeline();
-    tl.from(rootRef.current, {
-      opacity: 0,
+    tl.to(rootRef.current, {
+      opacity: 1,
       duration: 0.25,
       ease: "power2.out",
     })
-      .from(
+      .to(
         logoRef.current,
         {
-          opacity: 0,
-          scale: 0.7,
-          y: -8,
+          opacity: 1,
+          scale: 1,
+          y: 0,
           duration: 0.6,
           ease: "back.out(1.4)",
         },
         "-=0.1",
       )
-      .from(
+      .to(
         nameRef.current,
         {
-          opacity: 0,
-          y: 14,
+          opacity: 1,
+          y: 0,
           duration: 0.45,
           ease: "power3.out",
         },
         "-=0.30",
       )
-      .from(
+      .to(
         loaderRef.current,
         {
-          opacity: 0,
-          y: 6,
+          opacity: 1,
+          y: 0,
           duration: 0.35,
           ease: "power2.out",
         },
@@ -94,16 +99,40 @@ export function Splash({ visible, onExit }: SplashProps) {
     };
   }, [visible, onExit]);
 
+  // Inline opacity:0 + transforms on each element so the first
+  // browser paint shows them already in their "starting" state.
+  // Without this, React renders them at default visibility for one
+  // frame before GSAP's useLayoutEffect runs — the user would see a
+  // brief full-opacity flash before the animation begins.
   return (
-    <div ref={rootRef} className="splash" role="status" aria-live="polite">
+    <div
+      ref={rootRef}
+      className="splash"
+      role="status"
+      aria-live="polite"
+      style={{ opacity: 0 }}
+    >
       <div className="splash-content">
-        <div ref={logoRef} className="splash-logo">
+        <div
+          ref={logoRef}
+          className="splash-logo"
+          style={{ opacity: 0, transform: "scale(0.7) translateY(-8px)" }}
+        >
           <img src={iconUrl} alt="" draggable={false} />
         </div>
-        <h1 ref={nameRef} className="splash-name">
+        <h1
+          ref={nameRef}
+          className="splash-name"
+          style={{ opacity: 0, transform: "translateY(14px)" }}
+        >
           ReChimera
         </h1>
-        <div ref={loaderRef} className="splash-loader" aria-hidden>
+        <div
+          ref={loaderRef}
+          className="splash-loader"
+          aria-hidden
+          style={{ opacity: 0, transform: "translateY(6px)" }}
+        >
           <span className="splash-loader-dot" />
           <span className="splash-loader-dot" />
           <span className="splash-loader-dot" />

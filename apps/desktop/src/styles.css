@@ -930,6 +930,38 @@ textarea {
   padding: 32px;
 }
 
+/* Centered empty-state hint shown inside the Viewport when no level
+   is loaded. Sits over the (empty) Three.js canvas; the IDE shell
+   around it stays visible so the user can still see the panels they
+   will populate by opening a level. */
+.viewport-empty-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 10px;
+  pointer-events: none;
+  /* Children re-enable pointer events so the button stays clickable
+     while the surrounding overlay doesn't block the (empty) canvas. */
+}
+.viewport-empty-hint > * {
+  pointer-events: auto;
+}
+.viewport-empty-hint p {
+  margin: 0;
+  max-width: 420px;
+}
+.viewport-empty-hint code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--surface-200);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
 /* Generic dock panel — every IDE pane uses this chrome */
 .panel {
   display: flex;

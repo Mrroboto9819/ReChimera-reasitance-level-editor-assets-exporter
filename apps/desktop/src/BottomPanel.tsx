@@ -72,6 +72,27 @@ export function BottomPanel({
     };
   }, [tab, activeKind, summary]);
 
+  // Tab-toggle collapse semantics:
+  //   - Click the active tab while expanded → collapse (no tab body
+  //     visible, just the tab strip).
+  //   - Click a different tab while expanded → switch to that tab.
+  //   - Click any tab while collapsed → expand + select that tab.
+  // Default tab on first mount is "console" so the log is visible by
+  // default; once collapsed, the same tab stays "active" visually so
+  // re-clicking it re-expands rather than blanking the strip.
+  const onTabClick = (next: Tab) => {
+    if (collapsed) {
+      setTab(next);
+      onToggleCollapsed?.();
+      return;
+    }
+    if (tab === next) {
+      onToggleCollapsed?.();
+      return;
+    }
+    setTab(next);
+  };
+
   return (
     <div className={`panel pane-bottom ${collapsed ? "collapsed" : ""}`}>
       <div className="panel-header">
@@ -79,10 +100,12 @@ export function BottomPanel({
           <button
             type="button"
             className={`panel-tab ${tab === "console" ? "active" : ""}`}
-            onClick={() => {
-              setTab("console");
-              if (collapsed) onToggleCollapsed?.();
-            }}
+            onClick={() => onTabClick("console")}
+            title={
+              !collapsed && tab === "console"
+                ? "Click to collapse the console panel"
+                : "Show console"
+            }
           >
             Console
             <span className="badge-cluster">
@@ -100,21 +123,25 @@ export function BottomPanel({
           <button
             type="button"
             className={`panel-tab ${tab === "assets" ? "active" : ""}`}
-            onClick={() => {
-              setTab("assets");
-              if (collapsed) onToggleCollapsed?.();
-            }}
+            onClick={() => onTabClick("assets")}
             disabled={!summary}
+            title={
+              !summary
+                ? "Open a level to browse its asset table"
+                : !collapsed && tab === "assets"
+                  ? "Click to collapse"
+                  : "Show level asset table"
+            }
           >
             Assets
           </button>
           <button
             type="button"
             className={`panel-tab ${tab === "tools" ? "active" : ""}`}
-            onClick={() => {
-              setTab("tools");
-              if (collapsed) onToggleCollapsed?.();
-            }}
+            onClick={() => onTabClick("tools")}
+            title={
+              !collapsed && tab === "tools" ? "Click to collapse" : "Show tools"
+            }
           >
             Tools
           </button>
