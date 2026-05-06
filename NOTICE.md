@@ -91,16 +91,7 @@ which is why ReChimera is GPL-3.0-or-later.
   patterns. Direct code is not copied; the inspiration is documented
   here for due credit.
 
-### 2.5 Replanetizer (editor architecture inspiration)
-
-- **Repository:** https://github.com/RatchetModding/Replanetizer
-- **Maintainer:** [@MilchRatchet](https://github.com/MilchRatchet) and
-  contributors
-- **What ReChimera takes from it:** The Frames-based pane layout
-  approach that ReLunacy adopted for its global level editor — that
-  influence carries through into ReChimera's panel / split-region UX.
-
-### 2.6 Additional contributors
+### 2.5 Additional contributors
 
 - **[@chaoticgd](https://github.com/chaoticgd)** — guidance on the 3D
   rendering implementation in ReLunacy, which ReChimera inherits.

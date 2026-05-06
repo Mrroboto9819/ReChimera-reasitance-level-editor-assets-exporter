@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+// Static logo URL resolved by Vite at build time. Used here for the
+// persistent title-bar logo so the brand is visible even when the
+// main thread is blocked during heavy level loading — the <img> is
+// rendered once on first paint and the browser caches the bytes;
+// nothing in the runtime can "lose" it.
+import brandIconUrl from "../icon.png?url";
 import {
   dumpSoundBank,
   extractLevelSounds,
@@ -31,6 +37,7 @@ import {
   type UFragBounds,
   type UFragMesh,
 } from "./api";
+import { AboutModal } from "./AboutModal";
 import { BottomPanel, type ConsoleEntry } from "./BottomPanel";
 import { GltfCharacterModal } from "./GltfCharacterModal";
 import { RawCharacterModal } from "./RawCharacterModal";
@@ -43,6 +50,7 @@ import { OpenLevelModal } from "./OpenLevelModal";
 import { PsarcTools } from "./PsarcTools";
 import { SoundPlayer, type NowPlaying } from "./SoundPlayer";
 import { Splash } from "./Splash";
+import { UpdateChecker } from "./UpdateChecker";
 import { StatusBar } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
 import { Toolbar } from "./Toolbar";
@@ -55,6 +63,7 @@ import {
 } from "./export";
 import { ExportProgress } from "./ExportProgress";
 import { useSelection } from "./selection";
+import { APP_VERSION, APP_REPO_URL, APP_ISSUES_URL } from "./version";
 import {
   resetAll,
   setBottomPct,
@@ -94,6 +103,10 @@ export function App() {
   const [completedPhases, setCompletedPhases] = useState<PhaseId[]>([]);
   const [consoleLog, setConsoleLog] = useState<ConsoleEntry[]>([]);
   const [psarcOpen, setPsarcOpen] = useState(false);
+  // About / credits modal — opened from `Help → About ReChimera…`.
+  // Rendered always (not gated on level state) so Help is reachable
+  // from a fresh splash.
+  const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [openLevelModalOpen, setOpenLevelModalOpen] = useState(false);
   const [exportState, setExportState] = useState<ExportProgressState | null>(null);
   // (Removed: legacy `<level>/character/` filesystem lookup state. The
@@ -738,7 +751,22 @@ export function App() {
       )}
       <TitleBar>
         <MenuBar>
-          <span className="brand">ReChimera</span>
+          <span
+            className="brand"
+            onClick={() => setAboutModalOpen(true)}
+            role="button"
+            tabIndex={0}
+            title="About ReChimera"
+          >
+            <img
+              src={brandIconUrl}
+              alt=""
+              className="brand-icon"
+              draggable={false}
+            />
+            ReChimera
+            <span className="brand-version mono small">v{APP_VERSION}</span>
+          </span>
 
           <Menu label="File">
             <MenuItem onSelect={() => setOpenLevelModalOpen(true)}>
@@ -825,12 +853,14 @@ export function App() {
           </Menu>
 
           <Menu label="Help">
-            <MenuItem
-              onSelect={() =>
-                window.open("https://github.com/Mrroboto9819/ReLunacy", "_blank")
-              }
-            >
-              GitHub
+            <MenuItem onSelect={() => window.open(APP_REPO_URL, "_blank")}>
+              GitHub Repository
+            </MenuItem>
+            <MenuItem onSelect={() => window.open(APP_ISSUES_URL, "_blank")}>
+              Report an issue…
+            </MenuItem>
+            <MenuItem onSelect={() => setAboutModalOpen(true)}>
+              About ReChimera…
             </MenuItem>
           </Menu>
 
@@ -1072,6 +1102,13 @@ export function App() {
       >
         <PsarcTools />
       </Modal>
+
+      <AboutModal
+        open={aboutModalOpen}
+        onClose={() => setAboutModalOpen(false)}
+      />
+
+      <UpdateChecker />
 
       <Modal
         // Stay open while in-flight; auto-close when done or cancelled.
