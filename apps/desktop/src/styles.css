@@ -930,36 +930,48 @@ textarea {
   padding: 32px;
 }
 
-/* Centered empty-state hint shown inside the Viewport when no level
-   is loaded. Sits over the (empty) Three.js canvas; the IDE shell
-   around it stays visible so the user can still see the panels they
-   will populate by opening a level. */
-.viewport-empty-hint {
+.viewport-empty-toast {
   position: absolute;
-  inset: 0;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  text-align: center;
   gap: 10px;
-  pointer-events: none;
-  /* Children re-enable pointer events so the button stays clickable
-     while the surrounding overlay doesn't block the (empty) canvas. */
+  padding: 18px 22px;
+  max-width: 360px;
+  background: var(--surface-100);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: 0 16px 32px -10px rgba(0, 0, 0, 0.55);
+  z-index: 5;
+  text-align: center;
 }
-.viewport-empty-hint > * {
-  pointer-events: auto;
+
+.viewport-empty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
 }
-.viewport-empty-hint p {
-  margin: 0;
-  max-width: 420px;
+
+.viewport-empty-sub {
+  margin-top: 2px;
+  line-height: 1.45;
 }
-.viewport-empty-hint code {
+.viewport-empty-sub code {
   font-family: var(--font-mono);
   font-size: 11px;
   background: var(--surface-200);
   padding: 1px 6px;
   border-radius: 4px;
+}
+
+.btn-sm {
+  font-size: 11px;
+  padding: 4px 10px;
+  height: auto;
+  border-radius: 999px;
 }
 
 /* Generic dock panel — every IDE pane uses this chrome */
@@ -1528,7 +1540,7 @@ textarea {
   font-size: 56px;
   font-weight: 600;
   letter-spacing: 0.5px;
-  color: var(--text-1);
+  color: var(--accent-red);
   font-family: var(--font-sans);
   font-feature-settings: var(--opentype);
   line-height: 1;
@@ -1786,32 +1798,96 @@ textarea {
 .open-level {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
-.open-level-actions {
+.open-level-pickers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.open-level-card {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.open-level-actions .btn {
-  flex: 1;
-  min-width: 200px;
-  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  white-space: nowrap;
+  gap: 12px;
+  padding: 14px 14px;
+  background: var(--surface-100);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-1);
+  font: inherit;
+  transition: background-color 120ms ease-out, border-color 120ms ease-out, transform 120ms ease-out;
+}
+.open-level-card:hover:not(:disabled) {
+  background: var(--surface-200);
+  border-color: var(--accent-red);
+  transform: translateY(-1px);
+}
+.open-level-card:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-.open-level-actions code {
+.open-level-card-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.open-level-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.open-level-card-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.open-level-card-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.open-level-card code {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--accent-blue);
   background: rgba(255, 255, 255, 0.04);
   padding: 1px 5px;
   border-radius: 3px;
+}
+
+.open-level-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.open-level-field-label {
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  font-size: 10.5px;
+}
+
+.open-level-field input {
+  width: 100%;
+  background: var(--surface-100);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.open-level-field input:focus {
+  outline: none;
+  border-color: var(--accent-red);
 }
 
 .open-level-warning {
@@ -1823,11 +1899,84 @@ textarea {
   font-size: 12px;
 }
 
+.open-level-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--hairline);
+}
+
+.open-level-section-title {
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  font-size: 10.5px;
+}
+
+.open-level-recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.open-level-recent-item {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.open-level-recent-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.open-level-recent-btn:hover:not(:disabled) {
+  background: var(--surface-200);
+  border-color: var(--hairline);
+}
+.open-level-recent-name {
+  font-weight: 500;
+  font-size: 12px;
+}
+.open-level-recent-path {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+}
+
+.open-level-recent-remove {
+  width: 28px;
+  background: transparent;
+  border: 0;
+  color: var(--text-4);
+  font-size: 16px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.open-level-recent-remove:hover {
+  background: var(--surface-200);
+  color: var(--text-1);
+}
+
 .open-level-hint {
   margin-top: 4px;
   line-height: 1.5;
 }
-
 .open-level-hint code {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -1835,6 +1984,112 @@ textarea {
   background: rgba(255, 255, 255, 0.04);
   padding: 1px 5px;
   border-radius: 3px;
+}
+
+.btn-update {
+  background: linear-gradient(180deg, hsl(35, 100%, 56%), hsl(28, 100%, 50%));
+  color: #1a0e00;
+  font-weight: 600;
+  border: 1px solid hsla(35, 100%, 56%, 0.6);
+}
+.btn-update:hover {
+  background: linear-gradient(180deg, hsl(35, 100%, 62%), hsl(28, 100%, 56%));
+}
+
+.loading-banner {
+  position: fixed;
+  top: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 850;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  display: flex;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface-100);
+  border: 1px solid var(--accent-red);
+  border-radius: 12px;
+  box-shadow:
+    0 18px 36px -16px rgba(0, 0, 0, 0.55),
+    0 6px 12px -6px rgba(0, 0, 0, 0.45),
+    0 0 0 4px rgba(220, 38, 38, 0.08);
+  animation: loading-banner-in 200ms ease-out;
+}
+
+@keyframes loading-banner-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.loading-banner-spinner {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border: 2px solid var(--surface-200);
+  border-top-color: var(--accent-red);
+  border-radius: 50%;
+  animation: loading-banner-spin 0.9s linear infinite;
+}
+
+@keyframes loading-banner-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-banner-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.loading-banner-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.loading-banner-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--surface-200);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.loading-banner-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-red), hsl(0, 90%, 70%));
+  transition: width 200ms linear;
+}
+
+.loading-banner-progress {
+  font-size: 10.5px;
+}
+
+.loading-banner-warning {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+  line-height: 1.45;
+}
+
+.loading-banner-warning strong {
+  color: var(--accent-yellow);
+  font-weight: 600;
 }
 
 /* Toolbar (between titlebar and workspace) */

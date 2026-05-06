@@ -6,26 +6,40 @@ interface OpenLevelModalProps {
   open: boolean;
   busy: boolean;
   onClose: () => void;
-  /**
-   * Called when the user confirms a path. Parent is responsible for
-   * actually triggering the level load and showing the loading-progress
-   * modal afterward.
-   */
   onOpen: (folderPath: string) => void;
 }
 
-/**
- * "Open Level" picker modal. Replaces the cramped path-input strip that
- * used to live in the title bar's menu bar.
- *
- * Workflow:
- *   1. User clicks Browse… → OS native file picker opens, filtered to
- *      assetlookup.dat (the marker file that identifies an Insomniac
- *      level folder). User picks the file.
- *   2. We extract the parent directory as the level folder path.
- *   3. User can also paste a folder path directly into the field.
- *   4. Click Open → parent triggers the actual level load.
- */
+const RECENT_KEY = "rechimera.recentLevels";
+const RECENT_MAX = 6;
+
+function loadRecent(): string[] {
+  try {
+    const raw = localStorage.getItem(RECENT_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((s) => typeof s === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function pushRecent(folder: string): string[] {
+  const current = loadRecent().filter((p) => p !== folder);
+  const next = [folder, ...current].slice(0, RECENT_MAX);
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+  } catch {
+    /* localStorage may be unavailable in some webview modes */
+  }
+  return next;
+}
+
+function lastTwoSegments(path: string): string {
+  const norm = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const parts = norm.split("/");
+  return parts.slice(-2).join(" / ") || norm;
+}
+
 export function OpenLevelModal({
   open,
   busy,
@@ -34,47 +48,35 @@ export function OpenLevelModal({
 }: OpenLevelModalProps) {
   const [path, setPath] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
+  const [recent, setRecent] = useState<string[]>([]);
 
-  // Reset on open/close so the field doesn't carry stale paths between
-  // sessions. The user typically picks a different level each time.
   useEffect(() => {
-    if (open) setWarning(null);
+    if (open) {
+      setWarning(null);
+      setRecent(loadRecent());
+    }
   }, [open]);
 
-  const handleBrowse = useCallback(async () => {
+  const handleBrowseFile = useCallback(async () => {
     setWarning(null);
     try {
       const picked = await openDialog({
         directory: false,
         multiple: false,
-        title: "Pick assetlookup.dat (or any .dat in the level folder)",
+        title: "Pick assetlookup.dat",
         filters: [
-          {
-            name: "Insomniac asset lookup",
-            extensions: ["dat"],
-          },
-          {
-            name: "All files",
-            extensions: ["*"],
-          },
+          { name: "Insomniac asset lookup", extensions: ["dat"] },
+          { name: "All files", extensions: ["*"] },
         ],
       });
       if (typeof picked !== "string") return;
-
-      // Extract the parent folder — works for both `/` and `\` separators.
       const lastSep = Math.max(picked.lastIndexOf("/"), picked.lastIndexOf("\\"));
       const folder = lastSep > 0 ? picked.slice(0, lastSep) : picked;
       const filename = lastSep >= 0 ? picked.slice(lastSep + 1) : picked;
-
       setPath(folder);
-
-      // Helpful nudge if they picked the wrong file. Not a hard error —
-      // a level folder might be referred to by some other .dat marker in
-      // the future, and the underlying parser will reject if it can't
-      // find assetlookup.dat anyway.
       if (filename.toLowerCase() !== "assetlookup.dat") {
         setWarning(
-          `You picked “${filename}” — the parser will look for assetlookup.dat in this folder.`,
+          `You picked "${filename}" — the parser will look for assetlookup.dat in this folder.`,
         );
       }
     } catch (e) {
@@ -96,18 +98,34 @@ export function OpenLevelModal({
     }
   }, []);
 
-  const handleConfirm = useCallback(() => {
-    const trimmed = path.trim();
-    if (!trimmed) return;
-    onOpen(trimmed);
-  }, [path, onOpen]);
+  const confirm = useCallback(
+    (folder: string) => {
+      const trimmed = folder.trim();
+      if (!trimmed) return;
+      pushRecent(trimmed);
+      onOpen(trimmed);
+    },
+    [onOpen],
+  );
+
+  const handleConfirm = useCallback(() => confirm(path), [confirm, path]);
+
+  const removeRecent = useCallback((folder: string) => {
+    const next = loadRecent().filter((p) => p !== folder);
+    try {
+      localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+    setRecent(next);
+  }, []);
 
   return (
     <Modal
       open={open}
       onClose={onClose}
       title="Open level"
-      subtitle="Pick the level folder containing assetlookup.dat"
+      subtitle="Pick a folder containing assetlookup.dat"
       size="lg"
       footer={
         <>
@@ -131,8 +149,44 @@ export function OpenLevelModal({
       }
     >
       <div className="open-level">
-        <div className="psarc-row">
-          <label className="psarc-label">Folder</label>
+        <div className="open-level-pickers">
+          <button
+            type="button"
+            className="open-level-card"
+            onClick={handleBrowseFolder}
+            disabled={busy}
+          >
+            <div className="open-level-card-icon" aria-hidden>📁</div>
+            <div className="open-level-card-text">
+              <div className="open-level-card-title">Pick a folder</div>
+              <div className="open-level-card-sub small dim">
+                Select the directory directly
+              </div>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className="open-level-card"
+            onClick={handleBrowseFile}
+            disabled={busy}
+          >
+            <div className="open-level-card-icon" aria-hidden>📄</div>
+            <div className="open-level-card-text">
+              <div className="open-level-card-title">
+                Pick <code>assetlookup.dat</code>
+              </div>
+              <div className="open-level-card-sub small dim">
+                We'll use the parent folder
+              </div>
+            </div>
+          </button>
+        </div>
+
+        <label className="open-level-field">
+          <span className="open-level-field-label small dim">
+            Or paste a path
+          </span>
           <input
             type="text"
             value={path}
@@ -140,39 +194,53 @@ export function OpenLevelModal({
             onKeyDown={(e) => {
               if (e.key === "Enter") handleConfirm();
             }}
-            placeholder="Pick a file or folder, or paste a path"
+            placeholder="C:\\path\\to\\level"
             spellCheck={false}
             disabled={busy}
-            autoFocus
           />
-        </div>
-        <div className="open-level-actions">
-          <button
-            type="button"
-            className="btn"
-            onClick={handleBrowse}
-            disabled={busy}
-            title="Pick assetlookup.dat — we'll use the parent folder"
-          >
-            Browse for <code>assetlookup.dat</code>…
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={handleBrowseFolder}
-            disabled={busy}
-            title="Pick a folder directly"
-          >
-            Browse folder…
-          </button>
-        </div>
+        </label>
 
         {warning && <div className="open-level-warning">{warning}</div>}
 
-        <div className="open-level-hint dim small">
+        {recent.length > 0 && (
+          <div className="open-level-recent">
+            <div className="open-level-section-title small dim">Recent</div>
+            <ul className="open-level-recent-list">
+              {recent.map((folder) => (
+                <li key={folder} className="open-level-recent-item">
+                  <button
+                    type="button"
+                    className="open-level-recent-btn"
+                    onClick={() => confirm(folder)}
+                    disabled={busy}
+                    title={folder}
+                  >
+                    <span className="open-level-recent-name">
+                      {lastTwoSegments(folder)}
+                    </span>
+                    <span className="open-level-recent-path mono small dim">
+                      {folder}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="open-level-recent-remove"
+                    onClick={() => removeRecent(folder)}
+                    title="Remove from recent"
+                    aria-label="Remove"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div className="open-level-hint small dim">
           Supports any folder containing <code>assetlookup.dat</code> —
           Resistance 2/3, Ratchet &amp; Clank Future, and other Insomniac PS3
-          titles using the new-engine asset format.
+          titles.
         </div>
       </div>
     </Modal>
