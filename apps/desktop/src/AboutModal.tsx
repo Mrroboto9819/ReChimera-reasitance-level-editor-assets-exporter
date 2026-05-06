@@ -1,6 +1,24 @@
 import iconUrl from "../icon.png?url";
 import { Modal } from "./Modal";
-import { APP_VERSION, APP_REPO_URL, APP_ISSUES_URL } from "./version";
+import { APP_VERSION, APP_REPO_URL, APP_ISSUES_URL, openExternal } from "./version";
+
+// Single delegated click handler — every `<a href>` inside the
+// AboutModal bubbles up to this listener, which intercepts the
+// click, prevents the default WebView2 behavior (which would open
+// in-place or silently fail), and routes the URL through Tauri's
+// opener plugin so it lands in the user's default browser.
+//
+// One handler at the root is cleaner than retrofitting onClick on
+// every anchor — and any future link added inside the modal works
+// automatically without touching this file.
+function onAboutClick(e: React.MouseEvent<HTMLDivElement>) {
+  const target = e.target as HTMLElement | null;
+  const anchor = target?.closest?.("a");
+  if (anchor instanceof HTMLAnchorElement && anchor.href) {
+    e.preventDefault();
+    void openExternal(anchor.href);
+  }
+}
 
 interface AboutModalProps {
   open: boolean;
@@ -58,29 +76,27 @@ export function AboutModal({ open, onClose }: AboutModalProps) {
       size="lg"
       footer={
         <>
-          <a
-            href={APP_REPO_URL}
-            target="_blank"
-            rel="noreferrer"
+          <button
+            type="button"
             className="btn btn-secondary"
+            onClick={() => void openExternal(APP_REPO_URL)}
           >
             View on GitHub
-          </a>
-          <a
-            href={APP_ISSUES_URL}
-            target="_blank"
-            rel="noreferrer"
+          </button>
+          <button
+            type="button"
             className="btn btn-secondary"
+            onClick={() => void openExternal(APP_ISSUES_URL)}
           >
             Report an issue
-          </a>
+          </button>
           <button type="button" className="btn btn-primary" onClick={onClose}>
             Close
           </button>
         </>
       }
     >
-      <div className="about-modal">
+      <div className="about-modal" onClick={onAboutClick}>
         <header className="about-header">
           <img src={iconUrl} alt="ReChimera" className="about-logo" />
           <div className="about-header-text">

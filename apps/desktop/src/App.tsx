@@ -63,7 +63,7 @@ import {
 } from "./export";
 import { ExportProgress } from "./ExportProgress";
 import { useSelection } from "./selection";
-import { APP_VERSION, APP_REPO_URL, APP_ISSUES_URL } from "./version";
+import { APP_VERSION, APP_REPO_URL, APP_ISSUES_URL, openExternal } from "./version";
 import {
   resetAll,
   setBottomPct,
@@ -853,10 +853,10 @@ export function App() {
           </Menu>
 
           <Menu label="Help">
-            <MenuItem onSelect={() => window.open(APP_REPO_URL, "_blank")}>
+            <MenuItem onSelect={() => void openExternal(APP_REPO_URL)}>
               GitHub Repository
             </MenuItem>
-            <MenuItem onSelect={() => window.open(APP_ISSUES_URL, "_blank")}>
+            <MenuItem onSelect={() => void openExternal(APP_ISSUES_URL)}>
               Report an issue…
             </MenuItem>
             <MenuItem onSelect={() => setAboutModalOpen(true)}>
@@ -890,9 +890,15 @@ export function App() {
         hasSelection={selection.count > 0}
       />
 
-      {summary ? (
-        <div className="workspace">
-          <PanelGroup
+      <div className="workspace">
+        {/* The IDE shell renders unconditionally — even with no level
+            loaded, the user sees the same Hierarchy / Viewport /
+            Inspector / Console layout as when a level is open, just
+            with each panel's empty state instead of populated content.
+            That keeps the title bar's "Open Level…" CTA as the single
+            entry point and avoids the layout reflow that used to happen
+            on level open. */}
+        <PanelGroup
             direction="horizontal"
             autoSaveId="rechimera-workspace-h"
             className="workspace-h"
@@ -954,6 +960,26 @@ export function App() {
                       levelFolder={summary?.folder ?? null}
                       overrideAnimsetHash={overrideAnimsetHash}
                     />
+                    {!summary && (
+                      <div className="viewport-empty-hint">
+                        <p className="dim">
+                          Open a level to begin
+                        </p>
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          onClick={() => setOpenLevelModalOpen(true)}
+                        >
+                          Open Level…
+                        </button>
+                        <p className="small dim" style={{ marginTop: 12 }}>
+                          Pick any folder containing{" "}
+                          <code>assetlookup.dat</code> — Resistance 2/3,
+                          Ratchet &amp; Clank Future, and other Insomniac
+                          PS3 titles.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </Panel>
 
@@ -1011,29 +1037,7 @@ export function App() {
               />
             </Panel>
           </PanelGroup>
-        </div>
-      ) : (
-        <div className="workspace-empty">
-          <div className="hint">
-            <button
-              type="button"
-              className="btn btn-primary export-btn"
-              onClick={() => setOpenLevelModalOpen(true)}
-              style={{ width: "auto", marginBottom: 16 }}
-            >
-              Open Level…
-            </button>
-            <p className="dim">
-              Or use <span className="kbd">File ▸ Open Level…</span>
-            </p>
-            <p className="small dim" style={{ marginTop: 12 }}>
-              Pick any folder containing <code>assetlookup.dat</code> —
-              Resistance 2/3, Ratchet &amp; Clank Future, and other Insomniac
-              PS3 titles.
-            </p>
-          </div>
-        </div>
-      )}
+      </div>
 
       <SoundPlayer
         nowPlaying={nowPlaying}
