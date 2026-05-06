@@ -36,21 +36,21 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected version: $VERSION"
 
-      - name: Verify version matches tauri.conf.json + Cargo workspace
-        env:
-          PKG_VERSION: ${{ steps.read.outputs.version }}
-        run: |
-          TAURI_VERSION=$(jq -r '.version' apps/desktop/src-tauri/tauri.conf.json)
-          CARGO_VERSION=$(grep -E '^version' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "package.json:    $PKG_VERSION"
-          echo "tauri.conf.json: $TAURI_VERSION"
-          echo "Cargo.toml:      $CARGO_VERSION"
-          # Hard-fail if any source disagrees so we don't ship a release
-          # tagged "v0.1.1" with a binary that reports "0.1.0" in the UI.
-          if [ "$PKG_VERSION" != "$TAURI_VERSION" ] || [ "$PKG_VERSION" != "$CARGO_VERSION" ]; then
-            echo "::error::Version mismatch — bump all three sources together."
-            exit 1
-          fi
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Verify version is in sync across all sources
+        # Defers to scripts/sync-version.mjs in `--check` mode. If any
+        # of the three sources (Cargo.toml workspace, package.json,
+        # tauri.conf.json) disagree, the script exits non-zero and we
+        # fail the build with a clear "run sync-version" hint. This
+        # replaces the old hand-rolled grep+jq comparison and works
+        # because the same script is what developers run locally —
+        # `bun run version:bump 0.1.2` updates everything in one go,
+        # so CI just verifies they didn't forget.
+        run: bun scripts/sync-version.mjs --check
 
       - name: Check if release v${{ steps.read.outputs.version }} already exists
         id: check
