@@ -16,6 +16,7 @@ interface ExportOptionsModalProps {
   assetName: string;
   hasSkeleton: boolean;
   primaryAnimsetHash: string | null;
+  initialExtraPicks?: Record<string, number[]>;
   onClose: () => void;
   onExported?: (path: string, bytes: number) => void;
 }
@@ -34,6 +35,7 @@ export function ExportOptionsModal({
   assetName,
   hasSkeleton,
   primaryAnimsetHash,
+  initialExtraPicks,
   onClose,
   onExported,
 }: ExportOptionsModalProps) {
@@ -41,6 +43,7 @@ export function ExportOptionsModal({
   const [includeMesh, setIncludeMesh] = useState(true);
   const [includeMaterials, setIncludeMaterials] = useState(true);
   const [includeArmature, setIncludeArmature] = useState(hasSkeleton);
+  const [textureQuality, setTextureQuality] = useState<"low" | "medium" | "high" | "original">("high");
 
   const [animsets, setAnimsets] = useState<AnimsetSummary[] | null>(null);
   const [animsetsError, setAnimsetsError] = useState<string | null>(null);
@@ -77,10 +80,18 @@ export function ExportOptionsModal({
             };
           }
         }
+        if (initialExtraPicks) {
+          for (const [hash, indices] of Object.entries(initialExtraPicks)) {
+            const cur =
+              init[hash] ?? { hash, pickedIndices: new Set<number>() };
+            for (const i of indices) cur.pickedIndices.add(i);
+            init[hash] = cur;
+          }
+        }
         setPicks(init);
       })
       .catch((e) => setAnimsetsError(`${e}`));
-  }, [open, folder, animsets, primaryAnimsetHash]);
+  }, [open, folder, animsets, primaryAnimsetHash, initialExtraPicks]);
 
   const totalClipsPicked = useMemo(() => {
     return Object.values(picks).reduce(
@@ -149,11 +160,20 @@ export function ExportOptionsModal({
         clip_indices: [...sel.pickedIndices].sort((a, b) => a - b),
       }));
 
+    const textureMaxDim =
+      textureQuality === "low"
+        ? 256
+        : textureQuality === "medium"
+          ? 512
+          : textureQuality === "high"
+            ? 1024
+            : 0xffffffff;
     const options: GlbExportOptions = {
       include_mesh: includeMesh,
       include_materials: includeMaterials,
       include_armature: includeArmature,
       extra_clips,
+      texture_max_dim: textureMaxDim,
     };
 
     setStep("saving");
@@ -247,9 +267,44 @@ export function ExportOptionsModal({
             />
             <span>
               <strong>Materials &amp; textures</strong>
-              <span className="dim small"> · embedded PNGs from cache</span>
+              <span className="dim small"> · embedded PNGs</span>
             </span>
           </label>
+          {includeMaterials && (
+            <div className="export-quality-row">
+              <label className="dim small">Texture quality</label>
+              <div className="export-quality-options">
+                {(
+                  [
+                    { id: "low" as const, label: "Low", hint: "256 px" },
+                    { id: "medium" as const, label: "Medium", hint: "512 px" },
+                    { id: "high" as const, label: "High", hint: "1024 px" },
+                    { id: "original" as const, label: "Original", hint: "source res" },
+                  ] as const
+                ).map((q) => (
+                  <button
+                    key={q.id}
+                    type="button"
+                    className={`export-quality-btn${textureQuality === q.id ? " is-active" : ""}`}
+                    onClick={() => setTextureQuality(q.id)}
+                  >
+                    <span>{q.label}</span>
+                    <span className="dim small">{q.hint}</span>
+                  </button>
+                ))}
+              </div>
+              {textureQuality === "original" && (
+                <p className="dim small">
+                  Re-extracts from <code>textures.dat</code> at full source resolution. Slightly slower export.
+                </p>
+              )}
+              {textureQuality !== "original" && textureQuality !== "low" && textureQuality !== "medium" && (
+                <p className="dim small">
+                  High pulls fresh from <code>textures.dat</code>. Low/Medium reuse the cached PNGs.
+                </p>
+              )}
+            </div>
+          )}
           <label className="export-toggle">
             <input
               type="checkbox"

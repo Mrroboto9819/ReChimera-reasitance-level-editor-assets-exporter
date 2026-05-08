@@ -22,8 +22,6 @@ const MANIFEST_NAME: &str = "manifest.json";
 const MANIFEST_VERSION: u32 = 2;
 const TEXTURE_MAX_DIM: u32 = 512;
 
-const TARGET_LOG_HASH: u64 = 0x5ED3_7B1C_9C40_3839;
-
 const SOURCE_FILES: &[&str] = &[
     "assetlookup.dat",
     "mobys.dat",
@@ -305,89 +303,6 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
             None,
             phase_total_emit,
             |asset| {
-
-                if asset.tuid == TARGET_LOG_HASH {
-                    eprintln!(
-                        "[target 0x{:016X}] moby name={:?} animset={:?} bind_pose_inverse_offset={}",
-                        asset.tuid,
-                        asset.name,
-                        asset.animset_hash.map(|h| format!("0x{:016X}", h)),
-                        asset.bind_pose_inverse_offset,
-                    );
-                    eprintln!(
-                        "[target 0x{:016X}] shader_tuids.len={} bangles.len={}",
-                        asset.tuid,
-                        asset.shader_tuids.len(),
-                        asset.bangles.len(),
-                    );
-                    if let Some(skel) = asset.skeleton.as_ref() {
-                        eprintln!(
-                            "[target 0x{:016X}] skeleton bones={} root={} scale_shift={} translation_shift={}",
-                            asset.tuid,
-                            skel.bones.len(),
-                            skel.root_bone,
-                            skel.scale_shift,
-                            skel.translation_shift,
-                        );
-                        if !skel.tms0_col.is_empty() {
-                            eprintln!(
-                                "[target 0x{:016X}] tms0_col[0] = {:?}",
-                                asset.tuid, skel.tms0_col[0]
-                            );
-                            eprintln!(
-                                "[target 0x{:016X}] tms0_col[0] T@[12,13,14] = ({}, {}, {})",
-                                asset.tuid,
-                                skel.tms0_col[0][12],
-                                skel.tms0_col[0][13],
-                                skel.tms0_col[0][14],
-                            );
-                        }
-                        if !skel.tms1_col.is_empty() {
-                            eprintln!(
-                                "[target 0x{:016X}] tms1_col[0] = {:?}",
-                                asset.tuid, skel.tms1_col[0]
-                            );
-                            eprintln!(
-                                "[target 0x{:016X}] tms1_col[0] T@[12,13,14] = ({}, {}, {})",
-                                asset.tuid,
-                                skel.tms1_col[0][12],
-                                skel.tms1_col[0][13],
-                                skel.tms1_col[0][14],
-                            );
-                        }
-                        if !skel.bind_local.is_empty() {
-                            let last = skel.bind_local.len() - 1;
-                            eprintln!(
-                                "[target 0x{:016X}] bind_local[0] T@[12,13,14] = ({}, {}, {})",
-                                asset.tuid,
-                                skel.bind_local[0][12],
-                                skel.bind_local[0][13],
-                                skel.bind_local[0][14],
-                            );
-                            eprintln!(
-                                "[target 0x{:016X}] bind_local[{}] T@[12,13,14] = ({}, {}, {})",
-                                asset.tuid,
-                                last,
-                                skel.bind_local[last][12],
-                                skel.bind_local[last][13],
-                                skel.bind_local[last][14],
-                            );
-                        }
-                        let parents: Vec<i16> =
-                            skel.bones.iter().map(|b| b.parent_index).collect();
-                        eprintln!(
-                            "[target 0x{:016X}] parents (first 32) = {:?}",
-                            asset.tuid,
-                            &parents[..parents.len().min(32)]
-                        );
-                    } else {
-                        eprintln!(
-                            "[target 0x{:016X}] no skeleton parsed",
-                            asset.tuid
-                        );
-                    }
-                }
-
                 moby_assets_for_glb.push(asset.clone());
 
                 let mut submeshes = Vec::new();
@@ -646,27 +561,6 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
             }
             _ => Vec::new(),
         };
-        if asset.tuid == TARGET_LOG_HASH {
-            eprintln!(
-                "[target 0x{:016X}] writing GLB: clips={} shaders.len={} texture_pngs.len={}",
-                asset.tuid,
-                clips.len(),
-                shaders.len(),
-                texture_pngs.len(),
-            );
-            for (i, clip) in clips.iter().enumerate() {
-                eprintln!(
-                    "[target 0x{:016X}] clip[{}] name={:?} frames={} fps={} bones={} looping={}",
-                    asset.tuid,
-                    i,
-                    clip.name,
-                    clip.num_frames,
-                    clip.frame_rate,
-                    clip.bones.len(),
-                    clip.looping
-                );
-            }
-        }
         match lunalib::write_moby_glb_full(&asset, &clips, &shaders, &texture_pngs) {
             Ok(glb_bytes) => {
                 let glb_rel = format!("mobys/0x{:016X}.glb", asset.tuid);
@@ -859,6 +753,8 @@ pub struct GlbExportOptions {
     pub include_materials: bool,
     pub include_armature: bool,
     pub extra_clips: Vec<ClipPick>,
+    #[serde(default)]
+    pub texture_max_dim: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -940,8 +836,6 @@ pub fn export_moby_glb_with_options(
     };
 
     let texture_pngs = if options.include_materials {
-        let cache_root = cache_root(&level_folder);
-        let tex_dir = cache_root.join("textures");
         let mut needed: HashSet<u32> = HashSet::new();
         for bangle in &asset.bangles {
             for m in &bangle.meshes {
@@ -955,14 +849,44 @@ pub fn export_moby_glb_with_options(
                 }
             }
         }
-        let mut out = HashMap::with_capacity(needed.len());
-        for id in needed {
-            let path = tex_dir.join(format!("{id}.png"));
-            if let Ok(bytes) = fs::read(&path) {
-                out.insert(id, bytes);
+
+        let max_dim = options.texture_max_dim.unwrap_or(u32::MAX);
+        let needed_ids: Vec<u32> = needed.iter().copied().collect();
+
+        if max_dim <= 512 && max_dim != 0 {
+            // 512 and below: cached PNGs are already at <= 512, decode + downsample if needed.
+            let cache_root = cache_root(&level_folder);
+            let tex_dir = cache_root.join("textures");
+            let mut out = HashMap::with_capacity(needed.len());
+            for id in needed_ids {
+                let path = tex_dir.join(format!("{id}.png"));
+                if let Ok(bytes) = fs::read(&path) {
+                    let resized = lunalib::downsample_png_to(&bytes, max_dim).unwrap_or(bytes);
+                    out.insert(id, resized);
+                }
+            }
+            out
+        } else {
+            // High quality: re-extract fresh from textures.dat at chosen resolution.
+            match lunalib::bulk_extract_pngs(level_path, Some(&needed_ids), max_dim) {
+                Ok(pngs) => pngs.into_iter().collect(),
+                Err(e) => {
+                    eprintln!(
+                        "warn: bulk_extract_pngs failed at max_dim={max_dim}: {e} — falling back to cached PNGs"
+                    );
+                    let cache_root = cache_root(&level_folder);
+                    let tex_dir = cache_root.join("textures");
+                    let mut out = HashMap::with_capacity(needed.len());
+                    for id in needed_ids {
+                        let path = tex_dir.join(format!("{id}.png"));
+                        if let Ok(bytes) = fs::read(&path) {
+                            out.insert(id, bytes);
+                        }
+                    }
+                    out
+                }
             }
         }
-        out
     } else {
         HashMap::new()
     };
@@ -1105,6 +1029,132 @@ pub struct AnimsetClipMeta {
 pub struct AnimsetSummary {
     pub hash: String,
     pub clips: Vec<AnimsetClipMeta>,
+}
+
+#[derive(Serialize)]
+pub struct DecodedBoneDto {
+    pub rotations: Vec<f32>,
+    pub translations: Vec<f32>,
+    pub scales: Vec<f32>,
+    pub rotation_animated: bool,
+    pub translation_animated: bool,
+    pub scale_animated: bool,
+}
+
+#[derive(Serialize)]
+pub struct DecodedClipDto {
+    pub name: String,
+    pub num_frames: u16,
+    pub frame_rate: f32,
+    pub looping: bool,
+    pub bones: Vec<DecodedBoneDto>,
+}
+
+#[tauri::command]
+pub fn decode_animset_clip(
+    folder: String,
+    asset_tuid_hex: String,
+    animset_hash: String,
+    clip_index: u32,
+) -> Result<DecodedClipDto, String> {
+    use lunalib::read_moby_assets_with_total;
+    use std::io::{Read, Seek, SeekFrom};
+
+    let level_path = std::path::Path::new(&folder);
+    let target_tuid = u64::from_str_radix(
+        asset_tuid_hex.trim_start_matches("0x").trim_start_matches("0X"),
+        16,
+    )
+    .map_err(|e| format!("parse asset tuid: {e}"))?;
+    let target_animset = u64::from_str_radix(
+        animset_hash.trim_start_matches("0x").trim_start_matches("0X"),
+        16,
+    )
+    .map_err(|e| format!("parse animset hash: {e}"))?;
+
+    let mut moby_skeleton: Option<lunalib::Skeleton> = None;
+    read_moby_assets_with_total(
+        level_path,
+        Some(&[target_tuid]),
+        |_| {},
+        |a| {
+            if a.tuid == target_tuid {
+                moby_skeleton = a.skeleton.clone();
+            }
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    let skeleton = moby_skeleton
+        .ok_or_else(|| format!("asset {asset_tuid_hex} has no skeleton"))?;
+
+    let trans_shift = skeleton.translation_shift;
+    let scale_shift_v = skeleton.scale_shift;
+    let pos_scale = if (trans_shift as u32) < 15 {
+        1.0 / (0x8000u32 >> trans_shift) as f32
+    } else {
+        1.0 / 32768.0
+    };
+    let scale_scale = if (scale_shift_v as u32) < 15 {
+        1.0 / (0x8000u32 >> scale_shift_v) as f32
+    } else {
+        1.0 / 32768.0
+    };
+
+    let lookup_path = level_path.join("assetlookup.dat");
+    let lookup_file =
+        std::fs::File::open(&lookup_path).map_err(|e| format!("open {lookup_path:?}: {e}"))?;
+    let mut lookup =
+        AssetLookup::open(std::io::BufReader::new(lookup_file)).map_err(|e| e.to_string())?;
+    let ptrs = lookup
+        .pointers(AssetKind::Animset)
+        .map_err(|e| format!("read animset table: {e}"))?;
+    let ptr = ptrs
+        .iter()
+        .find(|p| p.tuid == target_animset)
+        .ok_or_else(|| format!("animset {animset_hash} not found in level"))?;
+
+    let animsets_path = level_path.join("animsets.dat");
+    let mut animsets_file =
+        std::fs::File::open(&animsets_path).map_err(|e| format!("open {animsets_path:?}: {e}"))?;
+    animsets_file
+        .seek(SeekFrom::Start(u64::from(ptr.offset)))
+        .map_err(|e| format!("seek animset: {e}"))?;
+    let mut buf = vec![0u8; ptr.length as usize];
+    animsets_file
+        .read_exact(&mut buf)
+        .map_err(|e| format!("read animset: {e}"))?;
+    let mut ig =
+        IgFile::open(std::io::Cursor::new(buf)).map_err(|e| format!("ighw open: {e}"))?;
+
+    let offsets = animation_section_offsets(&ig);
+    let off = offsets
+        .get(clip_index as usize)
+        .copied()
+        .ok_or_else(|| format!("clip index {clip_index} out of range ({} clips)", offsets.len()))?;
+    let header = read_animation_header_at(&mut ig, off).map_err(|e| format!("header: {e}"))?;
+    let ctrl =
+        read_animation_control(&mut ig, &header).map_err(|e| format!("control: {e}"))?;
+    let clip = decode_animation(&mut ig, &header, &ctrl, pos_scale, scale_scale)
+        .map_err(|e| format!("decode: {e}"))?;
+
+    Ok(DecodedClipDto {
+        name: clip.name,
+        num_frames: clip.num_frames,
+        frame_rate: clip.frame_rate,
+        looping: clip.looping,
+        bones: clip
+            .bones
+            .into_iter()
+            .map(|b| DecodedBoneDto {
+                rotations: b.rotations,
+                translations: b.translations,
+                scales: b.scales,
+                rotation_animated: b.rotation_animated,
+                translation_animated: b.translation_animated,
+                scale_animated: b.scale_animated,
+            })
+            .collect(),
+    })
 }
 
 #[tauri::command]

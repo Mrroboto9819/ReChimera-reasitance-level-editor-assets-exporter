@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { AssetPreview } from "./AssetPreview";
 import { ExportOptionsModal } from "./ExportOptionsModal";
+import type { ExportPicks } from "./GlbPreview";
 import { Modal } from "./Modal";
 import { Button } from "./ui";
 
@@ -261,6 +262,11 @@ export function CacheLibraryModal({
 
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [previewPicks, setPreviewPicks] = useState<ExportPicks>({ byAnimset: {} });
+
+  useEffect(() => {
+    setPreviewPicks({ byAnimset: {} });
+  }, [selectedTuid]);
   const handleExport = () => {
     if (!selectedAsset || exporting || !folder) return;
     setExportStatus(null);
@@ -484,6 +490,8 @@ export function CacheLibraryModal({
                   meshes={previewMeshes}
                   textureBlobs={selectedTextures.size > 0 ? selectedTextures : null}
                   cacheFolder={folder ?? undefined}
+                  exportPicks={previewPicks}
+                  onExportPicksChange={setPreviewPicks}
                 />
               </div>
               <dl className="kv cache-library-meta">
@@ -543,6 +551,7 @@ export function CacheLibraryModal({
           assetName={selectedAsset.name}
           hasSkeleton={selectedAsset.skeleton != null}
           primaryAnimsetHash={selectedAsset.animset_hash ?? null}
+          initialExtraPicks={previewPicks.byAnimset}
           onClose={() => setExportModalOpen(false)}
           onExported={(path, bytes) => {
             setExportStatus(`Exported ${bytes.toLocaleString()} bytes → ${path}`);

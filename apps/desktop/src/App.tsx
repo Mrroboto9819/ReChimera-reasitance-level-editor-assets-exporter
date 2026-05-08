@@ -710,9 +710,6 @@ export function App() {
         if (ids.length > 0) {
           loadCachedTextures(sum.folder, ids)
             .then((map) => {
-              console.log(
-                `[texture-cache] ${map.size}/${ids.length} textures from cache`,
-              );
               setTextureBlobs(map);
             })
             .catch((err) => log("error", `Texture cache fetch failed: ${err}`));

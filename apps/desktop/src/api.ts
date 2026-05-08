@@ -198,6 +198,36 @@ export interface AnimsetSummary {
 export const listAnimsets = (folder: string) =>
   invoke<AnimsetSummary[]>("list_animsets", { folder });
 
+export interface DecodedBoneDto {
+  rotations: number[];
+  translations: number[];
+  scales: number[];
+  rotation_animated: boolean;
+  translation_animated: boolean;
+  scale_animated: boolean;
+}
+
+export interface DecodedClipDto {
+  name: string;
+  num_frames: number;
+  frame_rate: number;
+  looping: boolean;
+  bones: DecodedBoneDto[];
+}
+
+export const decodeAnimsetClip = (
+  folder: string,
+  assetTuidHex: string,
+  animsetHash: string,
+  clipIndex: number,
+) =>
+  invoke<DecodedClipDto>("decode_animset_clip", {
+    folder,
+    assetTuidHex,
+    animsetHash,
+    clipIndex,
+  });
+
 export interface ClipPick {
   animset_hash: string;
   clip_indices: number[];
@@ -208,6 +238,7 @@ export interface GlbExportOptions {
   include_materials: boolean;
   include_armature: boolean;
   extra_clips: ClipPick[];
+  texture_max_dim?: number | null;
 }
 
 export const exportMobyGlbWithOptions = (

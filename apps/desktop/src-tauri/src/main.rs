@@ -2133,6 +2133,7 @@ fn main() {
             cache::export_cached_moby_glb,
             cache::export_moby_glb_with_options,
             cache::list_animsets,
+            cache::decode_animset_clip,
             level_layout,
             level_meshes_stream,
             level_character_library_stream,

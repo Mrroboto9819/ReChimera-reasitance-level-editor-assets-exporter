@@ -9,13 +9,15 @@ import {
   type TextureBlobMap,
 } from "./api";
 import { buildSkinnedAsset, type BuiltSkinnedAsset } from "./skinning";
-import { GlbPreview } from "./GlbPreview";
+import { GlbPreview, type ExportPicks } from "./GlbPreview";
 
 interface AssetPreviewProps {
   instance: Instance | null;
   meshes: LevelMeshes | null;
   textureBlobs: TextureBlobMap | null;
   cacheFolder?: string;
+  exportPicks?: ExportPicks;
+  onExportPicksChange?: (picks: ExportPicks) => void;
 }
 
 export function AssetPreview({
@@ -23,6 +25,8 @@ export function AssetPreview({
   meshes,
   textureBlobs,
   cacheFolder,
+  exportPicks,
+  onExportPicksChange,
 }: AssetPreviewProps) {
   if (!instance) {
     return (
@@ -39,6 +43,8 @@ export function AssetPreview({
           folder={cacheFolder}
           assetTuidHex={instance.asset_tuid.split("#")[0]!}
           kind={instance.kind}
+          exportPicks={exportPicks}
+          onExportPicksChange={onExportPicksChange}
         />
         <span className="asset-preview-tag mono small">
           {instance.tuid.split("#")[0]}
