@@ -274,16 +274,15 @@ export function TabContainer({ panelId, views, className }: TabContainerProps) {
             </div>
           </div>
         ) : (
-          layout.tabs.map((tabId) => (
+          activeId && (
             <div
-              key={tabId}
-              className={`tab-panel ${tabId === activeId ? "active" : ""}`}
+              key={activeId}
+              className="tab-panel active"
               role="tabpanel"
-              hidden={tabId !== activeId}
             >
-              {views[tabId] ?? null}
+              {views[activeId] ?? null}
             </div>
-          ))
+          )
         )}
       </div>
       <div className="tab-drop-zone" aria-hidden>

@@ -789,6 +789,7 @@ textarea {
 .tab-content {
   flex: 1;
   position: relative;
+  min-width: 0;
   min-height: 0;
   display: flex;
   overflow: hidden;
@@ -818,17 +819,26 @@ textarea {
 .tab-panel {
   position: absolute;
   inset: 0;
-  display: flex;
+  min-width: 0;
   min-height: 0;
+  background: var(--bg);
+}
+.tab-panel:not(.active) {
+  display: none;
 }
 .tab-panel.active {
   position: relative;
   flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 .tab-panel > * {
   flex: 1;
   min-width: 0;
   min-height: 0;
+  background: var(--bg);
 }
 
 .tab-drop-zone {
