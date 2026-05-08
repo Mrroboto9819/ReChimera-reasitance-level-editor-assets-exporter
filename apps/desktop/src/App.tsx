@@ -48,6 +48,7 @@ import {
   type UFragBounds,
 } from "./api";
 import { AboutModal } from "./AboutModal";
+import { DocsModal } from "./DocsModal";
 import { BottomPanel, type ConsoleEntry } from "./BottomPanel";
 import { CacheLibraryModal } from "./CacheLibraryModal";
 import { GltfCharacterModal } from "./GltfCharacterModal";
@@ -239,6 +240,7 @@ export function App() {
   
   
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
+  const [docsModalOpen, setDocsModalOpen] = useState(false);
   const [openLevelModalOpen, setOpenLevelModalOpen] = useState(false);
   const [psarcModalOpen, setPsarcModalOpen] = useState(false);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
@@ -1147,6 +1149,9 @@ export function App() {
           </Menu>
 
           <Menu label="Help">
+            <MenuItem onSelect={() => setDocsModalOpen(true)}>
+              Documentation…
+            </MenuItem>
             <MenuItem onSelect={() => void openExternal(APP_REPO_URL)}>
               GitHub Repository
             </MenuItem>
@@ -1226,10 +1231,14 @@ export function App() {
             <button
               className="btn btn-update"
               onClick={() => void updater.install()}
-              title={`Update available — v${updater.phase.update.version}`}
+              title={
+                updater.phase.manual
+                  ? `v${updater.phase.update.version} available — opens GitHub Releases`
+                  : `Update available — v${updater.phase.update.version}`
+              }
               data-tauri-drag-region="false"
             >
-              ↑ Update available
+              {updater.phase.manual ? "↗ Get latest on GitHub" : "↑ Update available"}
             </button>
           )}
           {updater.phase.kind === "downloading" && (
@@ -1375,6 +1384,7 @@ export function App() {
         busy={busy}
         onClose={() => setOpenLevelModalOpen(false)}
         onOpen={(folder) => handleOpen(folder)}
+        onPickPsarc={() => setPsarcModalOpen(true)}
       />
 
       <PsarcModal
@@ -1684,6 +1694,11 @@ export function App() {
       <AboutModal
         open={aboutModalOpen}
         onClose={() => setAboutModalOpen(false)}
+      />
+
+      <DocsModal
+        open={docsModalOpen}
+        onClose={() => setDocsModalOpen(false)}
       />
 
       <UpdateChecker state={updater} />
