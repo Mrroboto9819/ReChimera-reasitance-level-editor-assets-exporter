@@ -1,23 +1,4 @@
-//! Per-level disk cache.
-//!
-//! Writes parsed mobys / ties / textures into
-//! `<level_folder>/_rechimera_cache/` so the Library / preview / GLB-export
-//! flows can read them back without re-parsing the source `.dat` files
-//! every time.
-//!
-//! Layout:
-//!
-//! ```text
-//! _rechimera_cache/
-//!   manifest.json              -- index of every cached asset (this file)
-//!   mobys/<tuid>.json          -- AssetMeshesDto (geometry + skeleton)
-//!   ties/<tuid>.json           -- AssetMeshesDto
-//!   textures/<id>.png          -- decoded + downsampled PNG (≤512px)
-//! ```
-//!
-//! The JSON shape inside `mobys/*.json` and `ties/*.json` is the same
-//! `AssetMeshesDto` the streaming pipeline emits, so the FE consumes both
-//! identically.
+
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -35,16 +16,10 @@ use crate::{build_skeleton_dto, mesh_dto, resolve_shader_textures, AssetMeshesDt
 
 const CACHE_DIR_NAME: &str = "_rechimera_cache";
 const MANIFEST_NAME: &str = "manifest.json";
-/// Bumped to 2 when `source_mtimes` was added to the manifest. Older
-/// caches (version 1) are always reported stale so a re-extract picks
-/// up the new snapshot.
+
 const MANIFEST_VERSION: u32 = 2;
 const TEXTURE_MAX_DIM: u32 = 512;
 
-/// Source `.dat` files we snapshot mtimes for. Used to flag cache
-/// staleness when any of them change. Missing files are silently
-/// skipped — not every level has every kind (e.g. small test maps
-/// may lack `animsets.dat`).
 const SOURCE_FILES: &[&str] = &[
     "assetlookup.dat",
     "mobys.dat",
@@ -58,16 +33,13 @@ const SOURCE_FILES: &[&str] = &[
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct CacheManifestEntry {
-    /// `"moby"`, `"tie"`, or `"texture"`.
+
     pub kind: String,
-    /// Hex TUID for mobys/ties; decimal id for textures (matches the
-    /// streaming pipeline's `albedo_id` / `normal_id` / `emissive_id`).
+
     pub tuid: String,
-    /// Human-readable name when known. Empty for textures and unnamed
-    /// assets.
+
     pub name: String,
-    /// Path of the cached file relative to the cache root (e.g.
-    /// `"mobys/0xABC.json"` or `"textures/12345.png"`).
+
     pub file: String,
     pub size_bytes: u64,
 }
@@ -77,16 +49,10 @@ pub struct CacheManifest {
     pub version: u32,
     pub folder: String,
     pub entries: Vec<CacheManifestEntry>,
-    /// Snapshot of source-file mtimes (UNIX seconds) at extract time.
-    /// Missing on v1 manifests; we use that as a "always stale" signal
-    /// so old caches get rebuilt.
+
     #[serde(default)]
     pub source_mtimes: HashMap<String, u64>,
-    /// `false` while extraction is mid-flight, `true` after the writer
-    /// successfully finishes the manifest. Old manifests without this
-    /// field default to `true` — they predate the safety check, and
-    /// any cache that managed to write a manifest at all in the old
-    /// codepath was, by definition, complete.
+
     #[serde(default = "default_complete")]
     pub complete: bool,
 }
@@ -95,59 +61,45 @@ fn default_complete() -> bool {
     true
 }
 
-/// Quick check the FE uses to decide whether to offer "Extract assets" vs
-/// "Browse cache". A `false` `exists` means there's no cache directory
-/// at all; `true` plus an `entry_count > 0` means we have something
-/// browsable.
 #[derive(Serialize)]
 pub struct CacheStatus {
     pub exists: bool,
     pub folder: String,
-    /// Path to the cache root (whether it exists or not — useful for the
-    /// FE to display "will be created at: …").
+
     pub cache_path: String,
     pub entry_count: usize,
-    /// Per-kind tally so the UI can show "232 mobys / 411 ties / 503
-    /// textures" in the status bar.
+
     pub mobys: usize,
     pub ties: usize,
     pub textures: usize,
-    /// `true` when at least one source `.dat` has a newer mtime than
-    /// the snapshot taken at extract time, OR when the manifest is from
-    /// a pre-mtime version. Drives the "Cache stale, re-extract?" hint
-    /// in the UI.
+
     pub stale: bool,
-    /// `true` when the previous extraction was interrupted: either the
-    /// manifest was missing entirely (recovered from a directory scan)
-    /// or it was on disk but with `complete: false`. The FE distinguishes
-    /// this from plain "stale" so the message can read "last extraction
-    /// did not finish" instead of "source files changed".
+
     pub incomplete: bool,
 }
 
 #[derive(Serialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CacheEvent {
-    /// Start of a new extraction phase. `total` is the item count for
-    /// this phase.
+
     Phase {
         phase: &'static str,
         total: usize,
     },
-    /// One asset finished + written to disk.
+
     Item {
         kind: &'static str,
         name: String,
     },
-    /// Items completed within the current phase.
+
     Progress {
         current: usize,
     },
-    /// Whole extraction finished — manifest written.
+
     Done {
         entry_count: usize,
     },
-    /// Fatal error — extraction aborted before completion.
+
     Error {
         message: String,
     },
@@ -157,10 +109,6 @@ fn cache_root(folder: &str) -> PathBuf {
     Path::new(folder).join(CACHE_DIR_NAME)
 }
 
-/// UNIX seconds for the file's last-modified time. `None` when the
-/// file doesn't exist or the platform clock is misbehaving (mtime
-/// before 1970 — shouldn't happen on real PS3 dumps, but we don't
-/// want to panic on a freshly-set wall clock).
 fn mtime_unix_secs(path: &Path) -> Option<u64> {
     let meta = fs::metadata(path).ok()?;
     let modified = meta.modified().ok()?;
@@ -168,9 +116,6 @@ fn mtime_unix_secs(path: &Path) -> Option<u64> {
     Some(dur.as_secs())
 }
 
-/// Snapshot mtimes for all known source `.dat` files in the level
-/// folder. Files that don't exist on disk are simply absent from the
-/// returned map.
 fn snapshot_source_mtimes(folder: &Path) -> HashMap<String, u64> {
     let mut out = HashMap::with_capacity(SOURCE_FILES.len());
     for name in SOURCE_FILES {
@@ -181,11 +126,6 @@ fn snapshot_source_mtimes(folder: &Path) -> HashMap<String, u64> {
     out
 }
 
-/// True when any tracked source has a newer mtime than the manifest's
-/// snapshot, OR when the manifest's snapshot is empty (= pre-mtime
-/// manifest version). Files that disappeared since extract are NOT
-/// considered stale — only the converse direction matters for "should
-/// I re-extract".
 fn is_cache_stale(folder: &Path, snapshot: &HashMap<String, u64>) -> bool {
     if snapshot.is_empty() {
         return true;
@@ -193,7 +133,7 @@ fn is_cache_stale(folder: &Path, snapshot: &HashMap<String, u64>) -> bool {
     for (name, &snap) in snapshot {
         let current = match mtime_unix_secs(&folder.join(name)) {
             Some(m) => m,
-            None => continue, // file gone — not stale-relevant
+            None => continue,
         };
         if current > snap {
             return true;
@@ -202,10 +142,6 @@ fn is_cache_stale(folder: &Path, snapshot: &HashMap<String, u64>) -> bool {
     false
 }
 
-/// Per-level lookup `animset_hash → (offset, length)` into `animsets.dat`.
-/// Built once at the start of cache extraction so the moby loop can
-/// resolve clips with a single HashMap lookup instead of re-walking
-/// `assetlookup.dat`'s 0x1D700 table N times.
 struct AnimsetIndex {
     by_hash: HashMap<u64, (u32, u32)>,
 }
@@ -228,12 +164,6 @@ impl AnimsetIndex {
     }
 }
 
-/// Decode the animation clip referenced by a moby's `animset_hash`.
-/// Mirrors main.rs's `fetch_animset_clip` but returns the lunalib
-/// `DecodedClip` directly so we can pass it into the GLB writer
-/// without going through the JSON DTO. Returns `None` when the moby
-/// has no animset, the animset isn't in the lookup, or decoding
-/// fails — extraction continues with no animation in that case.
 fn decode_clip_for_moby(
     level_folder: &Path,
     index: &AnimsetIndex,
@@ -307,10 +237,6 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
     let root = cache_root(folder);
     ensure_dirs(&root)?;
 
-    // Mark the cache as in-progress immediately so a crash mid-extract
-    // leaves a `complete: false` manifest behind. Cache_status flags
-    // that as `incomplete`, the FE prompt explains the situation, and
-    // the user can choose to re-extract on the next open.
     let manifest_path = root.join(MANIFEST_NAME);
     let in_progress = CacheManifest {
         version: MANIFEST_VERSION,
@@ -324,10 +250,6 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
     let shaders: HashMap<u64, ShaderInfo> =
         read_shaders(level_path).map_err(|e| e.to_string())?;
 
-    // Animset lookup, built once per level. Per-moby clip decode below
-    // hits this O(1) HashMap to find the animset slice in animsets.dat.
-    // Missing animsets.dat or empty 0x1D700 table → no animations
-    // baked, GLBs ship without anim data (still renderable).
     let animset_index = AnimsetIndex::build(level_path).ok();
     let animsets_path = level_path.join("animsets.dat");
     let mut animsets_file = std::fs::File::open(&animsets_path).ok();
@@ -335,14 +257,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
     let mut entries: Vec<CacheManifestEntry> = Vec::new();
     let mut needed_textures: HashSet<u32> = HashSet::new();
 
-    // Hold parsed mobys + ties across phases so phase 4 (GLB writing)
-    // can embed texture bytes after phase 3 decodes them. Without this
-    // either we'd re-parse everything (wasteful) or write GLBs without
-    // material data (regression). Memory cost ~50MB on dense levels.
     let mut moby_assets_for_glb: Vec<lunalib::MobyAsset> = Vec::new();
     let mut tie_assets_for_glb: Vec<lunalib::TieAsset> = Vec::new();
 
-    // ── Phase 1: mobys ──
     let mut moby_done = 0usize;
     let phase_total_emit = |total: usize| {
         let _ = on_event.send(CacheEvent::Phase {
@@ -356,9 +273,7 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
             None,
             phase_total_emit,
             |asset| {
-                // Stash a clone for phase 4 (GLB writing — needs to
-                // happen AFTER textures decode so material bytes can
-                // be embedded).
+
                 moby_assets_for_glb.push(asset.clone());
 
                 let mut submeshes = Vec::new();
@@ -414,7 +329,6 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         .map_err(|e| e.to_string())?;
     }
 
-    // ── Phase 2: ties ──
     let mut tie_done = 0usize;
     let tie_phase_emit = |total: usize| {
         let _ = on_event.send(CacheEvent::Phase {
@@ -427,10 +341,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         None,
         tie_phase_emit,
         |asset| {
-            // Stash for phase 4 (GLB writing).
+
             tie_assets_for_glb.push(asset.clone());
-            // Ties don't carry path-style names like mobys do — the FE
-            // falls back to a truncated TUID for the leaf label.
+
             let submeshes: Vec<_> = asset
                 .meshes
                 .into_iter()
@@ -515,7 +428,6 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
     }
     let _ = on_event.send(CacheEvent::Progress { current: tex_done });
 
-    // ── Phase 4: write GLBs with materials embedded ──
     let _ = on_event.send(CacheEvent::Phase {
         phase: "mobys",
         total: moby_assets_for_glb.len() + tie_assets_for_glb.len(),
@@ -564,20 +476,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         glb_done += 1;
         let _ = on_event.send(CacheEvent::Progress { current: glb_done });
     }
-    // Ties: same shape, no skeleton/animations — but we ship them
-    // through the moby GLB writer with empty skeleton so the same
-    // material pipeline runs. lunalib's MobyAsset → tie adapter is a
-    // future cleanup; for now we'd need a sibling `write_tie_glb_full`.
-    // Skipping tie GLBs in this turn since the writer signature is
-    // moby-shaped. Ties continue to ship as JSON via the existing
-    // path; their GLB conversion is a follow-up.
-    let _ = tie_assets_for_glb; // suppress unused warning
 
-    // ── Final: write manifest with `complete: true` ──
-    // Overwrites the in-progress placeholder written at the top of
-    // this function. If we never reach this line (panic, IO error,
-    // user kill), the on-disk manifest stays `complete: false` and
-    // the next `cache_status` will flag it as `incomplete`.
+    let _ = tie_assets_for_glb;
+
     let manifest = CacheManifest {
         version: MANIFEST_VERSION,
         folder: folder.to_string(),
@@ -589,12 +490,6 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
     Ok(manifest.entries.len())
 }
 
-/// Count files in a cache subdir (e.g. `mobys/`). Used as a fallback
-/// for `cache_status` when the manifest is missing or unreadable: the
-/// raw filesystem still tells us roughly how much was extracted, so
-/// the FE can show the cache prompt instead of silently re-running
-/// the streaming pipeline. Symlinks + nested dirs are ignored — the
-/// extractor only writes flat files into these subdirs.
 fn count_files_in(dir: &Path) -> usize {
     let Ok(entries) = fs::read_dir(dir) else {
         return 0;
@@ -611,11 +506,7 @@ pub fn cache_status(folder: String) -> Result<CacheStatus, String> {
     let manifest_path = root.join(MANIFEST_NAME);
 
     if !manifest_path.is_file() {
-        // No manifest — but the directory itself may still have
-        // extracted files from a prior run that crashed before the
-        // manifest was written. Surface that as `exists: true` with
-        // `incomplete: true` so the FE prompt offers re-extraction
-        // (rather than silently starting another full streaming pass).
+
         if root.is_dir() {
             let mobys = count_files_in(&root.join("mobys"));
             let ties = count_files_in(&root.join("ties"));
@@ -648,9 +539,6 @@ pub fn cache_status(folder: String) -> Result<CacheStatus, String> {
         });
     }
 
-    // Manifest exists — try to parse. If parsing fails (e.g. the
-    // schema changed since the user's last extraction), fall back to
-    // the directory-count path above so the FE still gets a prompt.
     let bytes = match fs::read(&manifest_path) {
         Ok(b) => b,
         Err(e) => {
@@ -677,8 +565,7 @@ pub fn cache_status(folder: String) -> Result<CacheStatus, String> {
         }
     }
     let stale = is_cache_stale(Path::new(&folder), &manifest.source_mtimes);
-    // An incomplete manifest (extraction was interrupted) is also
-    // treated as stale so the prompt steers the user toward re-extract.
+
     let incomplete = !manifest.complete;
     Ok(CacheStatus {
         exists: true,
@@ -693,10 +580,6 @@ pub fn cache_status(folder: String) -> Result<CacheStatus, String> {
     })
 }
 
-/// Build a `CacheStatus` from a raw filesystem scan when the manifest
-/// is unreadable. Used by the recovery branch above. `incomplete` is
-/// passed through so the FE can distinguish "manifest was unreadable"
-/// from "manifest was OK but source files changed".
 fn cache_status_from_dir(
     folder: &str,
     root: &Path,
@@ -729,12 +612,6 @@ pub fn read_cached_manifest(folder: String) -> Result<CacheManifest, String> {
     serde_json::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))
 }
 
-/// Copy a moby's cached `.glb` (geometry + skeleton + animations +
-/// textures, all baked in by the G4 pipeline) to a user-chosen path.
-/// This is the correct export path — `exportToGlb` in `export.ts`
-/// goes through Three.js's GLTFExporter and inherits the bind-pose
-/// math bugs we've been chasing. Copying the pre-baked GLB sidesteps
-/// all of that.
 #[tauri::command]
 pub fn export_cached_moby_glb(
     level_folder: String,
@@ -766,10 +643,6 @@ pub fn read_cached_asset(folder: String, file: String) -> Result<serde_json::Val
     serde_json::from_slice(&bytes).map_err(|e| format!("parse {file}: {e}"))
 }
 
-/// Raw bytes of a cache file. Used for PNGs (textures) — JSON files
-/// should go through `read_cached_asset` instead so the FE doesn't
-/// double-parse. Returns binary IPC (`tauri::ipc::Response`) so the
-/// payload doesn't get JSON-serialized.
 #[tauri::command]
 pub fn read_cached_bytes(
     folder: String,
@@ -780,9 +653,6 @@ pub fn read_cached_bytes(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-/// Re-extract the cache from scratch. Wipes `_rechimera_cache/` and
-/// re-runs the full extraction. Same progress-event channel as the
-/// initial extraction.
 #[tauri::command]
 pub fn reextract_level_cache(
     folder: String,
@@ -796,9 +666,6 @@ pub fn reextract_level_cache(
     extract_level_to_cache(folder, on_event)
 }
 
-/// Validate a manifest-supplied relative path against the cache root.
-/// Any `..` segment, empty segment, or absolute path is rejected — a
-/// crafted manifest can't escape the cache directory through this.
 fn sanitized_cache_path(folder: &str, file: &str) -> Result<PathBuf, String> {
     if file.split(['/', '\\']).any(|seg| seg == ".." || seg.is_empty()) {
         return Err(format!("rejected path: {file}"));

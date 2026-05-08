@@ -25,55 +25,23 @@ function formatTime(ts: number): string {
   });
 }
 
-export function BottomPanel({
-  console,
-  collapsed,
-  onToggleCollapsed,
-  errorCount = 0,
-  warnCount = 0,
-}: BottomPanelProps) {
+export function BottomPanel({ console }: BottomPanelProps) {
   return (
-    <div className={`panel pane-bottom ${collapsed ? "collapsed" : ""}`}>
-      <button
-        type="button"
-        className="panel-header panel-header-toggle"
-        onClick={onToggleCollapsed}
-        title={collapsed ? "Expand console" : "Collapse console"}
-        aria-expanded={!collapsed}
-      >
-        <div className="panel-header-tabs">
-          <span className={`panel-tab ${collapsed ? "" : "active"}`}>
-            Console
-            <span className="badge-cluster">
-              {console.length > 0 && (
-                <span className="badge badge-neutral">{console.length}</span>
-              )}
-              {warnCount > 0 && (
-                <span className="badge badge-warn">{warnCount}</span>
-              )}
-              {errorCount > 0 && (
-                <span className="badge badge-error">{errorCount}</span>
-              )}
-            </span>
-          </span>
+    <div className="panel pane-bottom view-flush">
+      <div className="panel-body">
+        <div className="console-log">
+          {console.length === 0 ? (
+            <div className="tree-empty">No log entries yet.</div>
+          ) : (
+            console.map((e, i) => (
+              <div key={i} className={`console-line ${e.level}`}>
+                <span className="console-time">{formatTime(e.ts)}</span>
+                <span className="console-msg">{e.msg}</span>
+              </div>
+            ))
+          )}
         </div>
-      </button>
-      {!collapsed && (
-        <div className="panel-body">
-          <div className="console-log">
-            {console.length === 0 ? (
-              <div className="tree-empty">No log entries yet.</div>
-            ) : (
-              console.map((e, i) => (
-                <div key={i} className={`console-line ${e.level}`}>
-                  <span className="console-time">{formatTime(e.ts)}</span>
-                  <span className="console-msg">{e.msg}</span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }

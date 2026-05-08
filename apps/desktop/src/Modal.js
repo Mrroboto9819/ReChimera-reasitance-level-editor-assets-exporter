@@ -7,23 +7,23 @@ const SIZE_WIDTH = {
     md: 480,
     lg: 640,
 };
-/**
- * Reusable modal with GSAP-driven enter/exit. Designed to layer on top of
- * any view — uses a portal mounted on `document.body` so z-index never
- * fights with the rest of the app.
- *
- * The component keeps its DOM mounted across `open` toggles so GSAP can run
- * the exit timeline; once the exit completes, it sets `display: none` to
- * keep the document tree small.
- */
+
+
+
+
+
+
+
+
+
 export function Modal({ open, onClose, dismissable = true, title, subtitle, footer, size = "md", children, }) {
     const backdropRef = useRef(null);
     const dialogRef = useRef(null);
-    // Tracks the currently-running tween so we can interrupt cleanly when the
-    // user toggles `open` faster than the animation can settle.
+    
+    
     const tlRef = useRef(null);
-    // Drive enter/exit with GSAP. useLayoutEffect ensures the timeline starts
-    // from the correct initial state before the browser paints.
+    
+    
     useLayoutEffect(() => {
         const backdrop = backdropRef.current;
         const dialog = dialogRef.current;
@@ -58,7 +58,7 @@ export function Modal({ open, onClose, dismissable = true, title, subtitle, foot
             tlRef.current = tl;
         }
     }, [open]);
-    // Escape closes when dismissable.
+    
     useEffect(() => {
         if (!open || !dismissable)
             return;
@@ -69,7 +69,7 @@ export function Modal({ open, onClose, dismissable = true, title, subtitle, foot
         document.addEventListener("keydown", handler);
         return () => document.removeEventListener("keydown", handler);
     }, [open, dismissable, onClose]);
-    // Lock body scroll while the modal is open.
+    
     useEffect(() => {
         if (!open)
             return;

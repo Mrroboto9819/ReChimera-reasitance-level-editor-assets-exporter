@@ -43,7 +43,7 @@ function pushRecent(path: string): string[] {
   try {
     localStorage.setItem(RECENT_KEY, JSON.stringify(next));
   } catch {
-    /* localStorage may be unavailable in some webview modes */
+    
   }
   return next;
 }
@@ -61,12 +61,12 @@ function acceptPsarcDrop(p: string): boolean {
   return !/\.[a-z0-9]{1,6}$/i.test(p);
 }
 
-/**
- * Modal-style PSARC extractor — same two-card layout as OpenLevelModal
- * for visual continuity. The bottom-panel `PsarcTools` is kept around
- * for its inline workflow; this modal is the polished entry point
- * triggered from the menu bar.
- */
+
+
+
+
+
+
 export function PsarcModal({ open, onClose }: PsarcModalProps) {
   const [inputPath, setInputPath] = useState("");
   const [outputPath, setOutputPath] = useState("");
@@ -119,8 +119,8 @@ export function PsarcModal({ open, onClose }: PsarcModalProps) {
     }
   }, []);
 
-  // DND: route .psarc files to inputPath, anything else (folders) to
-  // outputPath. Setting both at once when the user drops two paths.
+  
+  
   const handleDrop = useCallback((paths: string[]) => {
     if (paths.length === 0) {
       setWarning("Drop a .psarc file or an output folder.");
@@ -201,7 +201,7 @@ export function PsarcModal({ open, onClose }: PsarcModalProps) {
     try {
       localStorage.setItem(RECENT_KEY, JSON.stringify(next));
     } catch {
-      /* ignore */
+      
     }
     setRecent(next);
   }, []);

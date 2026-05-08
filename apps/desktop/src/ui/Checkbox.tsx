@@ -7,10 +7,10 @@ interface CheckboxProps
   label?: ReactNode;
 }
 
-/// Labeled checkbox. The `<label>` wrapper makes the entire row a
-/// click target, which matches the inline-checkbox UX in the modals
-/// (Skeleton toggle, Show bind pose, etc.) without each caller having
-/// to re-implement the wrapper.
+
+
+
+
 export const Checkbox = forwardRef<HTMLInputElement, CheckboxProps>(
   function Checkbox(
     {

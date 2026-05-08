@@ -18,6 +18,18 @@
     "disclaimer": "Les traductions ont été générées par IA — désolé pour les fautes d'orthographe ou de grammaire. Vous pouvez soumettre des corrections via une pull request sur GitHub.",
     "submitPR": "Soumettre une correction"
   },
+  "views": {
+    "hierarchy": "Hiérarchie",
+    "inspector": "Inspecteur",
+    "console": "Console",
+    "viewport": "Vue 3D"
+  },
+  "tabs": {
+    "dropMove": "Déplacer vers ce panneau",
+    "emptyTitle": "Panneau vide",
+    "emptyHint": "Glissez un onglet ici ou cliquez sur + pour ajouter une vue",
+    "addView": "Ajouter une vue à ce panneau"
+  },
   "toolbar": {
     "renderLayers": "Calques de rendu",
     "viewportOverlays": "Superpositions du viewport",
@@ -93,6 +105,14 @@
     "browse": "Parcourir…",
     "open": "Ouvrir",
     "dropHint": "Déposez un dossier ici"
+  },
+  "cacheModal": {
+    "title": "Génération du cache du niveau",
+    "subtitle": "Décodage des mobys, ties et textures dans _rechimera_cache/ — les GLB pré-cuits accélèrent les exports.",
+    "phase_mobys": "Mobys",
+    "phase_ties": "Ties",
+    "phase_textures": "Textures",
+    "hint": "Cela s'exécute en arrière-plan. Ne fermez pas l'application — la prochaine ouverture sera instantanée."
   },
   "cachePrompt": {
     "titleFound": "Données de niveau en cache trouvées",

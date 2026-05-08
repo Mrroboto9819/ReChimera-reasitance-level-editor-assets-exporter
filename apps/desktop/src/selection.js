@@ -4,7 +4,7 @@ const EMPTY = {
     primary: null,
     anchor: null,
 };
-/** Normalize cross-platform mod-keys: on macOS metaKey (⌘) acts as ctrl. */
+
 export function clickMods(e) {
     return {
         ctrl: e.ctrlKey || e.metaKey,
@@ -17,15 +17,15 @@ export function useSelection(orderedItems) {
     const select = useCallback((target, mods = {}) => {
         setState((prev) => {
             if (!target) {
-                // Click in empty space — clear selection but PRESERVE the anchor
-                // so a subsequent shift-click still has a starting point. This
-                // matches Windows Explorer / VS Code behavior.
+                
+                
+                
                 if (mods.ctrl || mods.shift)
                     return prev;
                 return { ids: new Set(), primary: null, anchor: prev.anchor };
             }
             const id = target.tuid;
-            // Shift+click: range from anchor to target (within current ordering).
+            
             if (mods.shift && prev.anchor) {
                 const list = items();
                 const anchorIdx = list.findIndex((i) => i.tuid === prev.anchor);
@@ -43,7 +43,7 @@ export function useSelection(orderedItems) {
                     return { ids: next, primary: id, anchor: prev.anchor };
                 }
             }
-            // Ctrl/Cmd+click: toggle this id, keep others.
+            
             if (mods.ctrl) {
                 const next = new Set(prev.ids);
                 if (next.has(id)) {
@@ -57,7 +57,7 @@ export function useSelection(orderedItems) {
                 next.add(id);
                 return { ids: next, primary: id, anchor: id };
             }
-            // Plain click — single select.
+            
             return {
                 ids: new Set([id]),
                 primary: id,

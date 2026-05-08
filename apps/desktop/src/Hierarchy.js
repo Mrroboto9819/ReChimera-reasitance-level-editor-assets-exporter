@@ -9,15 +9,15 @@ const KIND_GLYPHS = {
     moby: "M",
     tie: "T",
 };
-/**
- * Hierarchy/Outliner-style tree (Unity Hierarchy / Unreal World Outliner /
- * Godot Scene). Two-level tree: Kind → Instance.
- *
- * Click semantics:
- * - plain click: single select
- * - ctrl/cmd-click: toggle one
- * - shift-click: range from anchor (last single-clicked) to target
- */
+
+
+
+
+
+
+
+
+
 export function Hierarchy({ instances, selection }) {
     const [collapsed, setCollapsed] = useState(new Set());
     const [filter, setFilter] = useState("");

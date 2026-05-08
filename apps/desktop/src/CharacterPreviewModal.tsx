@@ -4,25 +4,25 @@ import { AssetPreview } from "./AssetPreview";
 import { Modal } from "./Modal";
 
 interface CharacterPreviewModalProps {
-  /** Open when non-null; the asset_tuid to show. */
+  
   charTuid: string | null;
-  /** Library data — assets + textures. */
+  
   library: { assets: AssetMeshes[]; textures: TexturePayload[] } | null;
   onClose: () => void;
-  /** Triggered by Export — parent runs the GLB exporter with a synthetic
-   *  Instance built from this asset (since it's not placed in the level). */
+  
+
   onExport: (asset: AssetMeshes) => void;
 }
 
-/**
- * Floating preview window for a character / weapon / enemy from the
- * level's character library. Big interactive 3D view + Export to .glb.
- *
- * Renders inside our Modal portal so it sits above the main viewport
- * and can be dismissed with Escape, the × button, or backdrop-click.
- * Note: Modal is currently always centered — if you want a draggable /
- * resizable floating window, that's a follow-up to the Modal component.
- */
+
+
+
+
+
+
+
+
+
 export function CharacterPreviewModal({
   charTuid,
   library,
@@ -36,9 +36,9 @@ export function CharacterPreviewModal({
     ? library.assets.find((a) => a.asset_tuid === charTuid) ?? null
     : null;
 
-  // Build a synthetic Instance so we can hand it to AssetPreview unchanged.
-  // The library assets aren't placed; we synthesize a "library-asset" tuid
-  // that won't collide with real placement TUIDs.
+  
+  
+  
   const syntheticInstance: Instance | null = asset
     ? {
         tuid: `${asset.asset_tuid}#library`,
@@ -51,7 +51,7 @@ export function CharacterPreviewModal({
       }
     : null;
 
-  // AssetPreview expects a `LevelMeshes` shape; we map the library into one.
+  
   const previewMeshes: LevelMeshes | null = library
     ? {
         moby_assets: library.assets,
@@ -136,8 +136,8 @@ export function CharacterPreviewModal({
 }
 
 function shortName(assetTuid: string): string {
-  // The TUID has 16 hex digits — show the last 6 to keep titles short
-  // while still distinguishable. Asset names aren't carried over the
-  // streaming API right now (TUID is the only stable identifier).
+  
+  
+  
   return `0x…${assetTuid.slice(-6)}`;
 }

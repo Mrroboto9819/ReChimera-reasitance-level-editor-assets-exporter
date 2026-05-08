@@ -1,24 +1,4 @@
-//! Native GLB writer for moby assets.
-//!
-//! Mirrors IT's `extract_gltf.cpp::ExtractMobys` workflow but produces the
-//! GLB binary directly from Rust. Layered in phases:
-//!
-//!   - **G1**: positions + UVs + indices (geometry only).
-//!   - **G2 (now)**: skin — bone nodes, joints[], inverseBindMatrices,
-//!     plus JOINTS_0 + WEIGHTS_0 attributes per skinned primitive. The
-//!     resulting GLB opens as a rigged armature in Blender.
-//!   - G3: animation tracks per animset clip.
-//!   - G4: PBR materials with embedded PNG textures.
-//!
-//! Output is a self-contained binary glTF (.glb):
-//!
-//! ```text
-//! [12-byte GLB header: magic 'glTF' + version 2 + total length]
-//! [JSON chunk: 8-byte header + JSON payload, padded to 4 bytes with 0x20]
-//! [BIN chunk:  8-byte header + binary payload, padded to 4 bytes with 0x00]
-//! ```
-//!
-//! Spec: https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#binary-gltf-layout
+
 
 use byteorder::{LittleEndian, WriteBytesExt};
 use gltf_json::validation::{Checked, USize64};
@@ -40,21 +20,15 @@ use crate::moby::{MobyAsset, MobyMesh};
 use crate::shader::ShaderInfo;
 use crate::skeleton::Skeleton;
 
-const GLB_MAGIC: u32 = 0x46546C67; // "glTF"
+const GLB_MAGIC: u32 = 0x46546C67;
 const GLB_VERSION: u32 = 2;
-const CHUNK_TYPE_JSON: u32 = 0x4E4F534A; // "JSON"
-const CHUNK_TYPE_BIN: u32 = 0x004E4942; // "BIN\0"
+const CHUNK_TYPE_JSON: u32 = 0x4E4F534A;
+const CHUNK_TYPE_BIN: u32 = 0x004E4942;
 
-/// Build a binary glTF (`.glb`) for one moby asset.
-///
-/// Convenience wrapper — no animations, no materials. See
-/// `write_moby_glb_full` for the complete version.
 pub fn write_moby_geometry_glb(asset: &MobyAsset) -> Result<Vec<u8>> {
     write_moby_glb_full(asset, &[], &HashMap::new(), &HashMap::new())
 }
 
-/// Convenience: geometry + skin + animations, no materials.
-/// Compatibility entry point for cache.rs's pre-G4 callers.
 pub fn write_moby_glb_with_animations(
     asset: &MobyAsset,
     clips: &[DecodedClip],
@@ -62,25 +36,6 @@ pub fn write_moby_glb_with_animations(
     write_moby_glb_full(asset, clips, &HashMap::new(), &HashMap::new())
 }
 
-/// Build a binary glTF (`.glb`) with geometry + skeleton + per-clip
-/// animations + PBR materials with embedded PNG textures.
-///
-/// `shaders` maps shader TUID → texture id refs (per-shader albedo /
-/// normal / expensive). `textures` maps texture id → PNG bytes; the
-/// writer embeds whichever ids the asset's shaders actually reference.
-/// Pass empty maps to skip materials entirely.
-///
-/// Output structure:
-///   - One scene (`scenes[0]`)
-///   - One asset root node (`nodes[0]`) — holds the mesh
-///   - N bone nodes (`nodes[1..1+B]`) — per-bone TRS via `matrix`
-///   - One mesh (`meshes[0]`) — N primitives (one per submesh)
-///   - One skin (`skins[0]`) when the asset has a skeleton
-///   - M animations (`animations[0..M]`) — one per clip
-///   - K materials with embedded PNG textures via `bufferView`
-///
-/// Skinned submeshes get JOINTS_0 (u8 vec4) + WEIGHTS_0 (u8 vec4 UNORM)
-/// attributes. Static submeshes get just position+UV+indices.
 pub fn write_moby_glb_full(
     asset: &MobyAsset,
     clips: &[DecodedClip],
@@ -96,13 +51,9 @@ pub fn write_moby_glb_full(
     let mut images: Vec<gltf_json::Image> = Vec::new();
     let mut gltf_textures: Vec<gltf_json::Texture> = Vec::new();
     let mut materials: Vec<gltf_json::Material> = Vec::new();
-    // Cache so duplicate texture-id references reuse the same Image
-    // (a level often has albedo+emissive sharing one PNG, etc).
+
     let mut image_idx_by_tex_id: HashMap<u32, u32> = HashMap::new();
 
-    // ── Asset root node (index 0) holds the mesh.
-    // Its children list is filled later if there's a skeleton, since
-    // the bone node indices aren't known until we push them.
     nodes.push(gltf_json::Node {
         camera: None,
         children: None,
@@ -119,7 +70,6 @@ pub fn write_moby_glb_full(
     });
     let asset_root_idx: u32 = 0;
 
-    // ── Skeleton: emit one Node per bone, build skin
     let skin_idx = if let Some(skel) = asset.skeleton.as_ref() {
         if !skel.bones.is_empty() && !skel.bind_local.is_empty() {
             Some(emit_skin(
@@ -137,22 +87,15 @@ pub fn write_moby_glb_full(
         None
     };
 
-    // Bone-node base index — bones live in `nodes[bone_node_base ..
-    // bone_node_base + bone_count]`. Set right after emit_skin so we
-    // can target the right node indices from the animation channels.
     let (bone_node_base, bone_count) = match (skin_idx, asset.skeleton.as_ref()) {
         (Some(_), Some(skel)) => (1u32, skel.bones.len()),
         _ => (0u32, 0usize),
     };
 
-    // ── Mesh: one primitive per submesh
     let mut primitives: Vec<Primitive> = Vec::new();
     for bangle in &asset.bangles {
         for mesh in &bangle.meshes {
-            // Resolve per-submesh material (albedo only for now; normal
-            // / emissive maps land in a follow-up). Returns None when
-            // shader/texture data is unavailable — primitive ships
-            // material-less in that case.
+
             let material_idx = build_material(
                 &mut bin,
                 &mut buffer_views,
@@ -183,14 +126,10 @@ pub fn write_moby_glb_full(
         });
     }
 
-    // Wire skin reference onto the mesh node (only when there's a skin).
     if let Some(_skin) = skin_idx {
         nodes[asset_root_idx as usize].skin = Some(Index::new(0));
     }
 
-    // Animations — emit only when the asset has a usable skeleton AND
-    // the caller passed at least one clip. Each clip becomes one glTF
-    // Animation. Channels target bone Nodes by index.
     if skin_idx.is_some() && !clips.is_empty() && bone_count > 0 {
         emit_animations(
             &mut bin,
@@ -203,7 +142,6 @@ pub fn write_moby_glb_full(
         );
     }
 
-    // ── Pad bin chunk to 4-byte alignment with zero bytes.
     while bin.len() % 4 != 0 {
         bin.push(0);
     }
@@ -224,8 +162,6 @@ pub fn write_moby_glb_full(
         weights: None,
     };
 
-    // Scene's root nodes: just the asset root. Bone roots are children
-    // of the asset root (set up by `emit_skin` below).
     let scene_root_nodes: Vec<Index<gltf_json::Node>> = vec![Index::new(asset_root_idx)];
 
     let scene = gltf_json::Scene {
@@ -262,11 +198,6 @@ fn asset_display_name(asset: &MobyAsset) -> String {
     }
 }
 
-/// Append per-bone Nodes + InverseBindMatrices accessor + Skin record.
-/// Returns the skin index. Bone Nodes are appended starting at
-/// `nodes.len()`. Their parent/child wiring uses the in-disk parent
-/// index — bones with `parent_index < 0` are attached as children of
-/// the asset root node (index 0).
 fn emit_skin(
     bin: &mut Vec<u8>,
     accessors: &mut Vec<gltf_json::Accessor>,
@@ -278,16 +209,8 @@ fn emit_skin(
     let bone_count = skel.bones.len();
     let bone_node_base = nodes.len() as u32;
 
-    // Emit per-bone Nodes with `matrix` set from bind_local. We use the
-    // matrix path (rather than decomposed TRS) so we don't have to do
-    // matrix decomposition on the Rust side — glTF tools (Blender,
-    // three.js) handle it. The on-disk bytes are already in the layout
-    // these consumers expect.
     for i in 0..bone_count {
-        let matrix: Option<[f32; 16]> = skel
-            .bind_local
-            .get(i)
-            .map(|m| transpose_4x4(m));
+        let matrix: Option<[f32; 16]> = skel.bind_local.get(i).copied();
         nodes.push(gltf_json::Node {
             camera: None,
             children: None,
@@ -304,9 +227,6 @@ fn emit_skin(
         });
     }
 
-    // Wire children. Each non-root bone is added to its parent's
-    // `children`; root bones (parent < 0) become children of the
-    // asset root node (index 0).
     let mut asset_root_children: Vec<Index<gltf_json::Node>> = Vec::new();
     for i in 0..bone_count {
         let parent_idx = skel.bones[i].parent_index;
@@ -325,9 +245,6 @@ fn emit_skin(
         root_kids.extend(asset_root_children);
     }
 
-    // InverseBindMatrices accessor — one MAT4 per bone, contiguous.
-    // Falls back to identity matrices when the source skeleton lacks
-    // tms1 (rare but possible — see skeleton.rs read_matrix_array).
     let ibm_bytes = pack_ibms(skel, bone_count);
     let ibm_view = push_buffer_view(bin, buffer_views, &ibm_bytes);
     let ibm_accessor_idx = accessors.len() as u32;
@@ -346,7 +263,6 @@ fn emit_skin(
         sparse: None,
     });
 
-    // Skin record.
     let joints: Vec<Index<gltf_json::Node>> = (0..bone_count)
         .map(|i| Index::new(bone_node_base + i as u32))
         .collect();
@@ -363,25 +279,25 @@ fn emit_skin(
 }
 
 fn pack_ibms(skel: &Skeleton, bone_count: usize) -> Vec<u8> {
-    let mut world: Vec<[f32; 16]> = vec![IDENTITY_MAT4; bone_count];
+    let mut world_row: Vec<[f32; 16]> = vec![IDENTITY_MAT4; bone_count];
     for i in 0..bone_count {
-        let local = skel.bind_local.get(i).copied().unwrap_or(IDENTITY_MAT4);
+        let local_col = skel.bind_local.get(i).copied().unwrap_or(IDENTITY_MAT4);
         let parent = skel
             .bones
             .get(i)
             .map(|b| b.parent_index)
             .unwrap_or(-1);
-        let parent_w = if parent >= 0 && (parent as usize) < bone_count {
-            world[parent as usize]
+        let parent_w_row = if parent >= 0 && (parent as usize) < bone_count {
+            world_row[parent as usize]
         } else {
             IDENTITY_MAT4
         };
-        world[i] = mat4_mul_row_major(&parent_w, &local);
+        world_row[i] = mat4_mul_row_major(&local_col, &parent_w_row);
     }
 
     let mut out = Vec::with_capacity(bone_count * 64);
     for i in 0..bone_count {
-        let inv_row = mat4_inverse_row_major(&world[i]).unwrap_or(IDENTITY_MAT4);
+        let inv_row = mat4_inverse_row_major(&world_row[i]).unwrap_or(IDENTITY_MAT4);
         let inv_col = transpose_4x4(&inv_row);
         for v in inv_col {
             out.write_f32::<LittleEndian>(v).expect("vec write");
@@ -394,10 +310,6 @@ const IDENTITY_MAT4: [f32; 16] = [
     1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
 ];
 
-/// Build one glTF primitive from a `MobyMesh`. When `skinned` is true
-/// AND the mesh has bone-weight data, JOINTS_0 / WEIGHTS_0 attributes
-/// are emitted. The skin reference itself is on the parent Node, not
-/// the primitive.
 fn push_submesh(
     bin: &mut Vec<u8>,
     accessors: &mut Vec<gltf_json::Accessor>,
@@ -419,7 +331,6 @@ fn push_submesh(
     let mut attributes: BTreeMap<Checked<Semantic>, Index<gltf_json::Accessor>> =
         BTreeMap::new();
 
-    // ── POSITION ──
     let pos_view = push_buffer_view(bin, views, &positions_to_bytes(&mesh.positions));
     let (min, max) = position_bounds(&mesh.positions);
     accessors.push(gltf_json::Accessor {
@@ -441,7 +352,6 @@ fn push_submesh(
         Index::new((accessors.len() - 1) as u32),
     );
 
-    // ── TEXCOORD_0 ──
     if !mesh.uvs.is_empty() {
         let uv_view = push_buffer_view(bin, views, &uvs_to_bytes(&mesh.uvs));
         accessors.push(gltf_json::Accessor {
@@ -464,7 +374,6 @@ fn push_submesh(
         );
     }
 
-    // ── JOINTS_0 + WEIGHTS_0 (skinned only) ──
     if skinned
         && !mesh.bone_indices.is_empty()
         && mesh.bone_weights.len() == mesh.bone_indices.len()
@@ -476,8 +385,6 @@ fn push_submesh(
             "bone_indices must be 4 per vertex"
         );
 
-        // JOINTS_0 — u8 vec4. PS3 source has u16 indices but actual
-        // values are < 256 (per-mesh boneMap is small), so u8 is fine.
         let joints_bytes = joints_u8_bytes(&mesh.bone_indices, vertex_count);
         let j_view = push_buffer_view(bin, views, &joints_bytes);
         accessors.push(gltf_json::Accessor {
@@ -499,7 +406,6 @@ fn push_submesh(
             Index::new((accessors.len() - 1) as u32),
         );
 
-        // WEIGHTS_0 — u8 vec4 UNORM (0..255 → 0..1).
         let w_view = push_buffer_view(bin, views, &mesh.bone_weights);
         accessors.push(gltf_json::Accessor {
             buffer_view: Some(Index::new(w_view)),
@@ -521,7 +427,6 @@ fn push_submesh(
         );
     }
 
-    // ── INDICES (u32) ──
     let idx_view = push_buffer_view(bin, views, &indices_to_bytes(&mesh.indices));
     accessors.push(gltf_json::Accessor {
         buffer_view: Some(Index::new(idx_view)),
@@ -550,13 +455,6 @@ fn push_submesh(
     })
 }
 
-/// Resolve `shader_index` → albedo texture → embed it as a glTF
-/// Image+Texture+Material. Returns `Some(material_index)` on success,
-/// `None` when any step fails (so the primitive ships material-less,
-/// rendering as the default white in glTF viewers).
-///
-/// Caches Image entries by texture id so submeshes that share a
-/// texture don't bloat the GLB with duplicate PNG bytes.
 #[allow(clippy::too_many_arguments)]
 fn build_material(
     bin: &mut Vec<u8>,
@@ -581,7 +479,7 @@ fn build_material(
     let image_idx = match image_idx_by_tex_id.get(&albedo_id) {
         Some(&idx) => idx,
         None => {
-            // Embed the PNG bytes in the binary chunk via a buffer view.
+
             let view = push_buffer_view(bin, views, png_bytes);
             images.push(gltf_json::Image {
                 buffer_view: Some(Index::new(view)),
@@ -592,8 +490,7 @@ fn build_material(
                 extras: Default::default(),
             });
             let img_idx = (images.len() - 1) as u32;
-            // Texture record references the Image. No sampler set —
-            // glTF defaults to LINEAR filtering, which is fine.
+
             gltf_textures.push(gltf_json::Texture {
                 name: Some(format!("tex_{albedo_id}")),
                 sampler: None,
@@ -605,9 +502,7 @@ fn build_material(
             img_idx
         }
     };
-    // Find or create a Texture record pointing at this image. Each
-    // image gets its own Texture record (could share, but the size is
-    // negligible).
+
     let texture_idx = (gltf_textures.len() - 1) as u32;
 
     let mut pbr = gltf_json::material::PbrMetallicRoughness {
@@ -624,7 +519,7 @@ fn build_material(
         extensions: Default::default(),
         extras: Default::default(),
     };
-    // Suppress unused-mut warning when no roughness texture path runs.
+
     pbr.metallic_roughness_texture = pbr.metallic_roughness_texture.take();
 
     materials.push(gltf_json::Material {
@@ -640,7 +535,7 @@ fn build_material(
         extensions: Default::default(),
         extras: Default::default(),
     });
-    let _ = image_idx; // kept for potential reuse logic
+    let _ = image_idx;
     Some((materials.len() - 1) as u32)
 }
 
@@ -691,9 +586,6 @@ fn indices_to_bytes(indices: &[u32]) -> Vec<u8> {
     out
 }
 
-/// Convert per-vertex `[u16; 4]` joint indices (which actually hold
-/// u8-range values for R2 mobys) into a packed `[u8; 4]` per vertex.
-/// Saturates at 0xFF — which is fine since real values fit.
 fn joints_u8_bytes(indices: &[u16], vertex_count: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(vertex_count * 4);
     for i in 0..vertex_count {
@@ -763,10 +655,6 @@ fn serialize_glb(root: &gltf_json::Root, bin: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Emit one glTF Animation per clip. Channels target bone Nodes by
-/// index. Skips bones beyond `bone_count` (face-only viseme clips
-/// can drive bones the rig doesn't have). Static tracks (single
-/// keyframe) use STEP interpolation; animated tracks use LINEAR.
 fn emit_animations(
     bin: &mut Vec<u8>,
     accessors: &mut Vec<gltf_json::Accessor>,
@@ -783,10 +671,6 @@ fn emit_animations(
             1.0 / 30.0
         };
 
-        // Two shared time accessors per clip: one for animated tracks
-        // (`num_frames` keyframes at i*dt), one for static tracks
-        // (single keyframe at t=0). Building once per clip avoids
-        // per-bone duplication of the time array.
         let animated_time_acc = if clip.num_frames > 0 {
             let times: Vec<f32> = (0..clip.num_frames as usize)
                 .map(|i| i as f32 * dt)
@@ -805,7 +689,6 @@ fn emit_animations(
             let bone = &clip.bones[b];
             let target_node = Index::new(bone_node_base + b as u32);
 
-            // Rotation track (VEC4 quat).
             if !bone.rotations.is_empty() {
                 let time_acc = if bone.rotation_animated {
                     animated_time_acc.unwrap_or(static_time_acc)
@@ -837,7 +720,6 @@ fn emit_animations(
                 });
             }
 
-            // Translation track (VEC3).
             if !bone.translations.is_empty() {
                 let time_acc = if bone.translation_animated {
                     animated_time_acc.unwrap_or(static_time_acc)
@@ -869,7 +751,6 @@ fn emit_animations(
                 });
             }
 
-            // Scale track (VEC3).
             if !bone.scales.is_empty() {
                 let time_acc = if bone.scale_animated {
                     animated_time_acc.unwrap_or(static_time_acc)

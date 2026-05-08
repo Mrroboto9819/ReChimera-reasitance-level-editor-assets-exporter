@@ -8,13 +8,13 @@ import { FpsOverlay, FpsSampler } from "./FpsOverlay";
 import { clickMods } from "./selection";
 const EMPTY_TEXTURES = [];
 const SELECTED_COLOR = new THREE.Color("#ffbc33");
-/* ────────────────────────────────────────────────────────────────────────
- * Texture cache: PNG bytes → THREE.Texture, keyed by albedo_id.
- *
- * `useTextureMap` builds incrementally: only NEW payloads (id not yet in
- * the cache) get decoded. Repeated calls with the same payload list reuse
- * the same THREE.Texture instances so materials stay stable.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
+
+
+
+
 function buildOneTexture(t) {
     const blob = new Blob([new Uint8Array(t.png)], { type: "image/png" });
     const url = URL.createObjectURL(blob);
@@ -23,7 +23,7 @@ function buildOneTexture(t) {
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
-    tex.flipY = false; // PS3 UVs already match three.js convention.
+    tex.flipY = false; 
     tex.minFilter = THREE.LinearMipmapLinearFilter;
     tex.magFilter = THREE.LinearFilter;
     tex.generateMipmaps = true;
@@ -36,20 +36,20 @@ function buildOneTexture(t) {
 }
 function useTextureMap(textures) {
     const cacheRef = useRef(new Map());
-    // Add new textures during render. AssetGroup's getMaterial reads the same
-    // ref later in the same render pass and patches existing materials' .map
-    // — that pair (in-render add + in-render patch) is what makes textures
-    // attach to materials that were built in an earlier flush.
-    //
-    // The previous useEffect-based variant deferred the add to after-commit,
-    // and `[textures]` deps never changed (we mutate the same array each
-    // flush), so the effect only ran once on mount before any texture event.
+    
+    
+    
+    
+    
+    
+    
+    
     for (const t of textures) {
         if (!cacheRef.current.has(t.id)) {
             cacheRef.current.set(t.id, buildOneTexture(t));
         }
     }
-    // Dispose textures on unmount.
+    
     useEffect(() => {
         const cache = cacheRef.current;
         return () => {
@@ -60,9 +60,9 @@ function useTextureMap(textures) {
     }, []);
     return cacheRef.current;
 }
-/* ────────────────────────────────────────────────────────────────────────
- * Per-asset BufferGeometry.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
 function buildGeometry(positions, uvs, indices) {
     const geom = new THREE.BufferGeometry();
     geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
@@ -111,10 +111,10 @@ function InstancedAssetSubmesh({ geometry, material, instances, selectedIds, onP
         } }));
 }
 function AssetGroup({ kind, meshes, textures, instances, selectedIds, onPick, visible, }) {
-    // Per-asset cache: keyed by asset_tuid so streaming flushes only build
-    // newly-arrived assets instead of rebuilding every asset on every flush.
-    // Material cache is shared per-instance of AssetGroup, keyed by albedo_id
-    // so identical-textured submeshes share a material.
+    
+    
+    
+    
     const cacheRef = useRef(null);
     if (cacheRef.current === null) {
         cacheRef.current = {
@@ -128,7 +128,7 @@ function AssetGroup({ kind, meshes, textures, instances, selectedIds, onPick, vi
         let m = cache.materials.get(key);
         const tex = albedoId != null ? textures.get(albedoId) ?? null : null;
         if (m) {
-            // Patch in a texture that arrived after the material was first built.
+            
             if (tex && m.map !== tex) {
                 m.map = tex;
                 m.needsUpdate = true;
@@ -144,13 +144,13 @@ function AssetGroup({ kind, meshes, textures, instances, selectedIds, onPick, vi
         cache.materials.set(key, m);
         return m;
     }
-    // Append-only build: only build geometry for assets we haven't seen yet.
-    // Materials always go through getMaterial() so they pick up the latest
-    // texture each render.
+    
+    
+    
     for (const a of meshes) {
         if (cache.byAsset.has(a.asset_tuid)) {
-            // Already built — but still walk submeshes to refresh material refs in
-            // case a texture arrived since first build.
+            
+            
             const existing = cache.byAsset.get(a.asset_tuid);
             for (let i = 0; i < a.submeshes.length && i < existing.length; i++) {
                 existing[i].material = getMaterial(a.submeshes[i].albedo_id);
@@ -163,7 +163,7 @@ function AssetGroup({ kind, meshes, textures, instances, selectedIds, onPick, vi
         }));
         cache.byAsset.set(a.asset_tuid, submeshes);
     }
-    // Dispose everything when the AssetGroup unmounts (level close).
+    
     useEffect(() => {
         return () => {
             for (const list of cache.byAsset.values()) {
@@ -176,7 +176,7 @@ function AssetGroup({ kind, meshes, textures, instances, selectedIds, onPick, vi
             cache.materials.clear();
         };
     }, [cache]);
-    // Group instances by asset_tuid for instanced rendering.
+    
     const grouped = useMemo(() => {
         const m = new Map();
         for (const inst of instances) {
@@ -201,9 +201,9 @@ function AssetGroup({ kind, meshes, textures, instances, selectedIds, onPick, vi
             return (_jsx("group", { children: submeshes.map((s, idx) => (_jsx(InstancedAssetSubmesh, { geometry: s.geom, material: s.material, instances: insts, selectedIds: selectedIds, onPick: onPick, baseColor: baseColor }, `${assetTuid}-${idx}`))) }, assetTuid));
         }) }));
 }
-/* ────────────────────────────────────────────────────────────────────────
- * UFrag terrain — one mesh per UFrag chunk.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
 function UFragMeshNode({ ufrag, texture, fallbackColor, }) {
     const geom = useMemo(() => buildGeometry(ufrag.mesh.positions, ufrag.mesh.uvs, ufrag.mesh.indices), [ufrag]);
     useEffect(() => () => geom.dispose(), [geom]);
@@ -227,19 +227,19 @@ function UFragMeshGroup({ meshes, textures, visible, }) {
         return null;
     return (_jsx("group", { children: meshes.map((u) => (_jsx(UFragMeshNode, { ufrag: u, texture: u.mesh.albedo_id != null ? textures.get(u.mesh.albedo_id) ?? null : null, fallbackColor: colorByZone.get(u.zone_tuid) }, u.tuid))) }));
 }
-/* ────────────────────────────────────────────────────────────────────────
- * Bounding-sphere wireframes (debug overlay).
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
 function UFragBoundsGroup({ ufrags, visible, }) {
     if (!visible || ufrags.length === 0)
         return null;
     return (_jsx("group", { children: ufrags.map((u) => (_jsxs("mesh", { position: u.position, children: [_jsx("sphereGeometry", { args: [u.radius, 8, 6] }), _jsx("meshBasicMaterial", { wireframe: true, transparent: true, opacity: 0.2, color: "#3dd0ff" })] }, u.tuid))) }));
 }
-/* ────────────────────────────────────────────────────────────────────────
- * Camera framing — runs ONCE per level open. Subsequent rerenders (from
- * stream flushes adding more instances/ufrags) shouldn't yank the camera
- * around once the user has started orbiting.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
+
+
 function CameraFrame({ center, extent }) {
     const { camera } = useThree();
     const framedRef = useRef(false);
@@ -257,11 +257,11 @@ function CameraFrame({ center, extent }) {
     }, [camera, center, extent]);
     return null;
 }
-/* ────────────────────────────────────────────────────────────────────────
- * Camera focus — animates the OrbitControls target + camera position to
- * the primary-selected instance whenever it changes. Lives inside the
- * Canvas (needs useThree to grab the controls instance set by `makeDefault`).
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
+
+
 function CameraFocus({ primary, instances, }) {
     const { camera, controls } = useThree();
     const lastFocusedRef = useRef(null);
@@ -277,9 +277,9 @@ function CameraFocus({ primary, instances, }) {
         const orbit = controls;
         const cam = camera;
         const targetPos = new THREE.Vector3(inst.position[0], inst.position[1], inst.position[2]);
-        // Preserve the user's current viewing angle/distance, just shift so
-        // the new target is at the instance position. Clamp distance to a
-        // sensible range so tiny objects don't get the camera glued to them.
+        
+        
+        
         const currentOffset = cam.position.clone().sub(orbit.target);
         const distance = Math.max(20, Math.min(currentOffset.length(), 100));
         const newOffset = currentOffset.clone().normalize().multiplyScalar(distance);
@@ -337,14 +337,14 @@ export function Viewport({ instances, ufrags, meshes, selection, view, }) {
         }
         return computeBounds(positions());
     }, [instances, ufrags]);
-    // Incremental texture decode: builds new payloads, reuses cached.
-    // Adds happen during render; AssetGroup patches materials in the same
-    // pass via getMaterial(), so textures attach to already-built materials.
+    
+    
+    
     const textureMap = useTextureMap(meshes?.textures ?? EMPTY_TEXTURES);
     return (_jsxs("div", { className: "viewport", children: [_jsxs(Canvas, { camera: { position: [50, 50, 50], fov: 55, near: 0.1, far: 2000 }, onPointerMissed: (e) => {
-                    // Empty-space click goes through select(null) which preserves the
-                    // shift-click anchor — calling selection.clear() here would wipe
-                    // it and break the next range-select.
+                    
+                    
+                    
                     selection.select(null, clickMods(e));
                 }, children: [_jsx(CameraFrame, { center: center, extent: extent }), _jsx("color", { attach: "background", args: ["#050608"] }), _jsx("ambientLight", { intensity: 0.6 }), _jsx("directionalLight", { position: [100, 200, 50], intensity: 1.0 }), _jsx("directionalLight", { position: [-100, 100, -50], intensity: 0.5 }), view.showGrid && (_jsx(Grid, { position: [center[0], 0, center[2]], args: [extent * 2, extent * 2], cellColor: "#1a1c20", sectionColor: "#262830", sectionSize: Math.max(10, Math.round(extent / 20)), cellSize: Math.max(1, Math.round(extent / 200)), fadeDistance: extent * 1.5, fadeStrength: 1, infiniteGrid: true })), view.showAxes && _jsx("axesHelper", { args: [Math.max(5, extent * 0.05)] }), meshes && (_jsxs(_Fragment, { children: [_jsx(AssetGroup, { kind: "tie", meshes: meshes.tie_assets, textures: textureMap, instances: instances, selectedIds: selection.ids, onPick: onPick, visible: view.showTies }), _jsx(AssetGroup, { kind: "moby", meshes: meshes.moby_assets, textures: textureMap, instances: instances, selectedIds: selection.ids, onPick: onPick, visible: view.showMobys }), _jsx(UFragMeshGroup, { meshes: meshes.ufrag_meshes, textures: textureMap, visible: view.showUFrags })] })), _jsx(UFragBoundsGroup, { ufrags: ufrags, visible: view.showUFragBounds }), _jsx(OrbitControls, { makeDefault: true, enableDamping: true, dampingFactor: 0.1, panSpeed: 1.2, target: center, maxDistance: extent * 3 }), _jsx(CameraFocus, { primary: selection.primary, instances: instances }), _jsx(FpsSampler, {})] }), _jsx(FpsOverlay, { mode: view.showStats ? "graph" : "counter" }), _jsxs("div", { className: "viewport-overlay", children: ["drag ", _jsx("span", { className: "kbd", children: "LMB" }), " orbit \u00B7 scroll zoom \u00B7 drag", " ", _jsx("span", { className: "kbd", children: "RMB" }), " pan"] })] }));
 }

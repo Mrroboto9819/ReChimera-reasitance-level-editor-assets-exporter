@@ -1,7 +1,4 @@
-//! Smoke-test CLI: decode every moby asset's geometry from `mobys.dat` and
-//! print vertex/triangle counts + a coarse local AABB per asset.
-//!
-//!   cargo run -p lunalib --example dump_moby_meshes -- <path/to/level>
+
 
 use std::env;
 use std::path::Path;

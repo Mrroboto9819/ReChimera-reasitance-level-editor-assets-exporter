@@ -1,18 +1,18 @@
-/* ==========================================================================
- * ReChimera — design tokens
- * Inspired by Raycast (apps/desktop/DESIGN.md) and the original ReLunacy
- * editor layout (top menu bar + central viewport + side inspector).
- * ========================================================================== */
+
+
+
+
+
 
 :root {
   color-scheme: dark;
 
-  /* Palette — Raycast-inspired */
+  
   --bg: #07080a;
   --surface-100: #101111;
   --surface-200: #16171a;
   --card: #1b1c1e;
-  --border: hsl(195, 5%, 15%);          /* ~#252829 */
+  --border: hsl(195, 5%, 15%);          
   --border-strong: #2f3031;
   --hairline: rgba(255, 255, 255, 0.06);
 
@@ -38,20 +38,20 @@
   --asset-selection: #3eb1ff;
   --asset-proxy: #8a8a8a;
 
-  /* Typography */
+  
   --font-sans: "Inter", "Inter Fallback", -apple-system, BlinkMacSystemFont,
     "Segoe UI", Roboto, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, "Cascadia Mono", "SFMono-Regular",
     Menlo, Consolas, monospace;
   --opentype: "calt", "kern", "liga", "ss03";
 
-  /* Radii */
+  
   --r-1: 4px;
   --r-2: 6px;
   --r-3: 8px;
   --r-4: 12px;
 
-  /* Elevations (multi-layer per DESIGN.md) */
+  
   --shadow-ring:
     rgb(27, 28, 30) 0px 0px 0px 1px,
     rgb(7, 8, 10) 0px 0px 0px 1px inset;
@@ -73,9 +73,9 @@
   letter-spacing: 0.2px;
 }
 
-/* Light-theme override — only the palette tokens are overridden; spacing,
-   typography, and elevation cascade unchanged from `:root` above. The
-   data-theme attribute is set by `useApplySettings.ts`. */
+
+
+
 :root[data-theme="light"] {
   color-scheme: light;
 
@@ -153,20 +153,20 @@ textarea {
   font-size: 12px;
 }
 
-/* ==========================================================================
- * App shell — IDE layout (titlebar / toolbar / 4-pane / status bar)
- *
- * Inspired by Unity / Unreal / Godot dock layouts but rendered in the
- * Raycast palette per DESIGN.md — near-black blue surfaces, multi-layer
- * inset shadows, +0.2px tracking on body text, panels separated by 1px
- * hairline borders rather than heavy splitters.
- * ========================================================================== */
+
+
+
+
+
+
+
+
 
 .app {
   display: grid;
-  /* The `soundplayer` row is `auto` and collapses to zero height
-     when the SoundPlayer returns null (no sound loaded). When a
-     sound is playing, the row sizes to the player's content. */
+  
+
+
   grid-template-rows: auto auto 1fr auto auto;
   grid-template-areas:
     "titlebar"
@@ -179,7 +179,7 @@ textarea {
   overflow: hidden;
 }
 
-/* ---- Titlebar (custom window chrome) ---- */
+
 .titlebar {
   grid-area: titlebar;
   display: flex;
@@ -203,7 +203,7 @@ textarea {
   min-width: 0;
 }
 
-/* macOS — traffic lights on the left */
+
 .titlebar-traffic {
   display: flex;
   align-items: center;
@@ -236,7 +236,7 @@ textarea {
 .traffic-min   { background: #febc2e; }
 .traffic-max   { background: #28c840; }
 
-/* Windows / Linux — caption buttons on the right */
+
 .titlebar-caption {
   display: flex;
   align-items: stretch;
@@ -276,7 +276,7 @@ textarea {
   padding-left: 0;
 }
 
-/* ---- Menu bar (now nests inside titlebar) ---- */
+
 .menubar {
   display: flex;
   align-items: center;
@@ -306,10 +306,10 @@ textarea {
   opacity: 0.85;
 }
 
-/* Persistent logo in the title bar — static <img>, no animation, no
-   JS-driven state. Stays visible through main-thread freezes (heavy
-   level loads, etc.) because the browser handles the image as a
-   cached static resource that doesn't need React to re-render. */
+
+
+
+
 .brand-icon {
   width: 18px;
   height: 18px;
@@ -326,8 +326,8 @@ textarea {
   align-self: center;
 }
 
-/* About modal — credits + version + repo links. Triggered from
-   `Help → About ReChimera…`. */
+
+
 .about-modal {
   display: flex;
   flex-direction: column;
@@ -430,10 +430,10 @@ textarea {
   text-decoration: underline;
 }
 
-/* Update banner — non-blocking notification pinned to bottom-right
-   when a newer release is available. Fixed-position so it doesn't
-   shift the IDE layout, low z-index relative to modals so dialogs
-   still cover it cleanly. */
+
+
+
+
 .update-banner {
   position: fixed;
   right: 16px;
@@ -478,9 +478,9 @@ textarea {
   gap: 8px;
 }
 
-/* The downloading-phase progress bar is a thin gradient strip at the
-   bottom of the banner; width is driven inline by the React
-   component. */
+
+
+
 .update-banner-progress {
   position: absolute;
   bottom: 0;
@@ -572,8 +572,8 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 22px;
+  width: 28px;
+  height: 24px;
   padding: 0;
   margin: 0 4px;
   background: transparent;
@@ -581,7 +581,13 @@ textarea {
   border-radius: var(--r-2);
   color: var(--text-2);
   cursor: pointer;
-  transition: background-color 80ms ease-out, color 80ms ease-out, border-color 80ms ease-out;
+  position: relative;
+  z-index: 2;
+  transition: background-color 80ms ease-out, color 80ms ease-out,
+    border-color 80ms ease-out;
+}
+.menubar-icon-btn > * {
+  pointer-events: none;
 }
 .menubar-icon-btn:hover {
   background: var(--surface-100);
@@ -602,10 +608,260 @@ textarea {
   margin-right: 4px;
   padding: 0 4px 0 8px;
   border-left: 1px solid var(--hairline);
-  height: 22px;
+  height: 24px;
+  position: relative;
+  z-index: 2;
 }
 .menubar-panel-toggles .menubar-icon-btn {
   margin: 0;
+}
+
+.tab-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+  position: relative;
+}
+.tab-container-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 16px;
+}
+
+.tab-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 0 4px;
+  background: var(--surface-100);
+  border-bottom: 1px solid var(--hairline);
+  flex-shrink: 0;
+  min-height: 28px;
+  position: relative;
+  z-index: 2;
+}
+.tab-strip-spacer {
+  flex: 1;
+  min-width: 8px;
+}
+
+.tab-shell {
+  display: inline-flex;
+  align-items: stretch;
+  border-bottom: 2px solid transparent;
+  transition: border-color 80ms ease-out, background-color 80ms ease-out;
+  user-select: none;
+}
+.tab-shell.active {
+  border-bottom-color: var(--accent-blue);
+}
+.tab-shell.drop-here {
+  background: var(--tint-blue);
+  box-shadow: inset 2px 0 0 var(--accent-blue);
+}
+.tab-shell:hover .tab-close {
+  opacity: 0.7;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 12px;
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 80ms ease-out;
+}
+.tab:hover {
+  color: var(--text-1);
+}
+.tab-shell.active .tab {
+  color: var(--text-1);
+}
+
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin: auto 4px auto 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  color: var(--text-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 80ms ease-out, background-color 80ms ease-out,
+    color 80ms ease-out;
+}
+.tab-close > * {
+  pointer-events: none;
+}
+.tab-close:hover {
+  opacity: 1;
+  background: var(--surface-200);
+  color: var(--text-1);
+}
+.tab-shell.active .tab-close {
+  opacity: 0.5;
+}
+
+.tab-add-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.tab-add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin: 3px 4px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-2);
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background-color 80ms ease-out, color 80ms ease-out,
+    border-color 80ms ease-out;
+}
+.tab-add-btn > * {
+  pointer-events: none;
+}
+.tab-add-btn:hover:not(:disabled) {
+  background: var(--surface-200);
+  color: var(--text-1);
+  border-color: var(--hairline);
+}
+.tab-add-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.tab-add-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 160px;
+  padding: 4px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  box-shadow: var(--shadow-floating);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tab-add-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-2);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tab-add-menu-item:hover {
+  background: var(--surface-200);
+}
+
+.tab-content {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+.tab-panel-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  color: var(--text-3);
+  text-align: center;
+}
+.tab-panel-empty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.tab-panel-empty-hint {
+  max-width: 240px;
+  line-height: 1.5;
+}
+.tab-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  min-height: 0;
+}
+.tab-panel.active {
+  position: relative;
+  flex: 1;
+}
+.tab-panel > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tab-drop-zone {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 9;
+  border: 2px dashed var(--accent-blue);
+  background: var(--tint-blue);
+  border-radius: 4px;
+  margin: 4px;
+}
+:root[data-tab-drag] .tab-drop-zone {
+  display: flex;
+  animation: tab-drop-pulse 1.4s ease-in-out infinite;
+}
+.tab-drop-zone-label {
+  padding: 6px 14px;
+  background: var(--accent-blue);
+  color: #0b0c0e;
+  border-radius: var(--r-3);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  box-shadow: var(--shadow-card);
+}
+@keyframes tab-drop-pulse {
+  0%, 100% { background-color: var(--tint-blue); }
+  50% { background-color: rgba(62, 177, 255, 0.18); }
 }
 
 .menubar-path {
@@ -658,7 +914,7 @@ textarea {
   opacity: 1;
 }
 
-/* --- Status strip --- */
+
 .status-strip {
   display: flex;
   align-items: center;
@@ -681,7 +937,7 @@ textarea {
   font-size: 11px;
 }
 
-/* --- Load progress (right side of status strip) --- */
+
 .load-progress {
   margin-left: auto;
   display: flex;
@@ -762,7 +1018,7 @@ textarea {
   box-shadow: 0 0 8px var(--tint-blue);
 }
 
-/* --- Modal (reusable) ----------------------------------------------------- */
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -771,22 +1027,22 @@ textarea {
   align-items: center;
   justify-content: center;
   background: rgba(7, 8, 10, 0.55);
-  /* GSAP toggles autoAlpha + backdropFilter; initial display:none is set
-     inline so the modal doesn't flash before the first tween runs. */
+  
+
 }
 
 .modal-dialog {
   background: var(--surface-100);
   border: 1px solid var(--hairline);
   border-radius: 14px;
-  /* Shadow stripped — flat overlay matches the cleaner Sketchfab-style
-     reference UI. The hairline border alone provides edge separation
-     against the dim backdrop. */
+  
+
+
   display: flex;
   flex-direction: column;
   max-height: calc(100vh - 80px);
   overflow: hidden;
-  /* Subtle inner highlight for the Raycast "pressed glass" feel. */
+  
   background-image:
     radial-gradient(
       120% 60% at 50% 0%,
@@ -854,21 +1110,21 @@ textarea {
   color: var(--text-2);
   font-size: 13px;
   line-height: 1.5;
-  /* Let the body claim the dialog's remaining vertical space — without
-     this, a tall body would push the dialog past max-height because
-     the body has no flex-grow. With it, the body fills, and an inner
-     `modal-body-flex` modifier can disable the body's own scroll so
-     children manage their own scroll regions (e.g. canvas + sidebar). */
+  
+
+
+
+
   flex: 1 1 auto;
   min-height: 0;
 }
 
-/* Modifier for modals that manage scrolling themselves. Disables the
-   body's own vertical scroll, drops the padding (children are full-
-   bleed), and switches the body to a flex column so its single child
-   can fill height. Used by the character-preview modal so the 3D
-   canvas owns the full body height and the sidebar scrolls
-   independently. */
+
+
+
+
+
+
 .modal-body.modal-body-flex {
   overflow: hidden;
   padding: 0;
@@ -884,8 +1140,8 @@ textarea {
   gap: 8px;
 }
 
-/* When the LoadProgress component lives inside the modal, give it room
-   to breathe instead of the cramped inline status-strip layout. */
+
+
 .modal-body .load-progress {
   margin-left: 0;
   min-width: 0;
@@ -924,9 +1180,9 @@ textarea {
   white-space: pre-wrap;
 }
 
-/* ==========================================================================
- * IDE Workspace — 4-pane dock layout (hierarchy / viewport / inspector / bottom)
- * ========================================================================== */
+
+
+
 
 .workspace {
   grid-area: workspace;
@@ -1060,7 +1316,7 @@ textarea {
 }
 
 .viewport-empty-toast {
-  position: absolute;
+  position: fixed;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
@@ -1071,11 +1327,12 @@ textarea {
   padding: 18px 22px;
   max-width: 360px;
   background: var(--surface-100);
-  border: 1px solid var(--hairline);
+  border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 16px 32px -10px rgba(0, 0, 0, 0.55);
-  z-index: 5;
+  z-index: 50;
   text-align: center;
+  pointer-events: auto;
 }
 
 .viewport-empty-title {
@@ -1103,7 +1360,7 @@ textarea {
   border-radius: 999px;
 }
 
-/* Generic dock panel — every IDE pane uses this chrome */
+
 .panel {
   display: flex;
   flex-direction: column;
@@ -1116,6 +1373,27 @@ textarea {
   box-shadow:
     rgba(0, 0, 0, 0.3) 0px 1px 2px,
     rgba(255, 255, 255, 0.04) 0px 1px 0px 0px inset;
+}
+
+.view-flush {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  width: 100%;
+  height: 100%;
+}
+.view-flush > .panel-body {
+  padding-top: 8px;
+}
+.pane-viewport {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.pane-viewport > .viewport {
+  flex: 1;
+  min-height: 0;
 }
 
 .panel-header {
@@ -1215,7 +1493,7 @@ textarea {
   pointer-events: none;
 }
 
-/* Panel header badge cluster (used by Console tab to surface counts). */
+
 .badge-cluster {
   display: inline-flex;
   align-items: center;
@@ -1253,17 +1531,17 @@ textarea {
   color: var(--accent-red);
 }
 
-/* Bottom panel collapsed state — only the header is visible. */
+
 .pane-bottom.collapsed .panel-body {
   display: none;
 }
 
-/* Hierarchy primary marker — a small accent pill on the left of the row. */
+
 .tree-node.primary {
   box-shadow: inset 2px 0 0 var(--accent-blue);
 }
 
-/* Inspector multi-select banner + action button strip. */
+
 .multi-select-banner {
   margin: 0 16px 16px;
   padding: 12px 16px;
@@ -1343,7 +1621,7 @@ textarea {
   width: 100%;
 }
 
-/* Export button — Primary visible affordance at the top of the inspector. */
+
 .inspector-action-btn {
   display: inline-flex;
   align-items: center;
@@ -1408,7 +1686,7 @@ textarea {
   box-shadow: none;
 }
 
-/* Asset preview at the top of the inspector. */
+
 .inspector-preview-wrap {
   padding: 0 16px 16px;
 }
@@ -1455,7 +1733,7 @@ textarea {
   pointer-events: none;
 }
 
-/* Logical hierarchy path under the preview. */
+
 .inspector-path {
   padding: 8px 16px 16px;
   color: var(--text-3);
@@ -1475,7 +1753,7 @@ textarea {
   padding: 0 16px 16px;
 }
 
-/* Editable transform fields — tight 3-axis grid like Unity / Blender. */
+
 .inspector-section-header {
   display: flex;
   align-items: baseline;
@@ -1546,7 +1824,7 @@ textarea {
   font-size: 12px;
   padding: 4px 6px;
   outline: none;
-  /* Hide the default browser spinners — they take too much space. */
+  
   -moz-appearance: textfield;
   appearance: textfield;
 }
@@ -1557,7 +1835,7 @@ textarea {
   margin: 0;
 }
 
-/* Floating in-scene badge above the selected instance. */
+
 .scene-badge {
   display: inline-flex;
   align-items: center;
@@ -1603,7 +1881,7 @@ textarea {
   margin-left: 2px;
 }
 
-/* Textures-used list in the Inspector. */
+
 .texture-slots {
   display: flex;
   flex-direction: column;
@@ -1638,7 +1916,7 @@ textarea {
   color: var(--text-2);
 }
 
-/* --- Splash screen ------------------------------------------------------- */
+
 .splash {
   position: fixed;
   inset: 0;
@@ -1657,9 +1935,9 @@ textarea {
   display: flex;
   flex-direction: column;
   align-items: center;
-  /* Tight stack — logo, name, loader. The gap below is small so the
-     three pieces read as a single composition rather than three
-     unrelated rows. */
+  
+
+
   gap: 18px;
 }
 
@@ -1669,8 +1947,8 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: center;
-  /* Soft red glow under the chimera skull mirrors the brand red and
-     adds depth without competing with the logo itself. */
+  
+
   filter:
     drop-shadow(0 14px 40px rgba(220, 38, 38, 0.35))
     drop-shadow(0 4px 12px rgba(0, 0, 0, 0.55));
@@ -1694,8 +1972,8 @@ textarea {
   line-height: 1;
 }
 
-/* Loader sits directly under the wordmark — small extra margin so it
-   doesn't crowd the title's descender area. */
+
+
 .splash-loader {
   margin-top: 4px;
   display: inline-flex;
@@ -1718,7 +1996,7 @@ textarea {
   50%      { opacity: 1;    transform: scale(1.1); }
 }
 
-/* "Modified" warning button in the toolbar. */
+
 .toolbar-btn-warn {
   color: var(--accent-yellow);
 }
@@ -1728,7 +2006,7 @@ textarea {
   color: var(--accent-yellow);
 }
 
-/* Export progress modal — chunkier than the level-load progress. */
+
 .export-progress {
   display: flex;
   flex-direction: column;
@@ -1798,7 +2076,7 @@ textarea {
   border-radius: var(--r-1);
 }
 
-/* --- PSARC tools panel --------------------------------------------------- */
+
 .psarc-tools {
   display: flex;
   flex-direction: column;
@@ -1942,11 +2220,99 @@ textarea {
   background: rgba(255, 255, 255, 0.03);
 }
 
-/* --- Open Level modal --------------------------------------------------- */
+
 .open-level {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.game-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+  padding: 4px 0;
+}
+.game-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px;
+  background: var(--surface-100);
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text-1);
+  transition: border-color 100ms ease-out, background-color 100ms ease-out,
+    transform 80ms ease-out;
+  min-height: 96px;
+}
+.game-card:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+  background: var(--surface-200);
+}
+.game-card:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.game-card-tag {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  padding: 3px 6px;
+  background: var(--tint-blue);
+  color: var(--accent-blue);
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+.game-card-name {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+.game-card-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.game-card.unsupported {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.game-card.unsupported .game-card-tag {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-3);
+}
+
+.open-level-game-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--surface-100);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-2);
+}
+.open-level-game-row .btn-ghost,
+.open-level-game-row .btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
 }
 
 .open-level-pickers {
@@ -2134,9 +2500,9 @@ textarea {
   border-radius: 3px;
 }
 
-/* Drop-target indicator — appears at the top of the modal body and
-   highlights when a drag is over the window. The background-image uses
-   an inline SVG for the dashed border so we can animate it later. */
+
+
+
 .open-level-droptarget {
   display: flex;
   align-items: center;
@@ -2161,7 +2527,7 @@ textarea {
   color: var(--text-1);
 }
 
-/* ── UI primitives (src/ui) ── */
+
 .text-input {
   display: inline-flex;
   align-items: center;
@@ -2224,7 +2590,7 @@ textarea {
   cursor: not-allowed;
 }
 
-/* warn variant for Button — reuses accent-yellow */
+
 .btn.btn-warn {
   color: var(--accent-yellow);
 }
@@ -2233,7 +2599,7 @@ textarea {
   color: var(--accent-yellow);
 }
 
-/* Bind-pose strategy selector — radio-pill row inside RawCharacterModal. */
+
 .bind-strategy-selector {
   margin-top: 10px;
   display: flex;
@@ -2381,7 +2747,7 @@ textarea {
   font-weight: 600;
 }
 
-/* Toolbar (between titlebar and workspace) */
+
 .toolbar {
   grid-area: toolbar;
   display: flex;
@@ -2429,7 +2795,7 @@ textarea {
   animation: rc-spin 1s linear infinite;
 }
 
-/* Status-bar cell rendered as a button (clickable to open cache lib). */
+
 .statusbar-cell-button {
   background: transparent;
   border: 0;
@@ -2452,7 +2818,7 @@ textarea {
   color: var(--accent-yellow);
 }
 
-/* ── Cache Library modal ── */
+
 .cache-library-title {
   display: inline-flex;
   align-items: center;
@@ -2659,7 +3025,7 @@ textarea {
   padding: 0 8px;
 }
 
-/* Status bar (very bottom of app) */
+
 .statusbar {
   grid-area: statusbar;
   display: flex;
@@ -2702,10 +3068,10 @@ textarea {
   50% { opacity: 0.35; }
 }
 
-/* Sound player — sits in its own grid row between workspace and
-   statusbar. Hidden when no sound is loaded (component returns null,
-   row collapses to 0 height). Single-line transport bar: play/pause,
-   name + meta, scrub bar, volume, export, close. */
+
+
+
+
 .sound-player {
   grid-area: soundplayer;
   display: flex;
@@ -2753,8 +3119,8 @@ textarea {
   flex-direction: column;
   justify-content: center;
   min-width: 0;
-  /* Cap the name column so a very long sound name can't squeeze the
-     scrub bar to nothing. */
+  
+
   max-width: 240px;
   flex-shrink: 0;
 }
@@ -2847,7 +3213,60 @@ textarea {
   cursor: pointer;
 }
 
-/* Hierarchy panel (tree of regions / instances) */
+
+.hierarchy-subtabs {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 0 4px;
+  background: var(--surface-100);
+  border-bottom: 1px solid var(--hairline);
+  flex-shrink: 0;
+  min-height: 28px;
+}
+.hierarchy-subtab {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 80ms ease-out, border-color 80ms ease-out,
+    background-color 80ms ease-out;
+}
+.hierarchy-subtab:hover {
+  color: var(--text-1);
+}
+.hierarchy-subtab.active {
+  color: var(--text-1);
+  border-bottom-color: var(--accent-blue);
+}
+.hierarchy-subtab-count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-3);
+  background: var(--surface-200);
+  border-radius: 4px;
+  padding: 1px 5px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.hierarchy-subtab.active .hierarchy-subtab-count {
+  color: var(--accent-blue);
+  background: var(--tint-blue);
+}
+
 .hierarchy-search {
   padding: 6px 8px;
   border-bottom: 1px solid var(--hairline);
@@ -2927,16 +3346,16 @@ textarea {
 .tree-icon.kind-library { background: rgba(255, 188, 51, 0.18); color: var(--accent-yellow); }
 .tree-icon.kind-gltf    { background: rgba(151, 222, 130, 0.18); color: var(--accent-green); }
 
-/* Animation list inside GltfCharacterModal. */
+
 .anim-list {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-/* Source dropdown for the GLTF preview modal — proper inline form,
-   not a clip-row button. The previous incarnation tried to reuse
-   `.anim-row` (a button-style grid) and ended up looking broken. */
+
+
+
 .anim-source-row {
   display: flex;
   align-items: center;
@@ -3010,22 +3429,22 @@ textarea {
   color: var(--text-3);
 }
 
-/* Hierarchy library section sits below the placed-instance groups,
-   visually separated by a hairline. */
+
+
 .hierarchy-library {
   margin-top: 8px;
   padding-top: 6px;
   border-top: 1px solid var(--hairline);
 }
 
-/* Character preview modal — large preview + side metadata. The
-   parent `.modal-body` carries `modal-body-flex`, so it's a column
-   flex container with no padding and no scroll. We fill the entire
-   available height (no fixed vh — we trust the dialog's max-height
-   to clamp the parent stack). */
+
+
+
+
+
 .character-preview-body {
-  /* Single-column layout matching CacheLibraryModal's right pane —
-     canvas on top, meta beneath. Bigger preview, consistent design. */
+  
+
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(320px, 380px);
   gap: 16px;
@@ -3091,7 +3510,7 @@ textarea {
   text-align: center;
 }
 
-/* Bottom panel (Console + Asset Browser tabs) */
+
 .console-log {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -3122,8 +3541,8 @@ textarea {
   position: relative;
   background: #050608;
   overflow: hidden;
-  width: 100%;
-  height: 100%;
+  flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -3141,23 +3560,125 @@ textarea {
   z-index: 5;
 }
 .viewport-header-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   background: transparent;
-  border: 0;
+  border: 1px solid transparent;
   color: var(--text-2);
   padding: 3px 8px;
-  border-radius: 3px;
+  border-radius: var(--r-2);
   font-family: inherit;
   font-size: 11px;
   cursor: pointer;
-  transition: background-color 80ms ease-out, color 80ms ease-out;
+  transition: background-color 80ms ease-out, color 80ms ease-out,
+    border-color 80ms ease-out;
 }
-.viewport-header-btn:hover {
+.viewport-header-btn > span {
+  line-height: 1;
+}
+.viewport-header-btn:hover:not(:disabled) {
   background: var(--surface-200);
   color: var(--text-1);
 }
 .viewport-header-btn.active {
+  background: var(--tint-blue);
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
+}
+.viewport-header-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.viewport-header-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 4px 6px;
+  background: var(--hairline);
+}
+.toolbar-slim {
+  padding: 2px 8px;
+  min-height: 0;
+}
+
+.cache-progress-phases {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 14px;
+}
+.cache-progress-phase {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--r-2);
+  background: var(--surface-100);
+  border: 1px solid var(--hairline);
+  font-size: 12px;
+  transition: border-color 120ms ease-out, background-color 120ms ease-out;
+}
+.cache-progress-phase-label {
+  flex: 1;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.cache-progress-phase-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--text-4);
+  flex-shrink: 0;
+}
+.cache-progress-phase-pending {
+  opacity: 0.55;
+}
+.cache-progress-phase-active {
+  border-color: var(--accent-blue);
+  background: var(--tint-blue);
+}
+.cache-progress-phase-active .cache-progress-phase-dot {
   background: var(--accent-blue);
-  color: #0b0c0e;
+  box-shadow: 0 0 0 4px var(--tint-blue);
+  animation: cache-progress-pulse 1.2s ease-in-out infinite;
+}
+.cache-progress-phase-active .cache-progress-phase-label {
+  color: var(--text-1);
+}
+.cache-progress-phase-done .cache-progress-phase-dot {
+  background: var(--accent-green);
+}
+.cache-progress-phase-done .cache-progress-phase-label {
+  color: var(--text-3);
+}
+.cache-progress-check {
+  color: var(--accent-green);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.cache-progress-bar {
+  height: 6px;
+  background: var(--surface-200);
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+}
+.cache-progress-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(
+    90deg,
+    var(--accent-blue) 0%,
+    var(--accent-green) 100%
+  );
+  transition: width 220ms ease-out;
+  border-radius: 999px;
+}
+
+@keyframes cache-progress-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--tint-blue); }
+  50% { box-shadow: 0 0 0 6px var(--tint-blue); }
 }
 
 .viewport-canvas-wrap {
@@ -3236,7 +3757,7 @@ textarea {
   cursor: not-allowed;
 }
 
-/* --- FPS overlay (always-on inside viewport) --- */
+
 .fps-overlay {
   position: absolute;
   bottom: 8px;
@@ -3278,9 +3799,9 @@ textarea {
   padding: 0 4px;
 }
 
-/* Per-frame renderer stats — draws, triangles, geometries, textures,
-   programs. Same overlay as FPS so the user can see all of it together
-   when the Stats toggle is on. */
+
+
+
 .fps-stats {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -3346,7 +3867,7 @@ textarea {
   right: auto !important;
 }
 
-/* --- Inspector --- */
+
 .inspector {
   display: flex;
   flex-direction: column;
@@ -3363,13 +3884,13 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  /* Critical inside a flex-column scroll container: without
-     `flex-shrink: 0` each section squashes proportionally when total
-     content exceeds the container height, instead of letting the
-     parent scroll. Symptom: long animation lists pushed Stats + File
-     into "header only, no content" zombie state at the bottom.
-     `flex-shrink: 0` keeps sections at their natural height and lets
-     the parent's `overflow-y: auto` actually do its job. */
+  
+
+
+
+
+
+
   flex-shrink: 0;
   min-height: 0;
   padding: 16px;
@@ -3399,7 +3920,7 @@ textarea {
   font-weight: 600;
 }
 
-/* Key/value display */
+
 .kv {
   display: grid;
   grid-template-columns: 80px 1fr;
@@ -3420,7 +3941,7 @@ textarea {
   color: var(--text-1);
 }
 
-/* Kind chips */
+
 .kind-row {
   display: flex;
   flex-wrap: wrap;
@@ -3472,7 +3993,7 @@ textarea {
   background: rgba(255, 255, 255, 0.25);
 }
 
-/* Asset table */
+
 .inspector-scroll {
   flex: 1;
   min-height: 0;
@@ -3559,11 +4080,11 @@ textarea {
   justify-content: center;
 }
 
-/* ──────────────────────────────────────────────────────────────────────
-   SettingsModal — appearance prefs (theme + per-kind asset colors).
-   Uses the existing `.btn`, `.btn-primary`, and Modal classes; only the
-   layout primitives below are new.
-   ────────────────────────────────────────────────────────────────────── */
+
+
+
+
+
 .settings-section {
   margin-bottom: 20px;
 }

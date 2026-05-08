@@ -1,25 +1,15 @@
-//! Parser for Insomniac's IGHW asset containers used on PS3.
-//!
-//! Initial scope: read the `assetlookup.dat` table for Resistance 2/3 and the
-//! Ratchet & Clank Future series. Higher-level decoders (mobys, ties, textures,
-//! shaders, zones) come later — see the corresponding C# parser in
-//! `LibLunacy/` and the C++ struct definitions in
-//! `InsomniaToolset/common/include/insomnia/classes/`.
+
+
 
 pub mod animation;
 pub mod assetlookup;
 pub mod error;
 pub mod gltf_export;
 
-/// Hard cap on a single asset payload (slice of `mobys.dat` / `ties.dat` /
-/// `zones.dat` etc.). Disk-derived `length` fields are attacker-controllable;
-/// without a cap a crafted `assetlookup.dat` could request a 4 GiB allocation.
+
 pub const MAX_ASSET_SIZE: u32 = 512 * 1024 * 1024;
 
-/// Hard cap on the per-section entry count derived from `section.length`.
-/// Real levels have at most a few thousand entries per section; this cap
-/// stops a crafted IGHW with a 4 GiB section length from seeding a multi-GiB
-/// `Vec::with_capacity` before we've read a single entry.
+
 pub const MAX_SECTION_ENTRIES: usize = 4 * 1024 * 1024;
 pub mod gameplay;
 pub mod igfile;

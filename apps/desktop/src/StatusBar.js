@@ -3,11 +3,11 @@ function folderName(path) {
     const parts = path.split(/[\\/]/).filter(Boolean);
     return parts[parts.length - 1] ?? path;
 }
-/**
- * Bottom status bar — like VS Code / Unity's footer. Shows the most-relevant
- * status at-a-glance: connection-style dot for activity, file context, raw
- * counts on the right.
- */
+
+
+
+
+
 export function StatusBar({ summary, meshesCount, instanceCount, ufragCount, meshes, loadPhase, error, }) {
     const dotClass = error
         ? "error"

@@ -1,16 +1,5 @@
-//! Tiny math helpers: Euler→quaternion conversion and 4×4 affine decomposition.
-//!
-//! Quaternions are stored as `[x, y, z, w]` (three.js / glTF convention).
-//! Matrices are read from disk in `.NET Matrix4x4` row-major layout (standard
-//! row-vector convention: M11..M44 in field order, translation at M41–M43).
-//! Decompose returns components ready for column-vector consumers like three.js.
 
-/// Convert a Lunacy `Vector3` rotation (ZYX intrinsic = XYZ extrinsic) to a
-/// unit quaternion. Field components are interpreted as
-/// `(angle_x, angle_y, angle_z)` regardless of application order.
-///
-/// The composite rotation is `R = Rx * Ry * Rz` applied as `v' = R * v`, which
-/// matches `q = qx * qy * qz`.
+
 pub fn zyx_euler_to_quat(angles: [f32; 3]) -> [f32; 4] {
     let (ax, ay, az) = (angles[0], angles[1], angles[2]);
     let (cx, sx) = ((ax * 0.5).cos(), (ax * 0.5).sin());
@@ -18,24 +7,16 @@ pub fn zyx_euler_to_quat(angles: [f32; 3]) -> [f32; 4] {
     let (cz, sz) = ((az * 0.5).cos(), (az * 0.5).sin());
 
     [
-        sx * cy * cz - cx * sy * sz, // x
-        cx * sy * cz + sx * cy * sz, // y
-        cx * cy * sz - sx * sy * cz, // z
-        cx * cy * cz + sx * sy * sz, // w
+        sx * cy * cz - cx * sy * sz,
+        cx * sy * cz + sx * cy * sz,
+        cx * cy * sz - sx * sy * cz,
+        cx * cy * cz + sx * sy * sz,
     ]
 }
 
-/// Decompose a row-major 4×4 affine matrix into translation, per-axis scale,
-/// and a quaternion. Input layout: `m[r*4 + c] = M(r+1)(c+1)` (.NET
-/// `Matrix4x4` field order).
-///
-/// Returns `(translation, scale_xyz, quaternion_xyzw)` suitable for direct use
-/// in a column-vector renderer (three.js / glTF).
 pub fn decompose_row_major(m: &[f32; 16]) -> ([f32; 3], [f32; 3], [f32; 4]) {
     let translation = [m[12], m[13], m[14]];
 
-    // Row vectors of the .NET matrix — these are the post-transform basis
-    // vectors under row-vector multiplication.
     let rx = [m[0], m[1], m[2]];
     let ry = [m[4], m[5], m[6]];
     let rz = [m[8], m[9], m[10]];
@@ -49,8 +30,6 @@ pub fn decompose_row_major(m: &[f32; 16]) -> ([f32; 3], [f32; 3], [f32; 4]) {
         return (translation, scale, [0.0, 0.0, 0.0, 1.0]);
     }
 
-    // Pure rotation matrix in *column-vector* convention: R = transpose of the
-    // .NET upper-3×3 with rows normalized. r[row][col] addressing below.
     let r = [
         [rx[0] / sx, ry[0] / sy, rz[0] / sz],
         [rx[1] / sx, ry[1] / sy, rz[1] / sz],
@@ -95,8 +74,6 @@ pub fn decompose_row_major(m: &[f32; 16]) -> ([f32; 3], [f32; 3], [f32; 4]) {
     (translation, scale, quat)
 }
 
-/// Multiply two 4×4 row-major matrices: `c = a * b`. Both inputs and
-/// the output use the same `m[r*4 + c]` indexing as `decompose_row_major`.
 pub fn mat4_mul_row_major(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     let mut out = [0f32; 16];
     for r in 0..4 {
@@ -235,7 +212,7 @@ mod tests {
 
     #[test]
     fn transpose_swaps_translation_row_and_col() {
-        // Row-major translation: r4 = (5, 6, 7, 1).
+
         #[rustfmt::skip]
         let row = [
             1.0, 0.0, 0.0, 0.0,
@@ -243,7 +220,7 @@ mod tests {
             0.0, 0.0, 1.0, 0.0,
             5.0, 6.0, 7.0, 1.0,
         ];
-        // After transpose, translation becomes the last column (indices 3, 7, 11).
+
         let col = transpose_4x4(&row);
         assert!(approx(col[3], 5.0));
         assert!(approx(col[7], 6.0));
@@ -262,12 +239,12 @@ mod tests {
         let (t, s, q) = decompose_row_major(&m);
         assert_eq!(t, [0.0, 0.0, 0.0]);
         assert_eq!(s, [1.0, 1.0, 1.0]);
-        assert!(approx(q[3].abs(), 1.0)); // w = ±1
+        assert!(approx(q[3].abs(), 1.0));
     }
 
     #[test]
     fn translation_and_scale_recovered() {
-        // .NET row-major: scale 2 on X, 3 on Y, 4 on Z, translate (5, 6, 7).
+
         #[rustfmt::skip]
         let m = [
             2.0, 0.0, 0.0, 0.0,

@@ -10,9 +10,9 @@ interface ToggleProps
   size?: number;
 }
 
-/// Pressed/unpressed pill (Toolbar-style render-layer + overlay toggles).
-/// Reuses the same `.toolbar-btn` styles as IconButton — the `active`
-/// class encodes the pressed state. Wraps `aria-pressed` for a11y.
+
+
+
 export const Toggle = forwardRef<HTMLButtonElement, ToggleProps>(function Toggle(
   {
     pressed,

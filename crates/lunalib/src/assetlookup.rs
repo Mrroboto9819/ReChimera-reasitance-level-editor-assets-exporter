@@ -3,8 +3,6 @@ use std::io::{Read, Seek};
 use crate::error::{Error, Result};
 use crate::igfile::IgFile;
 
-/// 0x10-byte entry in an `assetlookup.dat` section: a TUID-keyed pointer into
-/// the matching `<kind>.dat` blob file (e.g. `mobys.dat`, `ties.dat`).
 #[derive(Debug, Clone, Copy)]
 pub struct AssetPointer {
     pub tuid: u64,
@@ -14,13 +12,6 @@ pub struct AssetPointer {
 
 const ASSET_POINTER_SIZE: u32 = 0x10;
 
-/// Section IDs used by the new (Future / Resistance 2+) engine generation.
-///
-/// Mirrors the full `ResourceLookup<>` registry in InsomniaToolset
-/// (`common/include/insomnia/classes/resource.hpp`). Sections that have no
-/// decoder yet are still enumerated here so manifests / hierarchies can
-/// surface them (the FE will show a count and "decoder not yet
-/// implemented" tag for those).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssetKind {
     Shader,
@@ -89,9 +80,6 @@ impl AssetKind {
         }
     }
 
-    /// Whether lunalib currently has a decoder for this kind. The
-    /// manifest still lists undecoded kinds so the user can see they
-    /// exist — the viewport / asset pipeline just can't render them yet.
     pub const fn has_decoder(self) -> bool {
         matches!(
             self,
@@ -114,8 +102,6 @@ impl<R: Read + Seek> AssetLookup<R> {
         Ok(Self { file: IgFile::open(reader)? })
     }
 
-    /// Return the asset pointer table for the given asset kind, or an empty
-    /// vector if the section is absent in this file.
     pub fn pointers(&mut self, kind: AssetKind) -> Result<Vec<AssetPointer>> {
         let Some(section) = self.file.section(kind.section_id()) else {
             return Ok(Vec::new());

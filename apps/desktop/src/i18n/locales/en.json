@@ -18,6 +18,18 @@
     "disclaimer": "Translations were generated with AI — sorry for any spelling or grammar mistakes. You can submit corrections as a pull request on GitHub.",
     "submitPR": "Submit a correction"
   },
+  "views": {
+    "hierarchy": "Hierarchy",
+    "inspector": "Inspector",
+    "console": "Console",
+    "viewport": "Viewport"
+  },
+  "tabs": {
+    "dropMove": "Move to this panel",
+    "emptyTitle": "Empty panel",
+    "emptyHint": "Drag a tab here or click + to add a view",
+    "addView": "Add a view to this panel"
+  },
   "toolbar": {
     "renderLayers": "Render layers",
     "viewportOverlays": "Viewport overlays",
@@ -93,6 +105,14 @@
     "browse": "Browse…",
     "open": "Open",
     "dropHint": "Drop a folder here"
+  },
+  "cacheModal": {
+    "title": "Building level cache",
+    "subtitle": "Decoding mobys, ties, and textures into _rechimera_cache/ — pre-baked GLBs make exports faster.",
+    "phase_mobys": "Mobys",
+    "phase_ties": "Ties",
+    "phase_textures": "Textures",
+    "hint": "This runs in the background. Don't close the app — the next time you open this level it will be ready instantly."
   },
   "cachePrompt": {
     "titleFound": "Cached level data found",

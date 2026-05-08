@@ -70,7 +70,7 @@ export function useUpdater(): UpdaterState {
     try {
       localStorage.setItem(STORAGE_KEY, String(Date.now()));
     } catch {
-      /* ignore */
+      
     }
     setHidden(true);
   }, []);

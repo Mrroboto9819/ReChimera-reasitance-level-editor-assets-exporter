@@ -4,32 +4,32 @@ import { save } from "@tauri-apps/plugin-dialog";
 import type { ExtractedSound } from "./api";
 
 interface SoundPlayerProps {
-  /** Currently-playing sound, or null when nothing is loaded. The
-   *  player UI is hidden in that case so it doesn't claim layout
-   *  space when idle. */
+  
+
+
   nowPlaying: NowPlaying | null;
-  /** Stop playback + close the player bar. */
+  
   onClose: () => void;
-  /** Optional logger — surfaces export results in the bottom Console. */
+  
   onLog?: (level: "info" | "ok" | "warn" | "error", text: string) => void;
 }
 
 export interface NowPlaying {
-  /** Display name (sound entry name, e.g. "weapon_pistol_fire"). */
+  
   name: string;
-  /** Source bank filename — `resident_sound.dat`, `streaming_sound.dat`,
-   *  etc. Shown as a secondary label. */
+  
+
   source: string;
-  /** Live `<audio>` element. The player subscribes to its events for
-   *  progress / duration / ended. We deliberately keep ONE Audio per
-   *  player session and reuse it across re-renders so playback
-   *  doesn't restart on UI updates. */
+  
+
+
+
   audio: HTMLAudioElement;
-  /** Object URL backing the audio. Owned by the caller — the player
-   *  doesn't revoke it on close (parent does). */
+  
+
   blobUrl: string;
-  /** The full extracted sound record. Used by the export action so we
-   *  can re-decode the base64 WAV and write it to disk via Tauri. */
+  
+
   entry: ExtractedSound;
 }
 
@@ -41,30 +41,30 @@ function fmtTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-/**
- * Bottom-of-app transport bar for the currently-playing extracted
- * sound. Replaces the previous "play in background, no UI" model with
- * a visible player carrying:
- *   - Play / pause toggle (also exposed on each Hierarchy row)
- *   - Seekable progress bar + time display
- *   - Volume slider
- *   - Export-as-WAV button (Tauri save dialog → write_bytes)
- *   - Close button (stops playback)
- *
- * Subscribes to the audio element's events instead of polling — this
- * keeps the player UI in sync regardless of whether playback was
- * started programmatically (Hierarchy click) or via the bar's own
- * controls.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function SoundPlayer({ nowPlaying, onClose, onLog }: SoundPlayerProps) {
   const [paused, setPaused] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
   const [exporting, setExporting] = useState(false);
-  // Local seek-in-progress flag — while the user is dragging the
-  // progress slider, we suppress the audio's `timeupdate` events from
-  // overwriting the slider's value. `mouseup` releases.
+  
+  
+  
   const seekingRef = useRef(false);
 
   const audio = nowPlaying?.audio ?? null;
@@ -95,8 +95,8 @@ export function SoundPlayer({ nowPlaying, onClose, onLog }: SoundPlayerProps) {
     audio.addEventListener("ended", onEnded);
     audio.addEventListener("volumechange", onVolumeChange);
 
-    // Sync initial state — the audio may have started playing before
-    // this player mounted.
+    
+    
     setPaused(audio.paused);
     setCurrentTime(audio.currentTime);
     setDuration(audio.duration || 0);
@@ -144,9 +144,9 @@ export function SoundPlayer({ nowPlaying, onClose, onLog }: SoundPlayerProps) {
     if (!nowPlaying || exporting) return;
     setExporting(true);
     try {
-      // Build a filesystem-safe stem from the sound name. Same rules
-      // as the GLB export path — strip Windows-illegal chars + clamp
-      // length.
+      
+      
+      
       const stem = nowPlaying.name
         .replace(/[\\/:*?"<>|]/g, "_")
         .replace(/\s+/g, "_")
@@ -160,7 +160,7 @@ export function SoundPlayer({ nowPlaying, onClose, onLog }: SoundPlayerProps) {
         onLog?.("info", "Sound export cancelled");
         return;
       }
-      // Decode the base64 WAV bytes once for write_bytes.
+      
       const bin = atob(nowPlaying.entry.wav_b64);
       const bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);

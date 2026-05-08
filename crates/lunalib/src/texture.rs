@@ -1,23 +1,4 @@
-//! Texture decoder.
-//!
-//! Ported from new-engine path of [LibLunacy/Texture.cs](../../../../LibLunacy/Texture.cs).
-//! Cross-checked against [InsomniaToolset/common/include/insomnia/classes/](../../../../InsomniaToolset/common/include/insomnia/classes/) for format codes.
-//!
-//! Layout (new engine):
-//! - `assetlookup.dat` section `0x1D140` — 4-byte `NewTexMeta` per texture
-//!   (format, mip count, log2(width), log2(height)).
-//! - `assetlookup.dat` section `0x1D1C0` — 16-byte `AssetPointer` per highmip
-//!   (`tuid`, `offset`, `length`) referencing `highmips.dat`.
-//! - `highmips.dat` — raw blob storage.
-//!
-//! Format codes (`NewTexMeta.format`):
-//! | code | meaning |
-//! | --- | --- |
-//! | 0x03 | R5G6B5 (Morton-swizzled 16bpp) |
-//! | 0x05 | A8R8G8B8 (Morton-swizzled 32bpp) |
-//! | 0x06 | DXT1 |
-//! | 0x07 | DXT3 |
-//! | 0x08 | DXT5 |
+
 
 use std::collections::HashSet;
 use std::fs::File;
@@ -42,7 +23,7 @@ pub enum TexFormat {
     Dxt1,
     Dxt3,
     Dxt5,
-    /// Format we recognize the byte for but haven't implemented yet.
+
     Unknown(u8),
 }
 
@@ -72,16 +53,14 @@ impl TexFormat {
 
 #[derive(Debug, Clone)]
 pub struct Texture {
-    /// Lower 32 bits of the highmip TUID — matches the keys used by the
-    /// shader's `NewReferences.albedoTuid` field.
+
     pub id: u32,
     pub tuid: u64,
     pub width: u32,
     pub height: u32,
     pub format: TexFormat,
     pub mipmap_count: u8,
-    /// Decoded RGBA8 (row-major, top-to-bottom). Empty if the format wasn't
-    /// implemented or decoding failed (in which case `width=0, height=0`).
+
     pub rgba: Vec<u8>,
 }
 
@@ -91,21 +70,12 @@ impl Texture {
     }
 }
 
-/// Decode every texture in the level. Heavy — call once per level open and
-/// cache the result; PNG-encode in the caller if shipping over IPC.
 pub fn read_textures(level_folder: &Path) -> Result<Vec<Texture>> {
     let mut out = Vec::new();
     read_textures_streaming(level_folder, |_| true, |t| out.push(t))?;
     Ok(out)
 }
 
-/// Streaming variant. `accept` is consulted before decoding so the caller can
-/// skip textures it doesn't need (the lower 32 bits of TUID is what shaders
-/// reference). The skipped textures are not delivered to `on_each`.
-///
-/// Decoding is the expensive step; gating it cuts most of the cost when only
-/// a handful of textures end up referenced. The total count emitted via
-/// `on_total` is the count *after* filtering.
 pub fn read_textures_streaming<A, F>(
     level_folder: &Path,
     accept: A,
@@ -144,7 +114,6 @@ where
         });
     }
 
-    // Pull metadata + pointers in two passes (separate sections).
     let mut metas: Vec<(TexFormat, u8, u32, u32)> = Vec::with_capacity(count);
     for i in 0..count {
         lookup
@@ -177,7 +146,6 @@ where
         return Ok(());
     }
 
-    // Stream textures from highmips.dat.
     let highmips_path = level_folder.join("highmips.dat");
     let mut highmips = File::open(&highmips_path)?;
 
@@ -232,8 +200,6 @@ where
     Ok(())
 }
 
-/// `texpresso::decompress_image` expects the on-disk DXT bytes — PS3 stores
-/// these in standard format (NVIDIA RSX uses the same DXT layout as PC).
 fn decode_dxt(raw: &[u8], width: u32, height: u32, format: texpresso::Format) -> Vec<u8> {
     let expected = format.compressed_size(width as usize, height as usize);
     if raw.len() < expected {
@@ -244,8 +210,6 @@ fn decode_dxt(raw: &[u8], width: u32, height: u32, format: texpresso::Format) ->
     rgba
 }
 
-/// Morton (Z-order) inverse used by the PS3 RSX for non-DXT textures.
-/// Stolen — like the C# port — from RawTex.
 fn morton_index(t: u32, x: u32, y: u32) -> u32 {
     let mut num = 1u32;
     let mut num2 = 1u32;
@@ -280,7 +244,7 @@ fn decode_a8r8g8b8_morton(raw: &[u8], width: u32, height: u32) -> Vec<u8> {
     for t in 0..(pixels as u32) {
         let src = (t as usize) * 4;
         let dst = (morton_index(t, width, height) as usize) * 4;
-        // Source: ABGR (PS3 big-endian read). Want RGBA.
+
         let a = raw[src + 0];
         let b = raw[src + 1];
         let g = raw[src + 2];
@@ -302,7 +266,7 @@ fn decode_r5g6b5_morton(raw: &[u8], width: u32, height: u32) -> Vec<u8> {
     for t in 0..(pixels as u32) {
         let src = (t as usize) * 2;
         let dst = (morton_index(t, width, height) as usize) * 4;
-        // PS3 big-endian u16: high byte first.
+
         let v = u16::from_be_bytes([raw[src], raw[src + 1]]);
         let r5 = ((v >> 11) & 0x1F) as u8;
         let g6 = ((v >> 5) & 0x3F) as u8;
@@ -315,7 +279,6 @@ fn decode_r5g6b5_morton(raw: &[u8], width: u32, height: u32) -> Vec<u8> {
     rgba
 }
 
-/// Convenience: encode an RGBA buffer to PNG bytes. Returns empty on failure.
 pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     if rgba.is_empty() || width == 0 || height == 0 {
         return Vec::new();
@@ -334,11 +297,6 @@ pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     out.into_inner()
 }
 
-/// Downsample an RGBA buffer to fit within `max_dim` on the larger side.
-/// Returns the original buffer if it's already small enough or the resize
-/// fails. This is purely a UI-preview optimization — the editor doesn't need
-/// 1024² textures most of the time, and shrinking them cuts the JSON payload
-/// over the IPC channel by ~16× for full-res PS3 textures.
 pub fn downsample_rgba(
     rgba: Vec<u8>,
     width: u32,
@@ -367,25 +325,6 @@ pub fn downsample_rgba(
     (resized.into_raw(), w, h)
 }
 
-/// Bulk-extract a subset of textures by id, returning each as PNG
-/// bytes. The expensive work — DXT/Morton decode, downsample, PNG
-/// encode — runs in parallel via rayon. The sequential phase is
-/// limited to reading the metadata + raw blobs from `highmips.dat`,
-/// which is cheap.
-///
-/// Designed for the `get_level_textures_bulk` Tauri command: gives us
-/// a wall-clock speedup proportional to core count on level loads
-/// where dozens-to-hundreds of textures need to be PNG-encoded all at
-/// once.
-///
-/// `wanted_ids` filters the texture set; pass `None` to extract every
-/// texture in the level. `max_dim` caps each output PNG (mirrors the
-/// preview-quality setting used elsewhere — 512 is the default).
-///
-/// Returned tuples are `(id, png_bytes)` in INPUT-ORDER of the lookup
-/// table (i.e. by the `assetlookup.dat` index), not by `wanted_ids`
-/// iteration order. Empty/invalid textures are silently dropped — the
-/// caller should treat a missing id in the result as "not decodable."
 pub fn bulk_extract_pngs(
     level_folder: &Path,
     wanted_ids: Option<&[u32]>,
@@ -406,7 +345,6 @@ pub fn bulk_extract_pngs(
         });
     }
 
-    // Sequential metadata read — single u64 + 3 u32 reads per entry.
     let mut metas: Vec<(TexFormat, u8, u32, u32)> = Vec::with_capacity(count);
     for i in 0..count {
         lookup
@@ -442,12 +380,6 @@ pub fn bulk_extract_pngs(
         }
     };
 
-    // Sequential phase 2: pull raw bytes for every accepted texture
-    // into RAM. We can't parallelize this without N file handles +
-    // duplicate seeks; the single sequential pass over highmips.dat
-    // is plenty fast (it's a contiguous read). We pay the memory cost
-    // of holding all raw bytes briefly — for a 200-texture level that
-    // peaks around ~50-100 MB, well within budget.
     let highmips_path = level_folder.join("highmips.dat");
     let mut highmips = File::open(&highmips_path)?;
 
@@ -478,10 +410,6 @@ pub fn bulk_extract_pngs(
         });
     }
 
-    // Parallel phase: decode + downsample + PNG-encode. Each job is
-    // fully independent. PNG encode dominates wall time on most
-    // textures (Triangle resize + deflate), so this scales near-
-    // linearly with core count.
     let pngs: Vec<(u32, Vec<u8>)> = jobs
         .into_par_iter()
         .filter_map(|job| {

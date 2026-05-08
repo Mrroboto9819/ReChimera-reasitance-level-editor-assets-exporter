@@ -17,9 +17,9 @@ interface StatusBarProps {
     current: number;
     total: number;
   } | null;
-  /** When provided, the cache-status cell becomes clickable and opens
-   *  the cache library modal. Disabled (non-clickable) while extraction
-   *  is still running. */
+  
+
+
   onOpenCacheLibrary?: () => void;
 }
 
@@ -28,11 +28,11 @@ function folderName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
-/**
- * Bottom status bar — like VS Code / Unity's footer. Shows the most-relevant
- * status at-a-glance: connection-style dot for activity, file context, raw
- * counts on the right.
- */
+
+
+
+
+
 export function StatusBar({
   summary,
   meshesCount,
@@ -161,7 +161,7 @@ export function StatusBar({
           )}
         </>
       )}
-      {/* meshesCount is referenced for future expansion (per-mesh count). */}
+      {}
       {meshesCount < 0 && null}
     </div>
   );

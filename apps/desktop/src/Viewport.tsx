@@ -1,4 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Activity,
+  Bone,
+  Box,
+  Compass,
+  Grid3x3,
+  type LucideIcon,
+  Mountain,
+  Play,
+  Square,
+  Users,
+} from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Canvas, type ThreeEvent, useFrame, useThree } from "@react-three/fiber";
 import {
   GizmoHelper,
@@ -35,10 +48,10 @@ type Edits = ReturnType<typeof useEdits>;
 
 const EMPTY_TEXTURE_BLOBS: TextureBlobMap = new Map();
 
-/// White emissive tint applied when a material gets an emissive map
-/// late. Module-level so we don't allocate a fresh THREE.Color per
-/// render — cheap individually but the audit flagged it for being in
-/// the render body.
+
+
+
+
 const EMISSIVE_TINT_WHITE = new THREE.Color(0xffffff);
 
 export interface ViewSettings {
@@ -50,38 +63,38 @@ export interface ViewSettings {
   showAxes: boolean;
   showStats: boolean;
   showBones: boolean;
-  /** Toggle SkinnedMesh AnimationMixer playback for the selected
-   *  character. False keeps the rig in bind pose. */
+  
+
   playAnimation: boolean;
 }
 
-/* ────────────────────────────────────────────────────────────────────────
- * Texture cache: PNG bytes → THREE.Texture, keyed by albedo_id.
- *
- * `useTextureMap` builds incrementally: only NEW payloads (id not yet in
- * the cache) get decoded. Repeated calls with the same payload list reuse
- * the same THREE.Texture instances so materials stay stable.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
+
+
+
+
 
 function buildOneTexture(blob: Blob): THREE.Texture {
   const tex = new THREE.Texture();
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
-  tex.flipY = false; // PS3 UVs already match three.js convention.
-  // Mipmap generation is the #1 source of WebGL context loss during level
-  // load: every `gl.generateMipmap()` call walks all texel levels on the
-  // GPU, and 50+ of those firing in one frame is enough to make the
-  // driver kill the context. We accept slightly aliased distant textures
-  // in exchange for survival.
+  tex.flipY = false; 
+  
+  
+  
+  
+  
   tex.minFilter = THREE.LinearFilter;
   tex.magFilter = THREE.LinearFilter;
   tex.generateMipmaps = false;
-  // Use `createImageBitmap` instead of `<Image>` so PNG decode runs in
-  // the browser's image-decoder thread, never on the main thread.
-  // For our 50+ texture batches, this alone removes ~5-15ms of
-  // synchronous decode work per frame during level load. Falls back to
-  // <Image> on (very rare) browsers without the API.
+  
+  
+  
+  
+  
   if (typeof createImageBitmap === "function") {
     createImageBitmap(blob, { imageOrientation: "none", premultiplyAlpha: "none" })
       .then((bitmap) => {
@@ -89,7 +102,7 @@ function buildOneTexture(blob: Blob): THREE.Texture {
         tex.needsUpdate = true;
       })
       .catch(() => {
-        // Fall back to the Image() path below (rare browsers).
+        
         const url = URL.createObjectURL(blob);
         const img = new Image();
         img.onload = () => {
@@ -116,17 +129,17 @@ function useTextureMap(blobs: TextureBlobMap): Map<number, THREE.Texture> {
   const cacheRef = useRef<Map<number, THREE.Texture>>(new Map());
   const [bumpVersion, setBumpVersion] = useState(0);
 
-  // Build textures in the render body, capped at TEX_BATCH per render.
-  // We tried `requestIdleCallback` here but it rarely fires when r3f
-  // renders at 60fps (the browser is never "idle"), so textures stalled
-  // and materials kept their white placeholders forever. Render-body
-  // build is reliable: every render eats up to TEX_BATCH new textures
-  // and `setBumpVersion(v+1)` schedules another render via setTimeout.
-  //
-  // The actual freeze fix that lets us be aggressive here is the
-  // `generateMipmaps = false` in `buildOneTexture` — without that, 8
-  // texture uploads in one frame would kill the WebGL context. With it
-  // off, each upload is just a `gl.texImage2D` call, very cheap.
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
   const TEX_BATCH = 8;
   let builtThisRender = 0;
   let pendingMore = false;
@@ -146,7 +159,7 @@ function useTextureMap(blobs: TextureBlobMap): Map<number, THREE.Texture> {
     return () => clearTimeout(id);
   }, [pendingMore, bumpVersion]);
 
-  // Dispose textures on unmount.
+  
   useEffect(() => {
     const cache = cacheRef.current;
     return () => {
@@ -158,9 +171,9 @@ function useTextureMap(blobs: TextureBlobMap): Map<number, THREE.Texture> {
   return cacheRef.current;
 }
 
-/* ────────────────────────────────────────────────────────────────────────
- * Per-asset BufferGeometry.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
 
 function buildGeometry(
   positions: Float32Array,
@@ -171,15 +184,15 @@ function buildGeometry(
   geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   if (uvs.length > 0) geom.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
   geom.setIndex(new THREE.BufferAttribute(indices, 1));
-  // Skipping `computeVertexNormals()` deliberately — at ~150ms per 50k-vert
-  // moby, this was the dominant single cost during level load and the main
-  // cause of the visible freeze. Three.js's MeshStandardMaterial falls back
-  // to derivative normals (`dFdx`/`dFdy`) when no `normal` attribute is
-  // present, which produces flat-shaded faces; the per-pixel normal map
-  // (when shaders provide one) then perturbs those, which is how Insomniac's
-  // assets are authored anyway. If you ever want smooth-shaded geometry
-  // without a normal map, compute it in a Web Worker — never on the main
-  // thread.
+  
+  
+  
+  
+  
+  
+  
+  
+  
   geom.computeBoundingSphere();
   return geom;
 }
@@ -196,7 +209,7 @@ interface InstancedAssetSubmeshProps {
   selectedIds: Set<string>;
   onPick: (instance: InstanceData, e: ThreeEvent<MouseEvent>) => void;
   baseColor: THREE.Color;
-  /** Per-instance overrides from the edits store. */
+  
   edits: Edits["edits"];
 }
 
@@ -256,8 +269,8 @@ function ProxyPlacementGroup({
     mesh.count = filtered.length;
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    // Recompute the union bounding sphere — see InstancedAssetSubmesh
-    // for why this is essential for proper frustum culling.
+    
+    
     mesh.computeBoundingSphere();
   }, [filtered, selectedIds, edits, kind, color, selectionColor]);
 
@@ -267,9 +280,9 @@ function ProxyPlacementGroup({
     <instancedMesh
       ref={meshRef}
       args={[undefined, undefined, filtered.length]}
-      // Single click selects — R3F's pointer-event system distinguishes
-      // click from drag using a movement threshold, so OrbitControls
-      // panning/orbit doesn't fire spurious selections.
+      
+      
+      
       onClick={(e: ThreeEvent<MouseEvent>) => {
         e.stopPropagation();
         const id = e.instanceId;
@@ -309,9 +322,9 @@ function InstancedAssetSubmesh({
     return m;
   }, [instances]);
   const assetColors = useAssetColors();
-  // Memoize the THREE.Color so reference equality is stable across renders
-  // when the user hasn't changed the setting. The full-refresh path below
-  // compares by reference, not value.
+  
+  
+  
   const selectedColor = useMemo(
     () => new THREE.Color(assetColors.selection),
     [assetColors.selection],
@@ -340,15 +353,15 @@ function InstancedAssetSubmesh({
     }
     mesh.instanceMatrix.needsUpdate = true;
     mesh.count = instances.length;
-    // Recompute the union bounding sphere across all instance matrices.
-    // Without this, three.js's frustum culling tests the GEOMETRY's
-    // local sphere — which only describes the asset's local extent and
-    // ignores instance translations — so the InstancedMesh is treated
-    // as if it lives at the world origin and never gets culled. With
-    // proper instance bounds, off-screen instance groups are skipped
-    // entirely, which is the InstancedMesh equivalent of LOD-distance
-    // culling and the closest analogue to the LOD technique for our
-    // many-instances setup.
+    
+    
+    
+    
+    
+    
+    
+    
+    
     mesh.computeBoundingSphere();
   }, [instances, edits]);
 
@@ -403,10 +416,10 @@ function InstancedAssetSubmesh({
     <instancedMesh
       ref={meshRef}
       args={[geometry, material, instances.length]}
-      // Single click selects. R3F's event system uses a small pixel
-      // threshold to distinguish click-vs-drag, so OrbitControls'
-      // orbit/pan drags don't fire onClick. This restores the original
-      // behavior from before the brief double-click experiment.
+      
+      
+      
+      
       onClick={(e: ThreeEvent<MouseEvent>) => {
         e.stopPropagation();
         const id = e.instanceId;
@@ -428,9 +441,9 @@ interface AssetGroupProps {
   onPick: (instance: InstanceData, e: ThreeEvent<MouseEvent>) => void;
   visible: boolean;
   edits: Edits["edits"];
-  /** Asset_tuid the user just selected. When non-null, the build queue
-   *  promotes this asset to the front so the user sees their pick render
-   *  before the rest of the level finishes. */
+  
+
+
   prioritizedAssetTuid?: string | null;
 }
 
@@ -445,10 +458,10 @@ function AssetGroup({
   edits,
   prioritizedAssetTuid,
 }: AssetGroupProps) {
-  // Per-asset cache: keyed by asset_tuid so streaming flushes only build
-  // newly-arrived assets instead of rebuilding every asset on every flush.
-  // Material cache is shared per-instance of AssetGroup, keyed by albedo_id
-  // so identical-textured submeshes share a material.
+  
+  
+  
+  
   const cacheRef = useRef<{
     byAsset: Map<
       string,
@@ -464,10 +477,10 @@ function AssetGroup({
   }
   const cache = cacheRef.current;
 
-  /** Material cache keyed on the triple (albedo, normal, emissive) — three
-   *  meshes that share all three texture refs share one material. The
-   *  emissive channel is given a low intensity so it shows up but doesn't
-   *  blow out (we don't know the actual emission strength from the asset). */
+  
+
+
+
   function getMaterial(
     albedoId: number | null,
     normalId: number | null,
@@ -479,7 +492,7 @@ function AssetGroup({
     const emissive = emissiveId != null ? textures.get(emissiveId) ?? null : null;
     let m = cache.materials.get(key) as THREE.MeshStandardMaterial | undefined;
     if (m) {
-      // Patch in textures that arrived after the material was first built.
+      
       if (albedo && m.map !== albedo) {
         m.map = albedo;
         m.needsUpdate = true;
@@ -498,30 +511,30 @@ function AssetGroup({
       map: albedo,
       normalMap: normal,
       emissiveMap: emissive,
-      // Light gray emission tint so the emissive map's bright pixels
-      // actually contribute. Set to white when the map is present.
+      
+      
       emissive: emissive ? 0xffffff : 0x000000,
       emissiveIntensity: emissive ? 0.7 : 0,
       color: 0xffffff,
       roughness: 0.85,
       metalness: 0,
-      // We never cast/receive shadows — disable the shadow pass per
-      // the optimization checklist (no dynamic shadows). Three.js's
-      // default Material.shadowSide etc. don't bypass the program
-      // permutation, but we also never enable `castShadow` / `recv`
-      // on meshes, so the shadow shader variants never compile. Kept
-      // here as documentation: these defaults assume `Renderer.shadowMap.enabled = false`.
-      flatShading: false, // we skipped computeVertexNormals; renderer falls back to dFdx
+      
+      
+      
+      
+      
+      
+      flatShading: false, 
     });
     cache.materials.set(key, m);
     return m;
   }
 
-  // Group instances by asset_tuid first — we need this to (a) decide which
-  // assets actually deserve building, and (b) emit one InstancedMesh per
-  // asset that has placements. Orphan assets (e.g. shader-only references
-  // with no world placements) are skipped entirely, which alone removes
-  // ~30% of the build work on bayou.
+  
+  
+  
+  
+  
   const grouped = useMemo(() => {
     const m = new Map<string, InstanceData[]>();
     for (const inst of instances) {
@@ -536,20 +549,20 @@ function AssetGroup({
     return m;
   }, [instances, kind]);
 
-  // Asset-by-tuid index. Memoized so the material-refresh loop below
-  // is O(1) per asset instead of O(N) — was a flagged hot path
-  // (Viewport.tsx:512 in the original audit) where every render
-  // scanned the entire meshes array per grouped asset, costing
-  // ~O(n²) for hundreds of placements.
+  
+  
+  
+  
+  
   const meshesByTuid = useMemo(() => {
     const m = new Map<string, AssetMeshes>();
     for (const a of meshes) m.set(a.asset_tuid, a);
     return m;
   }, [meshes]);
 
-  // Materials are cheap to build, so refresh material refs on every render
-  // (so late-arriving textures attach without rebuilding). Geometries are
-  // the expensive part — those go through the idle queue below.
+  
+  
+  
   for (const [assetTuid] of grouped) {
     const existing = cache.byAsset.get(assetTuid);
     if (!existing) continue;
@@ -565,34 +578,34 @@ function AssetGroup({
     }
   }
 
-  // Idle-driven progressive build. Geometry construction (b64 decode +
-  // typed-array allocation + GPU upload) is the dominant cost during level
-  // load — running it inside the render body blocked React commits for
-  // hundreds of milliseconds, which is what produced the visible freeze.
-  //
-  // Strategy:
-  //   1. Render body is pure — no build work happens here, ever.
-  //   2. A useEffect picks ONE pending asset per `requestIdleCallback`
-  //      slot, builds it, then bumps a version counter so the parent
-  //      re-renders with the new cache entry.
-  //   3. The browser decides the rate — under heavy interaction (orbiting
-  //      the camera, opening menus) idle slots arrive less often, so the
-  //      build naturally yields. Under no interaction (level just loaded,
-  //      user is reading the splash) builds run back-to-back.
-  //   4. Only assets with placements get queued — orphans are ignored.
-  //
-  // No `BUILD_BATCH` constant: each idle tick builds exactly one asset
-  // and re-schedules. This keeps each tick under ~50ms even on 50k-vert
-  // mobys, well below the 16ms-frame target.
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
   const [, bumpBuildVersion] = useState(0);
   useEffect(() => {
     let cancelled = false;
 
     const buildOne = () => {
       if (cancelled) return;
-      // Priority pass — if the user just selected an asset, build that
-      // first so they see their pick before the rest of the level
-      // catches up.
+      
+      
+      
       let next: (typeof meshes)[number] | null = null;
       if (prioritizedAssetTuid) {
         const p = meshes.find(
@@ -602,7 +615,7 @@ function AssetGroup({
         );
         if (p) next = p;
       }
-      // Otherwise, build the first asset that has placements + isn't built.
+      
       if (!next) {
         for (const a of meshes) {
           if (cache.byAsset.has(a.asset_tuid)) continue;
@@ -611,7 +624,7 @@ function AssetGroup({
           break;
         }
       }
-      if (!next) return; // Nothing left.
+      if (!next) return; 
 
       const submeshes = next.submeshes.map((s) => ({
         geom: buildMeshGeometry(s),
@@ -619,16 +632,16 @@ function AssetGroup({
       }));
       cache.byAsset.set(next.asset_tuid, submeshes);
 
-      // Force a re-render so React picks up the new cache entry, then
-      // schedule the next build.
+      
+      
       bumpBuildVersion((v) => v + 1);
       schedule();
     };
 
     const schedule = () => {
       if (cancelled) return;
-      // requestIdleCallback yields to user input + paint; browsers without
-      // it (Safari historically) fall back to setTimeout(0).
+      
+      
       const ric =
         (window as Window & {
           requestIdleCallback?: (cb: () => void) => number;
@@ -644,13 +657,13 @@ function AssetGroup({
     return () => {
       cancelled = true;
     };
-    // `meshes` ref changes when streaming flushes. `grouped` changes when
-    // instances arrive. `prioritizedAssetTuid` changes when the user picks
-    // a new selection. All trigger a rescan; the cache check inside
-    // buildOne prevents duplicate work.
+    
+    
+    
+    
   }, [meshes, grouped, cache, prioritizedAssetTuid]);
 
-  // Dispose everything when the AssetGroup unmounts (level close).
+  
   useEffect(() => {
     return () => {
       for (const list of cache.byAsset.values()) {
@@ -692,9 +705,9 @@ function AssetGroup({
   );
 }
 
-/* ────────────────────────────────────────────────────────────────────────
- * UFrag terrain — one mesh per UFrag chunk.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
 
 function UFragMeshNode({
   ufrag,
@@ -752,11 +765,11 @@ function UFragMeshGroup({
     <group>
       {meshes.map((u, idx) => (
         <UFragMeshNode
-          // Bayou's data emits duplicate ufrag tuids across zones (the
-          // `tuid` is local to a zone, not globally unique). Suffix with
-          // the array index to dedupe the React keys — we already store
-          // the actual ufrag identity inside the node's userData, so the
-          // index suffix only matters for React's reconciliation.
+          
+          
+          
+          
+          
           key={`${u.tuid}-${idx}`}
           ufrag={u}
           texture={u.mesh.albedo_id != null ? textures.get(u.mesh.albedo_id) ?? null : null}
@@ -767,9 +780,9 @@ function UFragMeshGroup({
   );
 }
 
-/* ────────────────────────────────────────────────────────────────────────
- * Bounding-sphere wireframes (debug overlay).
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
 
 function UFragBoundsGroup({
   ufrags,
@@ -791,11 +804,11 @@ function UFragBoundsGroup({
   );
 }
 
-/* ────────────────────────────────────────────────────────────────────────
- * Camera framing — runs ONCE per level open. Subsequent rerenders (from
- * stream flushes adding more instances/ufrags) shouldn't yank the camera
- * around once the user has started orbiting.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
+
+
 
 function CameraFrame({ center, extent }: { center: [number, number, number]; extent: number }) {
   const { camera } = useThree();
@@ -813,19 +826,19 @@ function CameraFrame({ center, extent }: { center: [number, number, number]; ext
   return null;
 }
 
-/* ────────────────────────────────────────────────────────────────────────
- * EditGizmo — drag handles + floating info badge for the primary selection.
- *
- * TransformControls needs an Object3D to attach to; InstancedMesh entries
- * aren't Object3Ds (they're matrices in a buffer), so we mount an invisible
- * helper group at the instance's transform and let the gizmo manipulate
- * THAT. On every drag, we read the helper's TRS and write it back to the
- * edits store, which the InstancedMesh re-reads on its next render.
- *
- * The Html badge floats above the helper position with the object's name
- * + kind + edit-mode hint. When TransformControls is active it disables
- * OrbitControls so the gizmo drag doesn't also pan/orbit the camera.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 function EditGizmo({
   primary,
@@ -854,9 +867,9 @@ function EditGizmo({
     [primary, instances],
   );
 
-  // Sync the helper to the current resolved transform whenever the
-  // selection or its edits change (so click-and-drag picks up where the
-  // last edit left off rather than snapping back to the original).
+  
+  
+  
   useEffect(() => {
     const helper = helperRef.current;
     if (!helper || !inst) return;
@@ -879,7 +892,7 @@ function EditGizmo({
         <Html
           center
           distanceFactor={20}
-          // Keep the badge small & always-on-top relative to the scene.
+          
           style={{ pointerEvents: "none" }}
           position={[0, 1.2, 0]}
         >
@@ -902,9 +915,9 @@ function EditGizmo({
         object={helperRef as never}
         mode={edits.mode}
         size={0.8}
-        // While the user is dragging, disable OrbitControls so we don't
-        // pan the camera at the same time. drei's <TransformControls> emits
-        // a `dragging-changed` event we hook into.
+        
+        
+        
         onMouseDown={() => {
           if (controls) (controls as { enabled?: boolean }).enabled = false;
         }}
@@ -930,11 +943,11 @@ function EditGizmo({
   );
 }
 
-/* ────────────────────────────────────────────────────────────────────────
- * Camera focus — animates the OrbitControls target + camera position to
- * the primary-selected instance whenever it changes. Lives inside the
- * Canvas (needs useThree to grab the controls instance set by `makeDefault`).
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
+
+
 
 function CameraFocus({
   primary,
@@ -943,20 +956,20 @@ function CameraFocus({
 }: {
   primary: string | null;
   instances: InstanceData[];
-  /** Bump from the parent to force a re-frame even if `primary` is unchanged. */
+  
   focusVersion: number;
 }) {
   const { camera, controls } = useThree();
   const lastFocusedRef = useRef<string | null>(null);
   const lastVersionRef = useRef<number>(-1);
-  // In-flight GSAP tweens so rapid re-selection cancels the previous
-  // animation instead of letting two tweens fight over the camera.
-  // Without this, clicking three different objects in 200ms ran three
-  // concurrent tweens and the last-finished won, regardless of which
-  // selection was current.
+  
+  
+  
+  
+  
   const tweensRef = useRef<gsap.core.Tween[]>([]);
 
-  // Cancel any tweens still running when the component unmounts.
+  
   useEffect(() => {
     return () => {
       for (const t of tweensRef.current) t.kill();
@@ -967,8 +980,8 @@ function CameraFocus({
   useEffect(() => {
     if (!primary) return;
     if (!controls) return;
-    // Refocus when EITHER the primary selection changed OR the version
-    // counter bumped (an explicit "Go to" request from the Inspector).
+    
+    
     const versionChanged = focusVersion !== lastVersionRef.current;
     const primaryChanged = primary !== lastFocusedRef.current;
     if (!versionChanged && !primaryChanged) return;
@@ -977,8 +990,8 @@ function CameraFocus({
     lastFocusedRef.current = primary;
     lastVersionRef.current = focusVersion;
 
-    // Kill any tweens from a previous selection — see comment on
-    // tweensRef above. Cheap (each kill() is O(1)) and idempotent.
+    
+    
     for (const t of tweensRef.current) t.kill();
     tweensRef.current = [];
 
@@ -990,9 +1003,9 @@ function CameraFocus({
       inst.position[2]!,
     );
 
-    // Preserve the user's current viewing angle/distance, just shift so
-    // the new target is at the instance position. Clamp distance to a
-    // sensible range so tiny objects don't get the camera glued to them.
+    
+    
+    
     const currentOffset = cam.position.clone().sub(orbit.target);
     const distance = Math.max(20, Math.min(currentOffset.length(), 100));
     const newOffset = currentOffset.clone().normalize().multiplyScalar(distance);
@@ -1248,15 +1261,15 @@ function GizmoViewportSixAxis() {
   );
 }
 
-/* ────────────────────────────────────────────────────────────────────────
- * BoneOverlay — draws cyan line segments along the skeleton hierarchy of
- * every selected moby that has a parsed skeleton (section 0xD300). One
- * line per (parent → bone) pair, computed by walking bind_local matrices.
- *
- * Phase 1a of the animation/skinning effort: lets us visually confirm the
- * skeleton parser produces correct bone topology before we wire up skin
- * weights or animation playback. Render-only, no interaction.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
+
+
+
+
+
+
 
 const BONE_COLOR = new THREE.Color("#33d5ff");
 
@@ -1267,12 +1280,12 @@ function buildBoneSegments(
   const n = parents.length;
   if (n === 0 || bindLocal.length !== n) return null;
 
-  // Cumulative world-space matrices per bone.
+  
   const worlds: THREE.Matrix4[] = new Array(n);
   for (let i = 0; i < n; i++) {
     const m = new THREE.Matrix4();
-    // bindLocal is column-major float[16]; THREE.Matrix4 also stores
-    // column-major in `elements`, so a direct copy is correct.
+    
+    
     m.fromArray(bindLocal[i]!);
     const pi = parents[i]!;
     if (pi >= 0 && pi < i) {
@@ -1282,7 +1295,7 @@ function buildBoneSegments(
     }
   }
 
-  // One segment per non-root bone — (parent_pos → bone_pos).
+  
   const positions: number[] = [];
   const tmp = new THREE.Vector3();
   for (let i = 0; i < n; i++) {
@@ -1302,11 +1315,11 @@ interface BoneOverlayProps {
   selectedIds: Set<string>;
   mobyAssets: AssetMeshes[];
   edits: Map<string, InstanceEdit>;
-  /** Tuid of the primary selected instance — when set, this overlay
-   *  skips that one because `SkinnedSelectionOverlay` already draws a
-   *  live, animated `THREE.SkeletonHelper` for it. Avoids drawing two
-   *  bone wireframes on top of each other (one bind-pose static, one
-   *  animated). */
+  
+
+
+
+
   skipInstanceTuid?: string | null;
 }
 
@@ -1317,9 +1330,9 @@ function BoneOverlay({
   edits,
   skipInstanceTuid,
 }: BoneOverlayProps) {
-  // Per-asset cached segment buffer — bone topology is intrinsic to the
-  // asset, so we build the line geometry once and re-use it across all
-  // selected instances of the same asset.
+  
+  
+  
   const segmentsByAsset = useMemo(() => {
     const m = new Map<string, Float32Array>();
     for (const a of mobyAssets) {
@@ -1331,8 +1344,8 @@ function BoneOverlay({
     return m;
   }, [mobyAssets]);
 
-  // Render one <lineSegments> per selected, skinned moby instance. Gated by
-  // selection because drawing every level moby's bones at once would melt.
+  
+  
   const overlays = useMemo(() => {
     const out: {
       key: string;
@@ -1342,10 +1355,10 @@ function BoneOverlay({
     for (const inst of instances) {
       if (inst.kind !== "moby") continue;
       if (!selectedIds.has(inst.tuid)) continue;
-      // The primary's animated skeleton is drawn by SkinnedSelectionOverlay
-      // via THREE.SkeletonHelper, which tracks live bone matrices. Drawing
-      // our static bind-pose lines on top of that would visually
-      // contradict the animated rig.
+      
+      
+      
+      
       if (skipInstanceTuid && inst.tuid === skipInstanceTuid) continue;
       const seg = segmentsByAsset.get(inst.asset_tuid);
       if (!seg) continue;
@@ -1371,12 +1384,12 @@ function BoneOverlay({
           scale={transform.scale}
         />
       ))}
-      {/* Show a quiet badge if user toggled bones on but no selected moby
-          has a skeleton — otherwise the toggle silently does nothing and
-          looks broken. Off-screen by default; logged via console only when
-          dev. */}
-      {/* (Intentionally no in-scene UI — Hierarchy/Inspector show the
-          per-asset skeleton info already.) */}
+      {
+
+
+}
+      {
+}
     </group>
   );
 }
@@ -1397,7 +1410,7 @@ function BoneLines({
     g.setAttribute("position", new THREE.BufferAttribute(segments, 3));
     return g;
   }, [segments]);
-  // Cleanup on unmount or when segments swap so we don't leak GPU buffers.
+  
   useEffect(() => {
     return () => geometry.dispose();
   }, [geometry]);
@@ -1407,9 +1420,9 @@ function BoneLines({
       position={position}
       quaternion={quaternion}
       scale={scale}
-      // Render on top of the mesh so cyan lines are visible inside dense
-      // characters. Slight depth-bias is cheaper than `depthTest=false`
-      // because the latter draws bones over the entire UI underneath.
+      
+      
+      
       renderOrder={1000}
     >
       <primitive object={geometry} attach="geometry" />
@@ -1423,17 +1436,17 @@ function BoneLines({
   );
 }
 
-/* ────────────────────────────────────────────────────────────────────────
- * SkinnedSelectionOverlay — for the primary-selected moby with both a
- * skeleton AND per-vertex skin weights, mount a real `THREE.SkinnedMesh`
- * at the instance transform. In bind pose this looks identical to the
- * InstancedMesh underneath, but it gives us a real Skeleton attached to
- * a SkinnedMesh that an AnimationMixer can drive in Phase 2.
- *
- * Scoped to the primary selection (one mesh max) to keep the per-instance
- * cost out of the hot path. Static and unselected mobys keep using
- * InstancedMesh.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
+
+
+
+
+
+
+
+
 
 interface SkinnedOverlayProps {
   primary: string | null;
@@ -1441,20 +1454,20 @@ interface SkinnedOverlayProps {
   mobyAssets: AssetMeshes[];
   textures: Map<number, THREE.Texture>;
   edits: Map<string, InstanceEdit>;
-  /** Level folder — needed so we can fetch the animset clip from
-   *  `<level>/animsets.dat`. When null, animation playback is skipped
-   *  (mesh stays in bind pose). */
+  
+
+
   levelFolder: string | null;
-  /** When true, play the loaded clip via AnimationMixer. False keeps
-   *  the rig in bind pose. Driven by a Toolbar toggle. */
+  
+
   playAnimation: boolean;
-  /** When true, attach a `THREE.SkeletonHelper` to the rig so the user
-   *  sees bones moving in lockstep with the animation. Driven by the
-   *  same Toolbar "Bones" toggle that drives BoneOverlay. */
+  
+
+
   showBones: boolean;
-  /** Optional override for which clip to play. When set, this hash is
-   *  fetched + applied instead of the moby's own `animset_hash`. Null
-   *  falls back to the moby's default. */
+  
+
+
   overrideAnimsetHash: string | null;
 }
 
@@ -1469,8 +1482,8 @@ function SkinnedSelectionOverlay({
   showBones,
   overrideAnimsetHash,
 }: SkinnedOverlayProps) {
-  // Resolve the primary instance + matching asset (only mobys can have
-  // skeletons, so we filter on kind).
+  
+  
   const primaryInst = useMemo(() => {
     if (!primary) return null;
     const inst = instances.find((i) => i.tuid === primary);
@@ -1482,32 +1495,32 @@ function SkinnedSelectionOverlay({
     const found = mobyAssets.find((a) => a.asset_tuid === primaryInst.asset_tuid);
     if (!found) return null;
     if (!found.skeleton || found.skeleton.bone_count === 0) return null;
-    // Need at least one submesh with skin attributes for SkinnedMesh to
-    // make sense. Fall back to nothing otherwise — let the InstancedMesh
-    // do its thing.
+    
+    
+    
     const anySkinned = found.submeshes.some((s) => s.bone_indices_b64.length > 0);
     if (!anySkinned) return null;
     return found;
   }, [primaryInst, mobyAssets]);
 
-  // Build the SkinnedMesh + Skeleton + GPU resources whenever the asset
-  // changes. Heavy step — disposed on cleanup.
+  
+  
   const built = useMemo(() => {
     if (!asset || !asset.skeleton) return null;
     return buildSkinnedAsset(asset);
   }, [asset]);
 
-  // Patch material textures every render. Originally this lived in a
-  // `useEffect([built, asset, textures])` — but `textures` is a Map whose
-  // identity never changes when entries are added (the hook mutates it).
-  // That meant late-arriving textures (decoded via the idle queue after
-  // the user selected a character) never reached the SkinnedMesh and the
-  // rig rendered with white placeholder materials forever.
-  //
-  // Doing it in render body is correct because the operation is purely
-  // idempotent property assignment — the `mat.map !== albedo` guard
-  // makes redundant re-runs free, and `needsUpdate` only flips when a
-  // texture actually changed.
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
   if (built && asset) {
     for (let i = 0; i < built.materials.length; i++) {
       const mat = built.materials[i]! as THREE.MeshStandardMaterial;
@@ -1529,18 +1542,18 @@ function SkinnedSelectionOverlay({
     }
   }
 
-  // Free GPU resources when the overlay unmounts (selection cleared) or
-  // when we swap to a different asset. Cleanup function captured at
-  // memo-resolve time so it runs against the right `built`.
+  
+  
+  
   useEffect(() => {
     return () => built?.dispose();
   }, [built]);
 
-  // Fetch the animset clip whenever the asset's animset_hash OR the
-  // user-selected override changes. Override wins when set — that's
-  // how the Hierarchy "Animations" section retargets the active clip
-  // onto whichever character is selected, even if the moby's own
-  // animset_hash points elsewhere (or doesn't exist at all).
+  
+  
+  
+  
+  
   const [clip, setClip] = useState<DecodedClip | null>(null);
   const [clipError, setClipError] = useState<string | null>(null);
   useEffect(() => {
@@ -1564,10 +1577,10 @@ function SkinnedSelectionOverlay({
     };
   }, [asset, levelFolder, overrideAnimsetHash]);
 
-  // Build a THREE.AnimationClip from the decoded data + drive it with an
-  // AnimationMixer. Re-runs when the clip swaps. Static rigs (no clip
-  // available, or playAnimation toggle off) skip the mixer entirely so
-  // the bones stay at bind pose.
+  
+  
+  
+  
   const mixerData = useMemo(() => {
     if (!built || !clip || !playAnimation) return null;
     const aclip = buildAnimationClipFromDecoded(clip, built.bones.length);
@@ -1578,15 +1591,15 @@ function SkinnedSelectionOverlay({
     return { mixer, clip: aclip };
   }, [built, clip, playAnimation]);
 
-  // Per-frame mixer.update — react-three-fiber's useFrame fires every
-  // render. delta is in seconds.
+  
+  
   useFrame((_state, delta) => {
     mixerData?.mixer.update(delta);
   });
 
-  // Stop + free the mixer when the rig changes. (THREE doesn't have a
-  // `dispose()` for AnimationMixer but stopping all action releases
-  // the runtime caches.)
+  
+  
+  
   useEffect(() => {
     return () => {
       if (mixerData) {
@@ -1596,15 +1609,15 @@ function SkinnedSelectionOverlay({
     };
   }, [mixerData, built]);
 
-  // SkeletonHelper tracks live bone matrices every frame — exactly what
-  // we want when animation is playing. Memoized on `built` so the helper
-  // is re-created only when the rig changes (selection swap), not on
-  // every showBones toggle.
+  
+  
+  
+  
   const skeletonHelper = useMemo(() => {
     if (!built) return null;
     const helper = new THREE.SkeletonHelper(built.root);
-    // Default LineBasicMaterial color is hard-coded inside SkeletonHelper;
-    // override to match BoneOverlay's cyan so the look is consistent.
+    
+    
     const mat = helper.material as THREE.LineBasicMaterial;
     mat.color = BONE_COLOR;
     mat.depthTest = false;
@@ -1614,26 +1627,26 @@ function SkinnedSelectionOverlay({
     return helper;
   }, [built]);
 
-  // Make the entire rig transparent to picking — clicks should reach the
-  // InstancedMesh underneath so the user can switch selection by clicking
-  // a different character. Without this, the SkinnedMesh swallows the
-  // hit (no handler → R3F doesn't always fall through to the instance
-  // beneath) and clicks on the rig area become no-ops.
+  
+  
+  
+  
+  
   useEffect(() => {
     if (!built) return;
     built.root.traverse((obj) => {
-      // `Object3D.raycast` is the per-object hit test. Replacing it with
-      // a no-op makes the raycaster skip this subtree entirely. The
-      // SkinnedMesh still RENDERS — only picking is bypassed.
+      
+      
+      
       obj.raycast = () => {};
     });
   }, [built]);
 
-  // Dispose the SkeletonHelper alongside the rig.
+  
   useEffect(() => {
     return () => {
-      // SkeletonHelper has no `.dispose()` of its own — its geometry +
-      // material are owned by it; just drop the reference.
+      
+      
       if (skeletonHelper) {
         (skeletonHelper.geometry as THREE.BufferGeometry).dispose();
         (skeletonHelper.material as THREE.Material).dispose();
@@ -1642,8 +1655,8 @@ function SkinnedSelectionOverlay({
   }, [skeletonHelper]);
 
   if (!built || !primaryInst) return null;
-  // Ignore clipError display — the Inspector will surface it. The rig
-  // still renders in bind pose.
+  
+  
   void clipError;
 
   const t = resolvedTransform(primaryInst, edits);
@@ -1662,18 +1675,18 @@ function SkinnedSelectionOverlay({
   );
 }
 
-/* ────────────────────────────────────────────────────────────────────────
- * Main viewport.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
 
 interface ViewportProps {
   instances: InstanceData[];
   ufrags: UFragBounds[];
   meshes: LevelMeshes | null;
-  /** Texture PNG bytes keyed by id. Null while the bulk binary IPC
-   *  fetch is still in flight after the streaming pipeline finishes
-   *  emitting metadata. Materials render with placeholders until
-   *  this resolves. */
+  
+
+
+
   textureBlobs: TextureBlobMap | null;
   selection: Selection;
   view: ViewSettings;
@@ -1685,14 +1698,14 @@ interface ViewportProps {
   };
   edits: Edits;
   meshLoadPhase?: LoadPhaseState | null;
-  /** Path to the currently-open level. Threaded through to the
-   *  SkinnedSelectionOverlay so it can fetch animset clips from
-   *  `<level>/animsets.dat`. Null when no level is loaded. */
+  
+
+
   levelFolder: string | null;
-  /** When non-null, the SkinnedSelectionOverlay plays this clip on the
-   *  primary selection instead of the moby's own animset. Driven by
-   *  the Hierarchy's "Animations" section — clicking a clip there
-   *  flips this on/off. */
+  
+
+
+
   overrideAnimsetHash: string | null;
 }
 
@@ -1740,11 +1753,11 @@ export function Viewport({
   overrideAnimsetHash,
 }: ViewportProps) {
   const onPick = (inst: InstanceData, e: ThreeEvent<MouseEvent>) =>
-    // Plain double-click in the viewport behaves identically to a
-    // click in the Hierarchy: replaces the selection with this single
-    // instance, sets it as primary (drives the Inspector), and becomes
-    // the new shift-range anchor. ctrl/shift modifiers extend through
-    // the regular selection paths.
+    
+    
+    
+    
+    
     selection.select(inst, clickMods(e.nativeEvent));
   const { center, extent } = useMemo(() => {
     function* positions(): Generator<[number, number, number]> {
@@ -1754,17 +1767,17 @@ export function Viewport({
     return computeBounds(positions());
   }, [instances, ufrags]);
 
-  // Incremental texture decode: builds new payloads, reuses cached.
-  // Adds happen during render; AssetGroup patches materials in the same
-  // pass via getMaterial(), so textures attach to already-built materials.
+  
+  
+  
   const textureMap = useTextureMap(textureBlobs ?? EMPTY_TEXTURE_BLOBS);
 
-  // Lifted state so the in-canvas effect can flip on/off based on the
-  // canvas element it gets handed at mount time. Set once.
+  
+  
   const [contextLost, setContextLost] = useState(false);
 
-  // Asset_tuid of the primary selection — passed to AssetGroup as a
-  // priority hint so a clicked-but-not-yet-built moby skips the queue.
+  
+  
   const prioritizedAssetTuid = useMemo(() => {
     if (!selection.primary) return null;
     const inst = instances.find((i) => i.tuid === selection.primary);
@@ -1799,33 +1812,75 @@ export function Viewport({
     };
   }, [selection.primary, instances, meshes]);
 
-  const headerToggles: Array<{
+  const { t: tr } = useTranslation();
+  const hasLevel = instances.length > 0;
+
+  type HeaderToggle = {
     key: keyof ViewSettings;
     label: string;
+    Icon: LucideIcon;
     title?: string;
-  }> = [
-    { key: "showGrid", label: "Grid" },
-    { key: "showAxes", label: "Axes" },
-    { key: "showBones", label: "Bones", title: "Show skeleton bones on placed characters" },
-    { key: "showUFragBounds", label: "UFrag bounds" },
-    { key: "showStats", label: "Stats" },
-    { key: "playAnimation", label: "Play", title: "Play character animations live" },
+    disabled?: boolean;
+  };
+  const renderLayerToggles: HeaderToggle[] = [
+    { key: "showMobys", label: "Mobys", Icon: Users, disabled: !hasLevel },
+    { key: "showTies", label: "Ties", Icon: Box, disabled: !hasLevel },
+    {
+      key: "showUFrags",
+      label: tr("toolbar.terrain"),
+      Icon: Mountain,
+      disabled: !hasLevel,
+    },
+  ];
+  const overlayToggles: HeaderToggle[] = [
+    { key: "showGrid", label: tr("toolbar.grid"), Icon: Grid3x3 },
+    { key: "showAxes", label: tr("toolbar.axes"), Icon: Compass },
+    { key: "showStats", label: tr("toolbar.stats"), Icon: Activity },
+    {
+      key: "showUFragBounds",
+      label: tr("toolbar.ufragBounds"),
+      Icon: Square,
+    },
+    { key: "showBones", label: tr("toolbar.bones"), Icon: Bone },
+    { key: "playAnimation", label: tr("toolbar.play"), Icon: Play },
   ];
 
   return (
     <div className="viewport">
       <div className="viewport-header">
-        {headerToggles.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            className={`viewport-header-btn ${view[t.key] ? "active" : ""}`}
-            onClick={() => onToggle(t.key)}
-            title={t.title ?? t.label}
-          >
-            {t.label}
-          </button>
-        ))}
+        {renderLayerToggles.map((tg) => {
+          const Icon = tg.Icon;
+          return (
+            <button
+              key={tg.key}
+              type="button"
+              className={`viewport-header-btn ${view[tg.key] ? "active" : ""}`}
+              onClick={() => onToggle(tg.key)}
+              title={tg.title ?? tg.label}
+              disabled={tg.disabled}
+            >
+              <Icon size={13} aria-hidden />
+              <span>{tg.label}</span>
+            </button>
+          );
+        })}
+        <div className="viewport-header-divider" />
+        {overlayToggles.map((tg) => {
+          const Icon = tg.Icon;
+          return (
+            <button
+              key={tg.key}
+              type="button"
+              className={`viewport-header-btn ${view[tg.key] ? "active" : ""}`}
+              onClick={() => onToggle(tg.key)}
+              title={tg.title ?? tg.label}
+              disabled={tg.disabled}
+            >
+              <Icon size={13} aria-hidden />
+              <span>{tg.label}</span>
+            </button>
+          );
+        })}
       </div>
       <div className="viewport-canvas-wrap">
       {contextLost && (
@@ -1835,35 +1890,35 @@ export function Viewport({
       )}
       <Canvas
         camera={{ position: [50, 50, 50], fov: 55, near: 0.1, far: 2000 }}
-        // Use a low-power preference + disable antialias on the secondary
-        // pass — this leaves more GPU memory for the level's textures
-        // and reduces the chance of a context loss on resource-tight
-        // integrated GPUs (some users hit this on default settings).
+        
+        
+        
+        
         gl={{
           antialias: true,
-          // `powerPreference: "high-performance"` asks the browser to
-          // use the discrete GPU on hybrid systems. Without it, Chromium
-          // sometimes routes the canvas to the integrated GPU which
-          // chokes on the level's texture set.
+          
+          
+          
+          
           powerPreference: "high-performance",
-          // `failIfMajorPerformanceCaveat: false` (default) lets the
-          // canvas survive on weaker GPUs instead of refusing creation.
+          
+          
         }}
-        // Listen for context loss so we can show a recoverable error
-        // instead of silently freezing. If the GPU drops the context
-        // mid-frame (driver killed it under load), the Canvas's render
-        // loop keeps running but every gl call is a no-op — visually
-        // looks identical to a hang.
+        
+        
+        
+        
+        
         onCreated={({ gl }) => {
           const canvas = gl.domElement;
           canvas.addEventListener(
             "webglcontextlost",
             (e) => {
-              // Default behavior is "lose forever". Calling preventDefault
-              // tells the browser we want a chance to restore.
+              
+              
               e.preventDefault();
               setContextLost(true);
-              // eslint-disable-next-line no-console
+              
               console.error("WebGL context lost. Reduce open levels / textures.");
             },
             false,
@@ -1872,21 +1927,21 @@ export function Viewport({
             "webglcontextrestored",
             () => {
               setContextLost(false);
-              // eslint-disable-next-line no-console
+              
               console.log("WebGL context restored.");
             },
             false,
           );
         }}
-        // Selection is double-click only; single-click on empty space is
-        // reserved for OrbitControls. Use onDoubleClick + check it really
-        // landed on empty space (no instance hit).
+        
+        
+        
         onPointerMissed={(e) => {
-          // R3F fires `onPointerMissed` when a click lands on the canvas
-          // but doesn't hit any object. This is the proper empty-space
-          // hook (vs `onDoubleClick` which fires for every click on the
-          // root canvas regardless of whether something was hit). Single
-          // click on empty space clears the selection.
+          
+          
+          
+          
+          
           selection.select(null, clickMods(e as MouseEvent));
         }}
       >

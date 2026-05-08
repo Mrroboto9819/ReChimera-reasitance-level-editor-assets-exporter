@@ -7,14 +7,14 @@ interface NumberInputProps
   step?: number;
   min?: number;
   max?: number;
-  /** Decimal places to render. Doesn't constrain input — the user can
-   *  still type more precision; the rendered display rounds. */
+  
+
   precision?: number;
 }
 
-/// Number input with float-safe value handling. Inspector uses these
-/// for transform XYZ values; without onValueChange wrapper, every
-/// caller would re-implement the parseFloat dance.
+
+
+
 export const NumberInput = forwardRef<HTMLInputElement, NumberInputProps>(
   function NumberInput(
     {

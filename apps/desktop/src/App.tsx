@@ -7,11 +7,11 @@ import {
   type ImperativePanelHandle,
 } from "react-resizable-panels";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-// Static logo URL resolved by Vite at build time. Used here for the
-// persistent title-bar logo so the brand is visible even when the
-// main thread is blocked during heavy level loading — the <img> is
-// rendered once on first paint and the browser caches the bytes;
-// nothing in the runtime can "lose" it.
+
+
+
+
+
 import brandIconUrl from "../icon.png?url";
 import { Channel } from "@tauri-apps/api/core";
 import {
@@ -63,7 +63,9 @@ import { Modal } from "./Modal";
 import { OpenLevelModal } from "./OpenLevelModal";
 import { PsarcModal } from "./PsarcModal";
 import { SettingsModal } from "./SettingsModal";
+import { TabContainer } from "./TabContainer";
 import { useApplySettings } from "./useApplySettings";
+import type { ViewId } from "./store";
 import { SoundPlayer, type NowPlaying } from "./SoundPlayer";
 import { Splash } from "./Splash";
 import { UpdateChecker } from "./UpdateChecker";
@@ -103,6 +105,34 @@ export function App() {
 
   useApplySettings();
 
+  const leftPanelTabs = useAppSelector(
+    (s) => s.panels.panels.left.tabs.length,
+  );
+  const rightPanelTabs = useAppSelector(
+    (s) => s.panels.panels.right.tabs.length,
+  );
+  const bottomPanelTabs = useAppSelector(
+    (s) => s.panels.panels.bottom.tabs.length,
+  );
+
+  useEffect(() => {
+    const empty = leftPanelTabs === 0;
+    if (empty && !layout.hierarchyHidden) dispatch(toggleHierarchyHidden());
+    if (!empty && layout.hierarchyHidden) dispatch(toggleHierarchyHidden());
+  }, [leftPanelTabs]);
+
+  useEffect(() => {
+    const empty = rightPanelTabs === 0;
+    if (empty && !layout.inspectorHidden) dispatch(toggleInspectorHidden());
+    if (!empty && layout.inspectorHidden) dispatch(toggleInspectorHidden());
+  }, [rightPanelTabs]);
+
+  useEffect(() => {
+    const empty = bottomPanelTabs === 0;
+    if (empty && !layout.consoleCollapsed) dispatch(toggleConsoleCollapsed());
+    if (!empty && layout.consoleCollapsed) dispatch(toggleConsoleCollapsed());
+  }, [bottomPanelTabs]);
+
   useEffect(() => {
     const panel = bottomPanelRef.current;
     if (!panel) return;
@@ -137,11 +167,11 @@ export function App() {
   const [instances, setInstances] = useState<Instance[]>([]);
   const [ufrags, setUFrags] = useState<UFragBounds[]>([]);
   const [meshes, setMeshes] = useState<LevelMeshes | null>(null);
-  // Texture bytes — fetched in one binary IPC call after the streaming
-  // pipeline finishes emitting metadata events. Keyed by texture id.
-  // Null until the bulk fetch resolves; consumers (Viewport, export,
-  // AssetPreview, RawCharacterModal) treat null as "no textures yet"
-  // and render with placeholder materials until it arrives.
+  
+  
+  
+  
+  
   const [textureBlobs, setTextureBlobs] = useState<TextureBlobMap | null>(null);
   const selection = useSelection(useCallback(() => instances, [instances]));
   const edits = useEdits();
@@ -209,59 +239,59 @@ export function App() {
   const [completedPhases, setCompletedPhases] = useState<PhaseId[]>([]);
   const [consoleLog, setConsoleLog] = useState<ConsoleEntry[]>([]);
   const updater = useUpdater();
-  // About / credits modal — opened from `Help → About ReChimera…`.
-  // Rendered always (not gated on level state) so Help is reachable
-  // from a fresh splash.
+  
+  
+  
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [openLevelModalOpen, setOpenLevelModalOpen] = useState(false);
   const [psarcModalOpen, setPsarcModalOpen] = useState(false);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [exportState, setExportState] = useState<ExportProgressState | null>(null);
-  // (Removed: legacy `<level>/character/` filesystem lookup state. The
-  // path-grouped Asset Library tree built from `assetlookup.dat` is
-  // the canonical browser now — no filesystem dependency.)
-  // GLTF library — files from InsomniaToolset's extract_assets command.
-  // Preferred path because they already include skeleton + animations.
-  const [gltfLibrary, setGltfLibrary] = useState<GltfFile[] | null>(null);
-  const [gltfLibraryStatus, setGltfLibraryStatus] = useState<string | null>(null);
+  
+  
+  
+  
+  
+  const [_gltfLibrary, setGltfLibrary] = useState<GltfFile[] | null>(null);
+  const [_gltfLibraryStatus, setGltfLibraryStatus] = useState<string | null>(null);
   const [previewGltfFile, setPreviewGltfFile] = useState<GltfFile | null>(null);
-  // Browseable list of every animset in the open level. Loaded once on
-  // level open via `list_animset_clips`. Drives the Hierarchy's
-  // "Animations" section — user clicks any clip to override the active
-  // playback on the primary-selected character.
+  
+  
+  
+  
   const [animsetClips, setAnimsetClips] = useState<AnimsetSummary[]>([]);
-  // When non-null, the primary-selected SkinnedMesh plays this clip
-  // instead of the moby's own `animset_hash` clip. Cleared on selection
-  // change. Also fed into the export pipeline so the chosen clip lands
-  // in the .glb as a Blender Action.
+  
+  
+  
+  
   const [overrideAnimsetHash, setOverrideAnimsetHash] = useState<string | null>(null);
-  // Asset library preview — when non-null, the RawCharacterModal opens
-  // for this asset_tuid. Sourced from a Hierarchy click on the Asset
-  // Library tree; lets the user preview ANY asset from `assetlookup.dat`
-  // (including ones not placed in the world) with mesh + textures +
-  // animations + export.
+  
+  
+  
+  
+  
   const [previewAssetTuid, setPreviewAssetTuid] = useState<string | null>(null);
-  // Level sounds — listed cheaply on level open from `resident_sound.dat`
-  // headers. Drives the Hierarchy's Sounds section. The actual WAV
-  // bytes are fetched lazily on first click via `extractLevelSounds`
-  // and cached so subsequent clicks just re-find the entry by name.
+  
+  
+  
+  
   const [levelSounds, setLevelSounds] = useState<SoundEntry[]>([]);
-  // File-level inventory — every notable file in the level folder
-  // categorized by type, including ones we don't parse yet (streaming
-  // dialogue, lighting, vfx, cinematics). Drives the Hierarchy's
-  // "Files" section, which acts as a survey of the level's full
-  // contents + a visible roadmap of what's left to port.
-  const [levelFiles, setLevelFiles] = useState<LevelFile[]>([]);
-  // Disk cache (`<level>/_rechimera_cache/`) — populated in the background
-  // after openLevel succeeds. `null` until we've checked or extracted; when
-  // populated the StatusBar shows per-kind counts and downstream UIs
-  // (Library modal, GLB export) can `read_cached_asset` without going
-  // through the streaming pipeline.
+  
+  
+  
+  
+  
+  const [_levelFiles, setLevelFiles] = useState<LevelFile[]>([]);
+  
+  
+  
+  
+  
   const [cacheState, setCacheState] = useState<CacheStatus | null>(null);
-  // Cache manifest — populated alongside cacheState when extraction
-  // finishes (or on level open if cache already exists). Drives the
-  // Hierarchy's "Cache" section so the user can browse the extracted
-  // assets without first opening the Cache Library modal.
+  
+  
+  
+  
   const [cacheManifest, setCacheManifest] =
     useState<import("./api").CacheManifest | null>(null);
   const [cacheProgress, setCacheProgress] = useState<{
@@ -270,37 +300,37 @@ export function App() {
     total: number;
   } | null>(null);
   const [cacheLibraryOpen, setCacheLibraryOpen] = useState(false);
-  // Cache prompt — when a level is opened that already has `_rechimera_cache/`,
-  // set this to `{ sum, status }` so the user can pick between using the
-  // existing cache (skip re-extraction; just load the manifest) or rebuilding
-  // it from scratch (`reextract_level_cache`). Null = no decision pending.
+  
+  
+  
+  
   const [cachePrompt, setCachePrompt] = useState<{
     sum: LevelSummary;
     status: CacheStatus;
   } | null>(null);
-  // Per-source cache keyed by `${kind}:${filename}`. Separates bank
-  // and stream extracts so re-clicking a stream sound doesn't trigger
-  // a fresh bank decode and vice-versa. Stream extracts can be slow
-  // (multi-GB streaming files) so caching matters even more there.
+  
+  
+  
+  
   const [extractedSoundsCache, setExtractedSoundsCache] = useState<
     Map<string, ExtractedSound[]>
   >(new Map());
-  // Currently-playing sound. State (not ref) so the SoundPlayer can
-  // re-render when it changes — the player UI subscribes to the live
-  // Audio element's events for transport state. Setting to null both
-  // stops playback (handled in handlePlaySound / handleClosePlayer)
-  // and hides the player bar.
+  
+  
+  
+  
+  
   const [nowPlaying, setNowPlaying] = useState<NowPlaying | null>(null);
-  const playingSoundName = nowPlaying?.name ?? null;
+  void nowPlaying;
 
-  // (handlePlaySound is defined further down — needs `log` + `summary`
-  // both declared first. See block right after `log = useCallback(...)`.)
+  
+  
 
-  // Cleanup any in-flight audio when the App unmounts. Captured into
-  // a ref-style closure: we read `nowPlaying` at unmount time via a
-  // ref mirror so we don't have to re-run this effect on every state
-  // change. Without the mirror, putting `nowPlaying` in deps would
-  // tear down the audio on every play/pause UI tick.
+  
+  
+  
+  
+  
   const nowPlayingMirror = useRef<NowPlaying | null>(null);
   nowPlayingMirror.current = nowPlaying;
   useEffect(() => {
@@ -312,18 +342,18 @@ export function App() {
       }
     };
   }, []);
-  // Bumps every time the user explicitly asks to re-frame on the selection
-  // (e.g. via the Inspector's "Go to" button). The Viewport's CameraFocus
-  // watches it as a dep so it re-runs the focus tween even when the
-  // primary selection hasn't changed.
+  
+  
+  
+  
   const [focusVersion, setFocusVersion] = useState(0);
   const [viewSnap, setViewSnap] = useState<{
     direction: "front" | "right" | "top" | null;
     version: number;
   }>({ direction: null, version: 0 });
-  // Splash screen visibility. Stays up for at least 1.2s after mount so
-  // the user actually sees it instead of a flash. Goes to false → Splash
-  // runs its GSAP fade-out → onExit unmounts it.
+  
+  
+  
   const [splashVisible, setSplashVisible] = useState(true);
   const [splashMounted, setSplashMounted] = useState(true);
   useEffect(() => {
@@ -344,10 +374,10 @@ export function App() {
   const handleExportSelection = useCallback(async () => {
     if (selection.ids.size === 0 || !meshes) return;
 
-    // Step 1: open the OS save dialog FIRST, before any in-app modal.
-    // The progress modal we show after picking covers the screen and on
-    // Windows / Linux the OS save dialog can end up behind it without
-    // ever getting focus — opening the picker first avoids the trap.
+    
+    
+    
+    
     let path: string | null = null;
     try {
       const selectedInstances = instances.filter((i) =>
@@ -363,7 +393,7 @@ export function App() {
       return;
     }
 
-    // Step 2: now show the modal and run the actual encode + write.
+    
     setExportState({
       phase: "preparing",
       label: "Building scene from selection",
@@ -396,19 +426,19 @@ export function App() {
     }
   }, [selection.ids, instances, meshes, log]);
 
-  /// Export a single cached library asset to GLB. The cache holds
-  /// AssetMeshes for assets that aren't placed in the level (characters,
-  /// weapons, etc.); we wrap one in a synthetic Instance + LevelMeshes so
-  /// the existing exportToGlb pipeline can run unchanged. Animset clips
-  /// are still resolved live from `animsets.dat` via the export's
-  /// internal `fetchAnimsetClip` call, so the resulting .glb has the
-  /// rig's full animation library baked in as Blender Actions.
+  
+  
+  
+  
+  
+  
+  
   const handleCacheLibraryExport = useCallback(
     async (asset: AssetMeshes, textureBlobs: TextureBlobMap) => {
-      // Cache stores both moby and tie JSONs in the same shape; the
-      // export pipeline only cares which of `moby_assets` / `tie_assets`
-      // it appears in. Detect by skeleton presence — ties are static
-      // and have none.
+      
+      
+      
+      
       const isTie = asset.skeleton == null;
       const synthInstance: Instance = {
         tuid: `${asset.asset_tuid}#cache`,
@@ -479,15 +509,15 @@ export function App() {
     [dispatch],
   );
 
-  // Click a sound row → play it. First click on any sound triggers a
-  // bulk extraction (the whole bank decoded server-side, returned as
-  // a list of WAV blobs). After that, we just look up the WAV by name
-  // and play it. Re-clicking the same sound stops it; clicking a
-  // different one swaps. Single-Audio policy keeps the playback
-  // model trivial — no overlapping clips.
+  
+  
+  
+  
+  
+  
   const handlePlaySound = useCallback(
     async (name: string) => {
-      // Same sound clicked again → stop playback + close player.
+      
       if (nowPlayingMirror.current?.name === name) {
         const np = nowPlayingMirror.current;
         np.audio.pause();
@@ -495,7 +525,7 @@ export function App() {
         setNowPlaying(null);
         return;
       }
-      // Stop the previous sound (if any) before starting a new one.
+      
       if (nowPlayingMirror.current) {
         const prev = nowPlayingMirror.current;
         prev.audio.pause();
@@ -503,9 +533,9 @@ export function App() {
       }
 
       if (!summary) return;
-      // Find the SoundEntry to know whether this is a bank or stream
-      // sound + which source file backs it. Different cache keys for
-      // each kind keep bank and stream extracts independent.
+      
+      
+      
       const entry = levelSounds.find((s) => s.name === name);
       if (!entry) {
         log("warn", `Sound metadata missing: ${name}`);
@@ -518,12 +548,12 @@ export function App() {
         extracted = cached;
       } else {
         try {
-          // Dispatch on entry.kind:
-          //   bank   → in-bank SCREAM, source = bank file
-          //   stream → bank-paired stream, source = bank file (sibling
-          //            stream file resolved server-side)
-          //   raw    → orphan stream (no bank in folder), source =
-          //            stream file itself; brute-force header scan
+          
+          
+          
+          
+          
+          
           if (entry.kind === "raw") {
             extracted = await extractRawStreamingSounds(summary.folder, entry.source);
             log(
@@ -548,10 +578,10 @@ export function App() {
           });
         } catch (e) {
           log("error", `Sound extract failed: ${e}`);
-          // Self-diagnose: dump the bank structure into the Console so
-          // bad pointers / wrong section IDs are visible without
-          // manual hexdumping. Skip for "raw" — that path doesn't go
-          // through a SCREAM bank, so the dumper has nothing to read.
+          
+          
+          
+          
           if (entry.kind !== "raw" && summary) {
             dumpSoundBank(summary.folder, entry.source)
               .then((dump) => log("info", `Bank dump for ${entry.source}:\n${dump}`))
@@ -569,9 +599,9 @@ export function App() {
       const blobUrl = wavBlobUrl(found.wav_b64);
       const audio = new Audio(blobUrl);
       audio.addEventListener("ended", () => {
-        // After a track finishes, leave the player visible so the
-        // user can re-play / export — only revoke the blob URL +
-        // close if they explicitly dismissed it elsewhere.
+        
+        
+        
       });
       audio.play().catch((e) => log("error", `Audio play failed: ${e}`));
       setNowPlaying({
@@ -584,11 +614,12 @@ export function App() {
     },
     [extractedSoundsCache, levelSounds, summary, log],
   );
+  void handlePlaySound;
 
-  /** Manual GLTF library entry point. Opens an OS folder picker, scans
-   *  the chosen folder recursively for .gltf/.glb, and replaces the
-   *  current GLTF library in the Hierarchy. Useful when auto-detection
-   *  doesn't find your specific InsomniaToolset extract layout. */
+  
+
+
+
   const handleBrowseGltfFolder = useCallback(async () => {
     let picked: string | null = null;
     try {
@@ -622,12 +653,12 @@ export function App() {
     }
   }, [log]);
 
-  // cacheMode controls what happens after streaming "done" fires:
-  //   "auto"            — extract only if no fresh cache exists (legacy default)
-  //   "use-cache"       — never extract; just load the existing manifest
-  //   "force-reextract" — wipe the cache and rebuild it from disk
-  // The Cache prompt at level-open chooses one of the latter two; programmatic
-  // callers (re-load after edits) leave it at "auto".
+  
+  
+  
+  
+  
+  
   type CacheMode = "auto" | "use-cache" | "force-reextract";
   const loadFullMeshes = useCallback(async (
     sum: LevelSummary,
@@ -646,7 +677,7 @@ export function App() {
     });
     setCompletedPhases([]);
 
-    // Give the proxy editor a paint before starting the expensive path.
+    
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
     );
@@ -725,12 +756,12 @@ export function App() {
               "ok",
               `Level decode finished: ${acc.moby_assets.length} mobys, ${acc.tie_assets.length} ties, ${acc.ufrag_meshes.length} terrain, ${acc.textures.length} textures`,
             );
-            // Fetch every texture's PNG bytes in one binary IPC call.
-            // The streaming pipeline now ships only metadata, so this
-            // is where the actual pixels arrive. We deliberately do
-            // NOT await — the level can render with placeholder
-            // materials until bytes arrive, and a hung fetch
-            // shouldn't keep the busy spinner stuck.
+            
+            
+            
+            
+            
+            
             {
               const ids = acc.textures.map((t) => t.id);
               if (ids.length > 0) {
@@ -753,18 +784,18 @@ export function App() {
               }
             }
 
-            // Cache extraction runs SEQUENTIALLY after streaming, not in
-            // parallel. Both pipelines decode the same `mobys.dat` /
-            // `ties.dat` files and contend for Tauri's worker pool;
-            // running them concurrently caused the streaming pipeline
-            // to either stall or never emit its "done" event, leaving
-            // the viewport stuck on proxy boxes only.
-            //
-            // Branching by `cacheMode`:
-            //   "use-cache" — user explicitly chose the existing cache;
-            //                 just load the manifest, no decode work.
-            //   "force-reextract" — user asked to rebuild; wipe + redo.
-            //   "auto" — legacy default: extract iff no fresh cache.
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
             const runExtract = (force: boolean) => {
               log(
                 "info",
@@ -884,8 +915,8 @@ export function App() {
     setAnimsetClips([]);
     setOverrideAnimsetHash(null);
     setPreviewAssetTuid(null);
-    // Stop any playing sound + drop cached extraction state — the
-    // new level has its own sound bank.
+    
+    
     if (nowPlayingMirror.current) {
       nowPlayingMirror.current.audio.pause();
       URL.revokeObjectURL(nowPlayingMirror.current.blobUrl);
@@ -906,9 +937,9 @@ export function App() {
         `IGHW v${sum.version_major}.${sum.version_minor} · ${sum.sections.length} sections`,
       );
       const lyt = await levelLayout(sum.folder);
-      // Dedupe by tuid — some R2 levels emit the same instance_tuid in
-      // multiple region/zone metadata entries, which makes React choke on
-      // duplicate keys downstream. First occurrence wins.
+      
+      
+      
       const seen = new Set<string>();
       const dedupedInstances = lyt.instances.filter((i) => {
         if (seen.has(i.tuid)) return false;
@@ -962,11 +993,11 @@ export function App() {
         void loadFullMeshes(sum, "auto");
       }
 
-      // Pre-fetch the animset directory in parallel with the mesh
-      // decode. Cheap (only the 0x40 header per animset, 39 entries
-      // on bayou ≈ < 100 KB read) and lets the Hierarchy populate the
-      // Animations section immediately instead of waiting for the
-      // user to open a preview modal.
+      
+      
+      
+      
+      
       listAnimsetClips(sum.folder)
         .then((clips) => {
           setAnimsetClips(clips);
@@ -976,9 +1007,9 @@ export function App() {
           log("warn", `Animset list failed: ${e}`);
         });
 
-      // Sound table — cheap header read of resident_sound.dat. The
-      // ADPCM decoding for any specific sound happens lazily on first
-      // play; this just gives the UI the names + indices.
+      
+      
+      
       listLevelSounds(sum.folder)
         .then((sounds) => {
           setLevelSounds(sounds);
@@ -990,10 +1021,10 @@ export function App() {
           log("warn", `Sound list failed: ${e}`);
         });
 
-      // Survey the level folder — every notable file classified by
-      // type, with a `parsed` flag so the user can see at a glance
-      // which formats we already extract vs which are still on the
-      // roadmap. Cheap (one read_dir).
+      
+      
+      
+      
       listLevelFiles(sum.folder)
         .then((files) => {
           setLevelFiles(files);
@@ -1009,25 +1040,25 @@ export function App() {
           log("warn", `File listing failed: ${e}`);
         });
 
-      // The old `<level>/character/` filesystem lookup
-      // (streamCharacterLibrary) is gone — the path-grouped Asset
-      // Library tree built directly from `assetlookup.dat` is the
-      // canonical source now. No filesystem dependency, works on any
-      // level whether or not InsomniaToolset has been run.
-      //
-      // Cache extraction was here previously but ran concurrently with
-      // the streaming pipeline, contending for the same `.dat` files
-      // and Tauri worker threads. It now fires from inside
-      // loadFullMeshes' "done" handler so streaming completes first,
-      // then the cache builds afterwards. Fire-and-forget either way.
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
 
-      // Step 4: scan ALL of the `entities/` tree (character, object,
-      // unique, …) for InsomniaToolset GLTF outputs. Files come back
-      // tagged with their first-level subfolder so the Hierarchy can
-      // group them — same way Mobys/Ties are grouped for placed
-      // instances. Skeleton + animations are already baked in by
-      // extract_assets, so three.js's GLTFLoader can render them
-      // directly at preview time without any extra Rust work.
+      
+      
+      
+      
+      
+      
+      
       try {
         setGltfLibraryStatus("Scanning entities/ for GLTF assets…");
         const lib = await listEntitiesGltfs(folder);
@@ -1062,8 +1093,8 @@ export function App() {
     }
   }, [log, selection, edits, loadFullMeshes]);
 
-  // Resolve the cache prompt: kick off the load with the chosen mode.
-  // Always called from the modal's two action buttons.
+  
+  
   const resolveCachePrompt = useCallback(
     (mode: "use-cache" | "force-reextract") => {
       const pending = cachePrompt;
@@ -1113,6 +1144,80 @@ export function App() {
 
   const errorCount = consoleLog.filter((e) => e.level === "error").length;
   const warnCount = consoleLog.filter((e) => e.level === "warn").length;
+
+  const viewBodies: Partial<Record<ViewId, React.ReactNode>> = {
+    hierarchy: (
+      <Hierarchy
+        instances={instances}
+        selection={selection}
+        mobyAssets={meshes?.moby_assets}
+        tieAssets={meshes?.tie_assets}
+        cacheManifest={cacheManifest}
+        onPreviewRawAsset={(tuid) => setPreviewAssetTuid(tuid)}
+      />
+    ),
+    inspector: (
+      <Inspector
+        selected={primaryInstance}
+        selectionCount={selection.count}
+        meshes={meshes}
+        textureBlobs={textureBlobs}
+        instances={instances}
+        edits={edits}
+        onExportSelected={handleExportSelection}
+        onLoadMeshes={() => {
+          if (summary) void loadFullMeshes(summary);
+        }}
+        loadingMeshes={meshLoadPhase !== null}
+        onFocusSelected={() => setFocusVersion((v) => v + 1)}
+      />
+    ),
+    console: (
+      <BottomPanel
+        summary={summary}
+        console={consoleLog}
+        collapsed={false}
+        errorCount={errorCount}
+        warnCount={warnCount}
+      />
+    ),
+    viewport: (
+      <div className="panel pane-viewport view-flush">
+        <Viewport
+          instances={instances}
+          ufrags={ufrags}
+          meshes={meshes}
+          textureBlobs={textureBlobs}
+          selection={selection}
+          view={view}
+          onToggle={toggle}
+          focusVersion={focusVersion}
+          viewSnap={viewSnap}
+          edits={edits}
+          meshLoadPhase={meshLoadPhase}
+          levelFolder={summary?.folder ?? null}
+          overrideAnimsetHash={overrideAnimsetHash}
+        />
+        {!summary && (
+          <div className="viewport-empty-toast">
+            <div className="viewport-empty-title">No level loaded</div>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => setOpenLevelModalOpen(true)}
+            >
+              Open Level…
+            </button>
+            <div className="viewport-empty-sub small dim">
+              Pick any folder containing <code>assetlookup.dat</code> —
+              Resistance 2/3, Ratchet &amp; Clank Future, and other Insomniac
+              PS3 titles.
+            </div>
+          </div>
+        )}
+      </div>
+    ),
+  };
 
   return (
     <div className="app">
@@ -1337,19 +1442,20 @@ export function App() {
       />
 
       <div className="workspace">
-        {/* The IDE shell renders unconditionally — even with no level
-            loaded, the user sees the same Hierarchy / Viewport /
-            Inspector / Console layout as when a level is open, just
-            with each panel's empty state instead of populated content.
-            That keeps the title bar's "Open Level…" CTA as the single
-            entry point and avoids the layout reflow that used to happen
-            on level open. */}
+        {
+
+
+
+
+
+}
         <PanelGroup
             direction="horizontal"
-            autoSaveId="rechimera-workspace-h"
             className="workspace-h"
           >
             <Panel
+              id="panel-left"
+              order={1}
               ref={hierarchyPanelRef}
               collapsible
               collapsedSize={0}
@@ -1361,83 +1467,32 @@ export function App() {
               }}
               className="workspace-pane"
             >
-              <Hierarchy
-                instances={instances}
-                selection={selection}
-                gltfLibrary={gltfLibrary}
-                gltfLibraryStatus={gltfLibraryStatus}
-                onPreviewGltfFile={(f) => setPreviewGltfFile(f)}
-                animsetClips={animsetClips}
-                activeAnimsetHash={overrideAnimsetHash}
-                onSelectAnimset={(hash) =>
-                  setOverrideAnimsetHash(
-                    overrideAnimsetHash === hash ? null : hash,
-                  )
-                }
-                mobyAssets={meshes?.moby_assets}
-                tieAssets={meshes?.tie_assets}
-                cacheManifest={cacheManifest}
-                onPreviewRawAsset={(tuid) => setPreviewAssetTuid(tuid)}
-                sounds={levelSounds}
-                playingSoundName={playingSoundName}
-                onPlaySound={handlePlaySound}
-                textures={meshes?.textures}
-                levelFolder={summary?.folder}
-                levelFiles={levelFiles}
-              />
+              <TabContainer panelId="left" views={viewBodies} />
             </Panel>
 
             <PanelResizeHandle className="resize-handle resize-handle-h" />
 
-            <Panel minSize={30} className="workspace-pane">
-              <PanelGroup
-                direction="vertical"
-                autoSaveId="rechimera-workspace-v"
-              >
+            <Panel
+              id="panel-center"
+              order={2}
+              minSize={30}
+              className="workspace-pane"
+            >
+              <PanelGroup direction="vertical">
                 <Panel
+                  id="panel-viewport"
+                  order={1}
                   minSize={20}
                   className="workspace-pane"
                 >
-                  <div className="panel pane-viewport">
-                    <Viewport
-                      instances={instances}
-                      ufrags={ufrags}
-                      meshes={meshes}
-                      textureBlobs={textureBlobs}
-                      selection={selection}
-                      view={view}
-                      onToggle={toggle}
-                      focusVersion={focusVersion}
-                      viewSnap={viewSnap}
-                      edits={edits}
-                      meshLoadPhase={meshLoadPhase}
-                      levelFolder={summary?.folder ?? null}
-                      overrideAnimsetHash={overrideAnimsetHash}
-                    />
-                    {!summary && (
-                      <div className="viewport-empty-toast">
-                        <div className="viewport-empty-title">No level loaded</div>
-                        <button
-                          type="button"
-                          className="btn btn-primary btn-sm"
-                          onClick={() => setOpenLevelModalOpen(true)}
-                        >
-                          Open Level…
-                        </button>
-                        <div className="viewport-empty-sub small dim">
-                          Pick any folder containing{" "}
-                          <code>assetlookup.dat</code> — Resistance 2/3,
-                          Ratchet &amp; Clank Future, and other Insomniac
-                          PS3 titles.
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  <TabContainer panelId="center" views={viewBodies} />
                 </Panel>
 
                 <PanelResizeHandle className="resize-handle resize-handle-v" />
 
                 <Panel
+                  id="panel-bottom"
+                  order={2}
                   ref={bottomPanelRef}
                   collapsible
                   collapsedSize={3}
@@ -1451,16 +1506,7 @@ export function App() {
                   }}
                   className="workspace-pane"
                 >
-                  <BottomPanel
-                    summary={summary}
-                    console={consoleLog}
-                    collapsed={layout.consoleCollapsed}
-                    onToggleCollapsed={() =>
-                      dispatch(toggleConsoleCollapsed())
-                    }
-                    errorCount={errorCount}
-                    warnCount={warnCount}
-                  />
+                  <TabContainer panelId="bottom" views={viewBodies} />
                 </Panel>
               </PanelGroup>
             </Panel>
@@ -1468,6 +1514,8 @@ export function App() {
             <PanelResizeHandle className="resize-handle resize-handle-h" />
 
             <Panel
+              id="panel-right"
+              order={3}
               ref={inspectorPanelRef}
               collapsible
               collapsedSize={0}
@@ -1479,20 +1527,7 @@ export function App() {
               }}
               className="workspace-pane"
             >
-              <Inspector
-                selected={primaryInstance}
-                selectionCount={selection.count}
-                meshes={meshes}
-                textureBlobs={textureBlobs}
-                instances={instances}
-                edits={edits}
-                onExportSelected={handleExportSelection}
-                onLoadMeshes={() => {
-                  if (summary) void loadFullMeshes(summary);
-                }}
-                loadingMeshes={meshLoadPhase !== null}
-                onFocusSelected={() => setFocusVersion((v) => v + 1)}
-              />
+              <TabContainer panelId="right" views={viewBodies} />
             </Panel>
           </PanelGroup>
       </div>
@@ -1555,8 +1590,8 @@ export function App() {
         onClose={() => setPreviewAssetTuid(null)}
       />
 
-      {/* CharacterPreviewModal removed — RawCharacterModal above
-          handles all asset previews from `assetlookup.dat` directly. */}
+      {
+}
 
       <CacheLibraryModal
         open={cacheLibraryOpen}
@@ -1654,6 +1689,70 @@ export function App() {
         </p>
       </Modal>
 
+      <Modal
+        open={cacheProgress !== null}
+        dismissable={false}
+        title={t("cacheModal.title")}
+        subtitle={t("cacheModal.subtitle")}
+        size="md"
+      >
+        {cacheProgress && (
+          <>
+            <div className="cache-progress-phases">
+              {(["mobys", "ties", "textures"] as const).map((p) => {
+                const order = ["mobys", "ties", "textures"];
+                const idx = order.indexOf(cacheProgress.phase);
+                const myIdx = order.indexOf(p);
+                const state =
+                  myIdx < idx ? "done" : myIdx === idx ? "active" : "pending";
+                return (
+                  <div
+                    key={p}
+                    className={`cache-progress-phase cache-progress-phase-${state}`}
+                  >
+                    <span className="cache-progress-phase-dot" aria-hidden />
+                    <span className="cache-progress-phase-label">
+                      {t(`cacheModal.phase_${p}`)}
+                    </span>
+                    {state === "active" && (
+                      <span className="mono small dim">
+                        {cacheProgress.current.toLocaleString()} /{" "}
+                        {cacheProgress.total.toLocaleString()}
+                      </span>
+                    )}
+                    {state === "done" && (
+                      <span className="cache-progress-check" aria-hidden>
+                        ✓
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="cache-progress-bar">
+              <div
+                className="cache-progress-bar-fill"
+                style={{
+                  width: `${
+                    cacheProgress.total > 0
+                      ? Math.min(
+                          100,
+                          Math.round(
+                            (cacheProgress.current / cacheProgress.total) * 100,
+                          ),
+                        )
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
+            <p className="small dim" style={{ marginTop: 12, lineHeight: 1.5 }}>
+              {t("cacheModal.hint")}
+            </p>
+          </>
+        )}
+      </Modal>
+
       <AboutModal
         open={aboutModalOpen}
         onClose={() => setAboutModalOpen(false)}
@@ -1699,14 +1798,14 @@ export function App() {
       )}
 
       <Modal
-        // Stay open while in-flight; auto-close when done or cancelled.
+        
         open={
           exportState !== null &&
           exportState.phase !== "done" &&
           !exportState.cancelled
         }
         onClose={() => setExportState(null)}
-        // Allow dismiss only after the dialog returns (i.e. picking is done).
+        
         dismissable={
           exportState?.phase === "done" || exportState?.cancelled === true
         }

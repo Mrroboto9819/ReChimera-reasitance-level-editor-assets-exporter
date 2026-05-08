@@ -22,27 +22,27 @@ import { Modal } from "./Modal";
 import { Button, Checkbox } from "./ui";
 
 interface GltfCharacterModalProps {
-  /** Open when non-null. */
+  
   file: GltfFile | null;
   onClose: () => void;
-  /** Path to the currently-open level. When non-null, the modal can
-   *  fetch raw `.dat` animsets from `<level>/animsets.dat` and apply
-   *  them to the loaded `.glb`'s rig — Option B (skip IT bundled clips,
-   *  use the raw parser directly). */
+  
+
+
+
   levelFolder?: string | null;
 }
 
 type AnimSource = "file" | "level";
 
-/**
- * Loads + previews a GLTF (.gltf/.glb) character produced by the
- * InsomniaToolset's `extract_assets` command. These files already have
- * skeleton + animations baked in, so we get all of that for free via
- * three.js's GLTFLoader — no Rust skeleton/animation parser needed.
- *
- * Shows the model in an interactive Canvas with auto-frame, lists all
- * animation clips, and plays them through a `THREE.AnimationMixer`.
- */
+
+
+
+
+
+
+
+
+
 export function GltfCharacterModal({
   file,
   onClose,
@@ -54,27 +54,27 @@ export function GltfCharacterModal({
   const [loading, setLoading] = useState(false);
   const [activeClipName, setActiveClipName] = useState<string | null>(null);
   const [showSkeleton, setShowSkeleton] = useState(false);
-  // Animation source: "file" = clips bundled in the .glb (IT default),
-  // "level" = clips fetched from `<level>/animsets.dat` via raw parser.
+  
+  
   const [animSource, setAnimSource] = useState<AnimSource>("file");
-  // Cached list of level animsets (clip-header metadata only). Loaded
-  // lazily when the user switches the source dropdown to "level".
+  
+  
   const [levelAnimsets, setLevelAnimsets] = useState<AnimsetSummary[] | null>(null);
   const [levelAnimsetsError, setLevelAnimsetsError] = useState<string | null>(null);
-  // The decoded raw clip currently applied to the loaded scene's rig.
-  // Stored as a THREE.AnimationClip (post-bone-name remap) so the
-  // GltfScene can play it via the same AnimationMixer.
+  
+  
+  
   const [appliedRawClip, setAppliedRawClip] = useState<THREE.AnimationClip | null>(null);
   const [appliedRawClipName, setAppliedRawClipName] = useState<string | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  // The "all other animations" section is hidden by default — only
-  // animations matching this character's name are surfaced. Toggle
-  // shows the rest behind a "Show all" expander.
+  
+  
+  
   const [showAllAnimsets, setShowAllAnimsets] = useState(false);
 
-  // (Re)load whenever a new file is selected. Clear state on close so the
-  // next open starts fresh + the previous Three.js objects can GC.
+  
+  
   useEffect(() => {
     if (!open || !file) {
       setGltf(null);
@@ -91,20 +91,20 @@ export function GltfCharacterModal({
     setGltf(null);
     (async () => {
       try {
-        // Tauri v2 binary IPC returns either `ArrayBuffer` or
-        // `Uint8Array` depending on the runtime — GLTFLoader.parse is
-        // strict about taking ArrayBuffer and silently produces an
-        // empty scene when handed a Uint8Array, so normalize first.
+        
+        
+        
+        
         const raw = await readFileBytes(file.path);
         const buf: ArrayBuffer =
           raw instanceof ArrayBuffer
             ? raw
             : ((raw as unknown as Uint8Array).buffer.slice(0) as ArrayBuffer);
         const loader = new GLTFLoader();
-        // baseUrl is "" because we're handing it the parsed bytes
-        // directly. External resources (.bin, textures) won't resolve;
-        // works fine for self-contained .glb. For .gltf with externals,
-        // would need to resolve sibling files — TODO when we have one.
+        
+        
+        
+        
         loader.parse(
           buf,
           "",
@@ -137,11 +137,11 @@ export function GltfCharacterModal({
   // Load level animset list as soon as a level is open and the modal
   // mounts a file. Don't gate on the source dropdown — we want the
   // "matching animations for this character" filter ready before the
-  // user even thinks to look for it. The list is small (39 entries on
-  // bayou) so the prefetch is cheap.
+  
+  
   useEffect(() => {
     if (!open || !levelFolder) return;
-    if (levelAnimsets !== null) return; // cached for modal lifetime
+    if (levelAnimsets !== null) return; 
     let cancelled = false;
     setLevelAnimsetsError(null);
     listAnimsetClips(levelFolder)
@@ -158,15 +158,15 @@ export function GltfCharacterModal({
     };
   }, [open, levelFolder, levelAnimsets]);
 
-  // Reset the cached animset list when the modal closes so the next
-  // open re-fetches (level may have changed).
+  
+  
   useEffect(() => {
     if (!open) setLevelAnimsets(null);
   }, [open]);
 
-  // Auto-flip the source to "level" when the .glb has zero bundled
-  // clips but a level is open. Saves the user one dropdown change in
-  // the common case (IT-extracted character with separate animations).
+  
+  
+  
   useEffect(() => {
     if (!gltf || !levelFolder) return;
     if (gltf.animations.length === 0 && animSource === "file") {
@@ -174,23 +174,23 @@ export function GltfCharacterModal({
     }
   }, [gltf, levelFolder, animSource]);
 
-  // Track texture-load status so the inspector can show "Textures: 12/14
-  // loaded" while DDS files stream in.
+  
+  
   const [textureStatus, setTextureStatus] = useState<{
     requested: number;
     loaded: number;
   } | null>(null);
 
-  // Walk the loaded scene's materials and pull sibling DDS textures
-  // from `<level>/textures/...`. IT writes those externally instead of
-  // embedding in the .glb — without this, every material renders grey.
-  //
-  // Strategy:
-  //   1. Collect unique material names from the scene
-  //   2. Ask backend `find_glb_textures` for matching `_c.dds`/`_n.dds`/
-  //      `_e.dds` paths
-  //   3. Read each DDS via `read_file_bytes` and parse with DDSLoader
-  //   4. Patch into `material.map` / `normalMap` / `emissiveMap`
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
   useEffect(() => {
     if (!gltf || !levelFolder) {
       setTextureStatus(null);
@@ -202,7 +202,7 @@ export function GltfCharacterModal({
     const texturesToDispose: THREE.Texture[] = [];
 
     (async () => {
-      // 1. Inventory materials.
+      
       const matsByName = new Map<string, THREE.MeshStandardMaterial[]>();
       gltf.scene.traverse((obj) => {
         if (!(obj as THREE.Mesh).isMesh) return;
@@ -223,26 +223,26 @@ export function GltfCharacterModal({
       if (names.length === 0) return;
       setTextureStatus({ requested: names.length, loaded: 0 });
 
-      // 2. Resolve sibling DDS paths.
+      
       let resolved: Awaited<ReturnType<typeof findGlbTextures>>;
       try {
         resolved = await findGlbTextures(levelFolder, names);
       } catch (e) {
         if (!cancelled) {
-          // eslint-disable-next-line no-console
+          
           console.warn("findGlbTextures failed:", e);
         }
         return;
       }
       if (cancelled) return;
-      // Diagnostics: log how many materials resolved to a DDS file.
-      // If `withFiles=0`, IT exported textures to a path the backend
-      // can't find (different level / global folder) — unrelated to
-      // our DDS loader.
+      
+      
+      
+      
       const withFiles = resolved.filter(
         (r) => r.albedo_path || r.normal_path || r.emissive_path,
       ).length;
-      // eslint-disable-next-line no-console
+      
       console.log("[findGlbTextures]", {
         materials: names.length,
         withFiles,
@@ -254,7 +254,7 @@ export function GltfCharacterModal({
         })),
       });
 
-      // 3. + 4. For each resolved entry, read DDS bytes and assign.
+      
       let loaded = 0;
       for (const r of resolved) {
         if (cancelled) return;
@@ -276,16 +276,16 @@ export function GltfCharacterModal({
                 ? ddsRaw
                 : ((ddsRaw as unknown as Uint8Array).buffer.slice(0) as ArrayBuffer);
             if (cancelled) return;
-            // DDSLoader's `parse()` takes an ArrayBuffer and returns a
-            // CompressedTexture-like result with mipmaps + format set.
-            // Wrapping it in a THREE.Texture isn't right — DDSLoader
-            // hands back its own typed result we feed to a Texture's
-            // image+mipmaps slots.
+            
+            
+            
+            
+            
             const parsed = loader.parse(ddsBuf, true);
-            // DDSLoader returns a `format` typed as `CompressedPixelFormat
-            // | PixelFormat` (DDS can hold raw RGBA too), but every
-            // texture IT exports is BC1/BC3 compressed. Cast — TS only
-            // gates against the union, runtime is fine for either.
+            
+            
+            
+            
             const fmt = parsed.format as THREE.CompressedPixelFormat;
             const tex = new THREE.CompressedTexture(
               parsed.mipmaps as ImageData[],
@@ -318,7 +318,7 @@ export function GltfCharacterModal({
               m.needsUpdate = true;
             }
           } catch (e) {
-            // eslint-disable-next-line no-console
+            
             console.warn(`DDS load failed for ${path}:`, e);
           }
         }
@@ -330,14 +330,14 @@ export function GltfCharacterModal({
     return () => {
       cancelled = true;
       for (const url of blobsToRevoke) URL.revokeObjectURL(url);
-      // Don't dispose textures here — they belong to the loaded scene
-      // and are referenced by materials. They get freed when the scene
-      // is replaced (next file open) via three.js's automatic cleanup.
+      
+      
+      
     };
   }, [gltf, levelFolder]);
 
-  // Derive a search stem from the .glb filename — strip extension and
-  // common IT suffixes. `coop_medic.entity.glb` → `coop_medic`.
+  
+  
   const characterStem = useMemo(() => {
     if (!file) return "";
     let stem = file.name.toLowerCase();
@@ -468,8 +468,8 @@ export function GltfCharacterModal({
         return;
       }
 
-      // Combine bundled clips + applied raw clip. Bundled first so the
-      // user sees those at the top of Blender's Action list.
+      
+      
       const animations: THREE.AnimationClip[] = [...gltf.animations];
       if (appliedRawClip) animations.push(appliedRawClip);
 
@@ -584,11 +584,11 @@ export function GltfCharacterModal({
 
               <div className="inspector-section">
                 <h4>Animations</h4>
-                {/* Source toggle — IT-bundled (whatever shipped in the
-                    .glb file) vs raw `.dat` from the open level.
-                    Plain inline form, NOT inside `.anim-row` (that
-                    class is a button-style grid for clip rows; using
-                    it here made the select look broken). */}
+                {
+
+
+
+}
                 <div className="anim-source-row">
                   <label htmlFor="anim-source-select">Source</label>
                   <select
@@ -656,9 +656,9 @@ export function GltfCharacterModal({
                         No animsets found in the level's `animsets.dat`.
                       </p>
                     )}
-                    {/* Matches first — driven by name overlap with the
-                        .glb filename stem (e.g. `coop_medic` matches
-                        clips like `coop_medic_idle`). */}
+                    {
+
+}
                     {matchingAnimsets.length > 0 && (
                       <>
                         <p className="dim small" style={{ marginTop: 4, marginBottom: 4 }}>
@@ -676,10 +676,10 @@ export function GltfCharacterModal({
                         </div>
                       </>
                     )}
-                    {/* When matches are empty (no name overlap with
-                        the glb filename), default to expanded so the
-                        user has SOMETHING to click. Otherwise hide
-                        the global list behind a "Show all" toggle. */}
+                    {
+
+
+}
                     {otherAnimsets.length > 0 && matchingAnimsets.length === 0 && !showAllAnimsets && (
                       <p className="dim small" style={{ marginTop: 10 }}>
                         No animations match this character. Click below
@@ -773,14 +773,14 @@ export function GltfCharacterModal({
   );
 }
 
-/**
- * Renders the loaded GLTF scene + drives the AnimationMixer if a clip
- * is active. Lives inside the Canvas (needs `useFrame`).
- *
- * When `showSkeleton` is true, walks the scene for the first SkinnedMesh
- * and adds a `THREE.SkeletonHelper` for it — the bones render as cyan
- * line segments overlaid on the model.
- */
+
+
+
+
+
+
+
+
 function GltfScene({
   gltf,
   activeClipName,
@@ -789,36 +789,36 @@ function GltfScene({
 }: {
   gltf: GLTF;
   activeClipName: string | null;
-  /** Raw `.dat`-derived clip already remapped to this GLB's bone names.
-   *  When non-null, plays it (overrides `activeClipName`). */
+  
+
   rawClip: THREE.AnimationClip | null;
   showSkeleton: boolean;
 }) {
-  // Mixer lives across renders. We need a clone that ALSO remaps skeleton
-  // bones — `THREE.Object3D.clone(true)` is deep but a known three.js
-  // footgun for skinned meshes: it copies the SkinnedMesh node but leaves
-  // `skeleton.bones[]` pointing at the ORIGINAL bone tree. The mixer then
-  // animates the cloned scene's name-matching nodes (which DO get cloned)
-  // while the SkinnedMesh keeps reading the un-touched originals — net
-  // effect: model stays in bind pose even though the mixer is "playing".
-  //
-  // `SkeletonUtils.clone()` does the skeleton-aware version: clones nodes,
-  // then walks all SkinnedMeshes and rebinds them to the cloned bone
-  // hierarchy. Result: animation actually deforms the visible mesh.
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
   const scene = useMemo(() => skeletonAwareClone(gltf.scene), [gltf]);
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
   const actionRef = useRef<THREE.AnimationAction | null>(null);
 
-  // Find the first SkinnedMesh's root bone for SkeletonHelper. Built
-  // lazily because most scenes have at most one rig and the scan is cheap.
+  
+  
   const skeletonRoot = useMemo(() => {
     let found: THREE.Object3D | null = null;
     scene.traverse((obj) => {
       if (found) return;
       if (obj instanceof THREE.SkinnedMesh && obj.skeleton.bones.length > 0) {
         const root = obj.skeleton.bones[0]!;
-        // SkeletonHelper wants the COMMON ancestor of the bones; walk up
-        // until we hit something that is not a bone parent or the scene.
+        
+        
         let node: THREE.Object3D = root;
         while (node.parent && node.parent !== scene) {
           node = node.parent;
@@ -838,9 +838,9 @@ function GltfScene({
     };
   }, [scene]);
 
-  // Switch active clip whenever the user picks one. Raw clip wins over
-  // the file-bundled clip — the UI ensures only one is set at a time
-  // but if both ever are, the raw clip plays.
+  
+  
+  
   useEffect(() => {
     const mixer = mixerRef.current;
     if (!mixer) return;
@@ -859,7 +859,7 @@ function GltfScene({
     actionRef.current = action;
   }, [activeClipName, gltf.animations, rawClip]);
 
-  // Drive the mixer. delta is in seconds.
+  
   useFrame((_state, delta) => {
     mixerRef.current?.update(delta);
   });
@@ -874,20 +874,20 @@ function GltfScene({
   );
 }
 
-/**
- * Convert a raw-`.dat` `DecodedClip` into a `THREE.AnimationClip` whose
- * tracks target the bones in the loaded GLB by NAME.
- *
- * The decoder produces tracks named `bone_${i}` (index-based, see
- * skinning.ts). The GLB's bones have whatever names IT wrote — could be
- * "Bone", "spine_03", or just empty strings depending on the export.
- * We assume **same index ordering** between IT's GLB skeleton and the
- * raw `.dat` skeleton (both ultimately read from `mobys.dat`'s bone
- * table), and remap by index → bone[i].name.
- *
- * If the count differs (face-only viseme clips can drive bones beyond
- * the head sub-skeleton), tracks beyond `bones.length - 1` are dropped.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function buildClipForGlbBones(
   decoded: DecodedClip,
   bones: THREE.Bone[],
@@ -942,8 +942,8 @@ function buildClipForGlbBones(
   return new THREE.AnimationClip(decoded.name || "clip", duration, tracks);
 }
 
-/** Single row in the animset list — extracted because it's reused in
- *  both the "matching" and "all other" sublists. */
+
+
 function AnimsetRow({
   clip,
   active,

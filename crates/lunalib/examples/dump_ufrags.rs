@@ -1,6 +1,4 @@
-//! Smoke-test CLI: walk a level's zones.dat and print UFrag bound summaries.
-//!
-//!   cargo run -p lunalib --example dump_ufrags -- <path/to/level/folder>
+
 
 use std::env;
 use std::path::Path;

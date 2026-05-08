@@ -23,13 +23,13 @@ import { Button } from "./ui";
 interface CacheLibraryModalProps {
   open: boolean;
   onClose: () => void;
-  /** Current level folder. `null` when no level is open. */
+  
   folder: string | null;
-  /** Hands the loaded asset off to the export pipeline. The parent
-   *  builds a synthetic Instance + LevelMeshes and calls exportToGlb.
-   *  Textures (cached PNGs for the asset's referenced materials) are
-   *  passed alongside so the export bakes in textures, not just
-   *  geometry. */
+  
+
+
+
+
   onExport: (
     asset: AssetMeshes,
     textureBlobs: TextureBlobMap,
@@ -40,16 +40,16 @@ type LibraryFilter = "moby" | "tie";
 
 interface MobyRow {
   entry: CacheManifestEntry;
-  /** Last segment of the path-style name (e.g. `"sawgun"` from
-   *  `"entities/character/weapon/sawgun"`). Used for the leaf label. */
+  
+
   leaf: string;
-  /** Folder-style prefix used to group ("entities/character/weapon"). */
+  
   group: string;
 }
 
-/** Splits the path-style asset name into a group + leaf. Falls back to
- *  the truncated TUID when the asset has no name (some moby chunks
- *  don't carry a name section). */
+
+
+
 function splitPath(entry: CacheManifestEntry): { group: string; leaf: string } {
   if (entry.name && entry.name.length > 0) {
     const parts = entry.name.split("/").filter(Boolean);
@@ -67,17 +67,17 @@ function splitPath(entry: CacheManifestEntry): { group: string; leaf: string } {
   return { group: "(unnamed)", leaf: `…${entry.tuid.slice(-6)}` };
 }
 
-/**
- * Browse the per-level disk cache (`<level>/_rechimera_cache/`) — every
- * extracted moby and tie listed grouped by name path, click to preview
- * + export as `.glb`.
- *
- * Asset JSONs are loaded lazily on click (one per selection); the
- * manifest itself is loaded once when the modal opens. Textures are
- * skipped in the preview for now — the GLB export still bakes them in
- * via the existing pipeline because that path reads textures from
- * `assetlookup.dat` directly.
- */
+
+
+
+
+
+
+
+
+
+
+
 export function CacheLibraryModal({
   open,
   onClose,
@@ -97,7 +97,7 @@ export function CacheLibraryModal({
   const [exporting, setExporting] = useState(false);
   const [reextractStatus, setReextractStatus] = useState<string | null>(null);
 
-  // Load manifest when the modal opens (or the folder changes mid-open).
+  
   useEffect(() => {
     if (!open || !folder) {
       setManifest(null);
@@ -123,10 +123,10 @@ export function CacheLibraryModal({
     };
   }, [open, folder]);
 
-  // Lazy-load the JSON for the selected asset, then load its referenced
-  // textures from cache so the preview canvas + export pipeline have
-  // material maps. Cancellation guard avoids racing when the user
-  // clicks rapidly between assets.
+  
+  
+  
+  
   useEffect(() => {
     if (!folder || !selectedTuid || !manifest) {
       setSelectedAsset(null);
@@ -149,10 +149,10 @@ export function CacheLibraryModal({
         if (cancelled) return;
         const asset = data as AssetMeshes;
         setSelectedAsset(asset);
-        // Collect all texture ids referenced across the asset's
-        // submeshes (albedo / normal / emissive). Deduped; missing
-        // ids are filtered out so undefined slots don't trigger a
-        // wasted IPC call.
+        
+        
+        
+        
         const ids = new Set<number>();
         for (const m of asset.submeshes) {
           for (const id of [m.albedo_id, m.normal_id, m.emissive_id]) {
@@ -175,9 +175,9 @@ export function CacheLibraryModal({
     };
   }, [folder, selectedTuid, manifest]);
 
-  // Group rows by path prefix, filtered by kind + search. Memoized so
-  // typing in the search box doesn't rebuild the full tree on every
-  // keystroke.
+  
+  
+  
   const grouped = useMemo(() => {
     if (!manifest) return [];
     const needle = search.trim().toLowerCase();
@@ -199,7 +199,7 @@ export function CacheLibraryModal({
       const g = a.group.localeCompare(b.group);
       return g !== 0 ? g : a.leaf.localeCompare(b.leaf);
     });
-    // Bucket consecutive rows by their group for headering.
+    
     const buckets: { group: string; rows: MobyRow[] }[] = [];
     for (const row of rows) {
       const last = buckets[buckets.length - 1];
@@ -212,8 +212,8 @@ export function CacheLibraryModal({
     return buckets;
   }, [manifest, search, filter]);
 
-  // Reset selection when toggling filter so we don't end up with a
-  // moby selected while the tie list is showing.
+  
+  
   useEffect(() => {
     setSelectedTuid(null);
   }, [filter]);
@@ -223,10 +223,10 @@ export function CacheLibraryModal({
     [grouped],
   );
 
-  // Synthetic Instance + LevelMeshes wrapping the single cached asset
-  // so AssetPreview can render it without modification. The "#cache"
-  // suffix on the TUID ensures it never collides with a real placement
-  // TUID elsewhere in the app.
+  
+  
+  
+  
   const previewInstance: Instance | null = selectedAsset
     ? {
         tuid: `${selectedAsset.asset_tuid}#cache`,
@@ -239,10 +239,10 @@ export function CacheLibraryModal({
       }
     : null;
 
-  // Build a TexturePayload list from the loaded blob ids so the
-  // AssetPreview's material builder picks them up. width/height aren't
-  // needed for material wiring (Three.js infers from the Image element)
-  // but the type insists on them — pass 0 placeholders.
+  
+  
+  
+  
   const previewMeshes: LevelMeshes | null = selectedAsset
     ? {
         moby_assets: filter === "moby" ? [selectedAsset] : [],
@@ -259,10 +259,10 @@ export function CacheLibraryModal({
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const handleExport = async () => {
     if (!selectedAsset || exporting || !folder) return;
-    // Use the pre-baked cached GLB instead of `exportToGlb`'s
-    // GLTFExporter path — the cached file already has correct
-    // bind-pose math, animations, and textures (the GLTFExporter
-    // path inherits the bind-pose bugs we've been chasing).
+    
+    
+    
+    
     const filenameStem =
       selectedAsset.name && selectedAsset.name.length > 0
         ? selectedAsset.name.replace(/[\\/:"*?<>|]/g, "_")
@@ -288,13 +288,13 @@ export function CacheLibraryModal({
         path,
       );
       setExportStatus(`Exported ${bytes.toLocaleString()} bytes → ${path}`);
-      // Forward to parent's onExport handler too in case it does
-      // logging or analytics, but the actual file write already
-      // happened above.
+      
+      
+      
       try {
         await Promise.resolve(onExport(selectedAsset, selectedTextures));
       } catch {
-        /* swallowed — file write already succeeded */
+        
       }
     } catch (e) {
       setExportStatus(`Export failed: ${e}`);
@@ -303,9 +303,9 @@ export function CacheLibraryModal({
     }
   };
 
-  // Re-extract: wipes the cache dir and re-runs extraction. Manifest is
-  // re-fetched on completion. Status text is shown inline next to the
-  // search box while running.
+  
+  
+  
   const handleReextract = async () => {
     if (!folder || reextractStatus) return;
     setReextractStatus("Re-extracting…");

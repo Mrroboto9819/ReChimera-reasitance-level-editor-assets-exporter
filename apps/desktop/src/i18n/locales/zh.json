@@ -18,6 +18,18 @@
     "disclaimer": "翻译由人工智能生成 — 对任何拼写或语法错误深表歉意。您可以在 GitHub 上以 pull request 形式提交修正。",
     "submitPR": "提交修正"
   },
+  "views": {
+    "hierarchy": "层级",
+    "inspector": "检查器",
+    "console": "控制台",
+    "viewport": "视口"
+  },
+  "tabs": {
+    "dropMove": "移动到此面板",
+    "emptyTitle": "空面板",
+    "emptyHint": "拖动标签到此处,或点击 + 添加视图",
+    "addView": "向此面板添加视图"
+  },
   "toolbar": {
     "renderLayers": "渲染图层",
     "viewportOverlays": "视口叠加",
@@ -93,6 +105,14 @@
     "browse": "浏览…",
     "open": "打开",
     "dropHint": "在此处拖放文件夹"
+  },
+  "cacheModal": {
+    "title": "正在生成关卡缓存",
+    "subtitle": "将 mobys、ties 和贴图解码到 _rechimera_cache/ — 预烘焙的 GLB 让导出更快。",
+    "phase_mobys": "Mobys",
+    "phase_ties": "Ties",
+    "phase_textures": "贴图",
+    "hint": "这会在后台运行。不要关闭应用 — 下次打开此关卡时会立即就绪。"
   },
   "cachePrompt": {
     "titleFound": "找到缓存的关卡数据",

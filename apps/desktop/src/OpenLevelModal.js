@@ -2,18 +2,18 @@ import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-run
 import { useCallback, useEffect, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { Modal } from "./Modal";
-/**
- * "Open Level" picker modal. Replaces the cramped path-input strip that
- * used to live in the title bar's menu bar.
- *
- * Workflow:
- *   1. User clicks Browse… → OS native file picker opens, filtered to
- *      assetlookup.dat (the marker file that identifies an Insomniac
- *      level folder). User picks the file.
- *   2. We extract the parent directory as the level folder path.
- *   3. User can also paste a folder path directly into the field.
- *   4. Click Open → parent triggers the actual level load.
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export function OpenLevelModal({ open, busy, onClose, onOpen, }) {
     const [path, setPath] = useState("");
     const [warning, setWarning] = useState(null);
@@ -43,15 +43,15 @@ export function OpenLevelModal({ open, busy, onClose, onOpen, }) {
             });
             if (typeof picked !== "string")
                 return;
-            // Extract the parent folder — works for both `/` and `\` separators.
+            
             const lastSep = Math.max(picked.lastIndexOf("/"), picked.lastIndexOf("\\"));
             const folder = lastSep > 0 ? picked.slice(0, lastSep) : picked;
             const filename = lastSep >= 0 ? picked.slice(lastSep + 1) : picked;
             setPath(folder);
-            // Helpful nudge if they picked the wrong file. Not a hard error —
-            // a level folder might be referred to by some other .dat marker in
-            // the future, and the underlying parser will reject if it can't
-            // find assetlookup.dat anyway.
+            
+            
+            
+            
             if (filename.toLowerCase() !== "assetlookup.dat") {
                 setWarning(`You picked “${filename}” — the parser will look for assetlookup.dat in this folder.`);
             }

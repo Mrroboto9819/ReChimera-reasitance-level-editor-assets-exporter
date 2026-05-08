@@ -6,6 +6,9 @@ import { save } from "@tauri-apps/plugin-dialog";
 import {
   exportCachedMobyGlb,
   fetchAnimsetClip,
+  loadCachedTextures,
+  readCachedAsset,
+  readCachedManifest,
   type AnimsetSummary,
   type AssetMeshes,
   type DecodedClip,
@@ -22,38 +25,38 @@ import {
   type BuiltSkinnedAsset,
 } from "./skinning";
 
-/// Module-level white tint shared with Viewport.tsx — avoids
-/// allocating a fresh THREE.Color in the render body each time an
-/// emissive map shows up.
+
+
+
 const EMISSIVE_TINT_WHITE = new THREE.Color(0xffffff);
 
 interface RawCharacterModalProps {
-  /** Asset_tuid of the moby/tie to preview. Modal opens when non-null. */
+  
   assetTuid: string | null;
-  /** Level meshes — provides the AssetMeshes lookup + the texture pool. */
+  
   meshes: LevelMeshes | null;
-  /** Texture PNG bytes keyed by id, fetched via the bulk binary IPC
-   *  command after streaming. Null while in flight. */
+  
+
   textureBlobs: TextureBlobMap | null;
-  /** Level folder — needed to fetch animset clips. */
+  
   levelFolder: string | null;
-  /** All animsets in the level — drives the auto-match dropdown. */
+  
   animsetClips: AnimsetSummary[];
   onClose: () => void;
 }
 
-/**
- * Per-character preview modal sourced directly from raw `.dat` data
- * (mesh + textures + skeleton + animations). Opened from the Asset
- * Library tree in the Hierarchy when the user clicks any moby —
- * placed or not. Equivalent to GltfCharacterModal but skips the
- * `.glb`/IT roundtrip and uses our parser output end-to-end.
- *
- * What you can do here:
- *   - Spin the character around (OrbitControls + auto-frame)
- *   - Pick from "Matching this character" or "All animations"
- *   - Export the rig + selected animation as `.glb` (Blender Action)
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export function RawCharacterModal({
   assetTuid,
   meshes,
@@ -64,10 +67,10 @@ export function RawCharacterModal({
 }: RawCharacterModalProps) {
   const open = assetTuid !== null;
 
-  // Resolve the asset DTO from the level's meshes. Both moby and tie
-  // streams populate `meshes.moby_assets`/`tie_assets`, so we check
-  // both arrays.
-  const asset = useMemo<AssetMeshes | null>(() => {
+  
+  
+  
+  const inMapAsset = useMemo<AssetMeshes | null>(() => {
     if (!open || !meshes) return null;
     return (
       meshes.moby_assets.find((a) => a.asset_tuid === assetTuid) ??
@@ -76,32 +79,111 @@ export function RawCharacterModal({
     );
   }, [open, meshes, assetTuid]);
 
-  // Bind-pose strategy — IT default but can be flipped at runtime via
-  // the selector below. Switching is O(numBones) (no rebuild) thanks
-  // to applyBindStrategy.
+  const [cachedAsset, setCachedAsset] = useState<AssetMeshes | null>(null);
+  const [cacheFetchError, setCacheFetchError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open || !assetTuid || !levelFolder || inMapAsset) {
+      setCachedAsset(null);
+      setCacheFetchError(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const manifest = await readCachedManifest(levelFolder);
+        const wantedKinds = ["moby", "tie"] as const;
+        const entry = manifest.entries.find(
+          (e) =>
+            e.tuid === assetTuid &&
+            (wantedKinds as readonly string[]).includes(e.kind),
+        );
+        if (!entry) {
+          if (!cancelled) {
+            setCachedAsset(null);
+            setCacheFetchError(
+              "Asset not found in cache. Re-extract the level to populate it.",
+            );
+          }
+          return;
+        }
+        const data = (await readCachedAsset(
+          levelFolder,
+          entry.file,
+        )) as AssetMeshes;
+        if (!cancelled) {
+          setCachedAsset(data);
+          setCacheFetchError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setCachedAsset(null);
+          setCacheFetchError(`Cache read failed: ${err}`);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, assetTuid, levelFolder, inMapAsset]);
+
+  const asset = inMapAsset ?? cachedAsset;
+
+  const [cachedTextures, setCachedTextures] = useState<TextureBlobMap | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!cachedAsset || !levelFolder) {
+      setCachedTextures(null);
+      return;
+    }
+    const ids = new Set<number>();
+    for (const sm of cachedAsset.submeshes) {
+      if (sm.albedo_id != null) ids.add(sm.albedo_id);
+      if (sm.normal_id != null) ids.add(sm.normal_id);
+      if (sm.emissive_id != null) ids.add(sm.emissive_id);
+    }
+    if (ids.size === 0) {
+      setCachedTextures(new Map());
+      return;
+    }
+    let cancelled = false;
+    void loadCachedTextures(levelFolder, [...ids]).then((map) => {
+      if (!cancelled) setCachedTextures(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [cachedAsset, levelFolder]);
+
+  const effectiveTextureBlobs = cachedTextures ?? textureBlobs;
+
+  
+  
+  
   const [bindStrategy, setBindStrategy] = useState<BindStrategy>("it");
 
-  // Build the THREE.js rig once per asset change. Strategy is applied
-  // initially here, then mutated in place by `applyBindStrategy` on
-  // subsequent toggles.
+  
+  
+  
   const built = useMemo<BuiltSkinnedAsset | null>(() => {
     if (!asset) return null;
     return buildSkinnedAsset(asset, bindStrategy);
-    // bindStrategy intentionally NOT in deps — flipping it triggers
-    // applyBindStrategy via the effect below instead of a full rebuild.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    
+    
+    
   }, [asset]);
   useEffect(() => {
     if (built && asset) applyBindStrategy(built, asset, bindStrategy);
   }, [bindStrategy, built, asset]);
   useEffect(() => {
     if (!asset) return;
-    // Diagnostic — surface the rig shape to the console so we can tell
-    // whether the build succeeded vs returned null vs has zero meshes.
-    // Console-only; no user-facing UI noise.
+    
+    
+    
     console.log("[RawCharacterModal]", {
       asset_tuid: asset.asset_tuid,
       name: asset.name,
+      from_cache: cachedAsset != null && inMapAsset == null,
       submeshes: asset.submeshes.length,
       skeleton_bone_count: asset.skeleton?.bone_count ?? 0,
       has_tms0_col: Array.isArray(asset.skeleton?.tms0_col),
@@ -110,17 +192,21 @@ export function RawCharacterModal({
       built_skinned_meshes: built?.skinnedMeshes.length ?? 0,
       built_root_children: built?.root.children.length ?? 0,
     });
+    if (cacheFetchError) {
+      console.warn("[RawCharacterModal] cache fetch error:", cacheFetchError);
+    }
   }, [asset, built]);
   useEffect(() => {
     return () => built?.dispose();
   }, [built]);
 
-  // Decode level textures into THREE.Texture objects on demand. We
-  // rebuild fresh per modal open (cheap — typically < 50 textures
-  // referenced by a single character) so the modal owns its own
-  // texture lifecycle and disposes them on close.
+  
+  
+  
+  
   const textureMap = useMemo(() => {
-    if (!asset || !textureBlobs) return new Map<number, THREE.Texture>();
+    if (!asset || !effectiveTextureBlobs)
+      return new Map<number, THREE.Texture>();
     const ids = new Set<number>();
     for (const sm of asset.submeshes) {
       if (sm.albedo_id != null) ids.add(sm.albedo_id);
@@ -129,7 +215,7 @@ export function RawCharacterModal({
     }
     const m = new Map<number, THREE.Texture>();
     for (const id of ids) {
-      const blob = textureBlobs.get(id);
+      const blob = effectiveTextureBlobs.get(id);
       if (!blob) continue;
       const url = URL.createObjectURL(blob);
       const img = new Image();
@@ -147,16 +233,16 @@ export function RawCharacterModal({
       m.set(id, tex);
     }
     return m;
-  }, [asset, textureBlobs]);
-  // Dispose textures when the modal closes / asset swaps.
+  }, [asset, effectiveTextureBlobs]);
+  
   useEffect(() => {
     return () => {
       for (const tex of textureMap.values()) tex.dispose();
     };
   }, [textureMap]);
 
-  // Patch textures into materials every render so Late-arriving images
-  // (Image.onload is async) attach without rebuilding the rig.
+  
+  
   if (built && asset) {
     for (let i = 0; i < built.materials.length; i++) {
       const mat = built.materials[i]! as THREE.MeshStandardMaterial;
@@ -181,14 +267,14 @@ export function RawCharacterModal({
     }
   }
 
-  // Animation state + clip-fetch effect.
+  
   const [activeClipName, setActiveClipName] = useState<string | null>(null);
   const [activeClip, setActiveClip] = useState<THREE.AnimationClip | null>(null);
   const [showSkeleton, setShowSkeleton] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  // Reset clip selection when the modal closes or asset changes.
+  
   useEffect(() => {
     if (!open) {
       setActiveClipName(null);
@@ -197,17 +283,17 @@ export function RawCharacterModal({
     }
   }, [open]);
 
-  // Auto-pick the moby's own animset when the modal first opens — the
-  // most common "I want to see this character animated" case. The user
-  // can then switch to any other clip via the list.
+  
+  
+  
   useEffect(() => {
     if (!asset || !asset.animset_hash) return;
-    if (activeClipName) return; // user already picked
+    if (activeClipName) return; 
     const own = animsetClips.find((c) => c.tuid_hex === asset.animset_hash);
     if (own) setActiveClipName(own.name);
   }, [asset, animsetClips, activeClipName]);
 
-  // Resolve the active clip name → fetch + build THREE.AnimationClip.
+  
   useEffect(() => {
     setActiveClip(null);
     if (!activeClipName || !levelFolder || !built) return;
@@ -222,7 +308,7 @@ export function RawCharacterModal({
     )
       .then((decoded: DecodedClip) => {
         if (cancelled) return;
-        // built.bones[i].name is `bone_${i}` so the standard helper works.
+        
         const aclip = buildAnimationClipFromDecoded(decoded, built.bones.length);
         setActiveClip(aclip);
       })
@@ -235,8 +321,8 @@ export function RawCharacterModal({
     };
   }, [activeClipName, levelFolder, built, animsetClips, asset]);
 
-  // Filter animsets by name overlap with the asset's name (path-style)
-  // so "matching this character" floats to the top.
+  
+  
   const characterStem = useMemo(() => {
     if (!asset || !asset.name) return "";
     const segs = asset.name.split(/[/\\]+/).filter((s) => s.length > 0);
@@ -453,8 +539,8 @@ export function RawCharacterModal({
               </div>
 
               {(() => {
-                // Aggregate stats across all submeshes once. b64 → byte
-                // count uses (len*3)/4 (each base64 quad encodes 3 bytes).
+                
+                
                 let totalVerts = 0;
                 let totalTris = 0;
                 let skinnedVerts = 0;
@@ -466,7 +552,7 @@ export function RawCharacterModal({
                   const verts = Math.floor(posBytes / 12);
                   totalVerts += verts;
                   const idxBytes = Math.floor((sm.indices_b64.length * 3) / 4);
-                  totalTris += Math.floor(idxBytes / 4 / 3); // u32 indices
+                  totalTris += Math.floor(idxBytes / 4 / 3); 
                   if (sm.bone_indices_b64.length > 0) skinnedVerts += verts;
                   if (sm.albedo_id != null) albedos.add(sm.albedo_id);
                   if (sm.normal_id != null) normals.add(sm.normal_id);
@@ -544,9 +630,9 @@ export function RawCharacterModal({
   );
 }
 
-/** Inside-Canvas component — drives the AnimationMixer + adds optional
- *  SkeletonHelper. Lives here because `useFrame` is required and only
- *  works inside R3F's Canvas. */
+
+
+
 function RawScene({
   built,
   clip,
@@ -558,16 +644,16 @@ function RawScene({
 }) {
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
 
-  // Mixer + clip lifecycle, atomic. Originally split across two effects
-  // (mixer keyed on `[built]`, clip keyed on `[clip]`) — but when only
-  // `built` changed, the new mixer never picked up the existing clip
-  // because the clip effect didn't re-fire. Result: silent deformation
-  // failure that looks like "the animation isn't playing."
-  //
-  // Combining them on `[built, clip]` rebuilds the mixer + action
-  // together whenever either changes. The cleanup runs in the right
-  // order (stopAllAction before uncacheRoot) so we don't leak runtime
-  // caches when the modal swaps assets.
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
   useEffect(() => {
     if (!built) return;
     const mixer = new THREE.AnimationMixer(built.root);
@@ -587,7 +673,7 @@ function RawScene({
     mixerRef.current?.update(delta);
   });
 
-  // Memoize SkeletonHelper so it doesn't get recreated every render.
+  
   const skeletonHelper = useMemo(() => {
     if (!showSkeleton) return null;
     const helper = new THREE.SkeletonHelper(built.root);

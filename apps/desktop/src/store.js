@@ -27,8 +27,8 @@ const DEFAULT_LAYOUT = {
     hierarchyPct: 18,
     inspectorPct: 22,
     bottomPct: 24,
-    // Start folded — the bottom panel only has useful content when there's a
-    // log/asset/tools state worth seeing. The user expands it explicitly.
+    
+    
     consoleCollapsed: true,
 };
 const layoutSlice = createSlice({
@@ -54,19 +54,19 @@ const layoutSlice = createSlice({
 });
 export const { toggleView, resetView } = viewSlice.actions;
 export const { setHierarchyPct, setInspectorPct, setBottomPct, toggleConsoleCollapsed, resetLayout, } = layoutSlice.actions;
-/* ────────────────────────────────────────────────────────────────────────
- * Persistence — stash everything in localStorage. The whitelist keeps us
- * from accidentally persisting transient state if we add slices later.
- * Bumping `version` invalidates old saved state when the schema changes.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
+
+
 const rootReducer = combineReducers({
     view: viewSlice.reducer,
     layout: layoutSlice.reducer,
 });
 const persistedReducer = persistReducer({
     key: "rechimera-config",
-    // v2: changed `consoleCollapsed` default to true so the bottom panel
-    // starts folded. Bumping the version invalidates v1 saves.
+    
+    
     version: 2,
     storage,
     whitelist: ["view", "layout"],
@@ -82,7 +82,7 @@ export const store = configureStore({
 export const persistor = persistStore(store);
 export const useAppDispatch = useDispatch;
 export const useAppSelector = useSelector;
-/** Reset everything to defaults — bound to a "Reset Layout" menu item. */
+
 export function resetAll(dispatch) {
     dispatch(resetView());
     dispatch(resetLayout());

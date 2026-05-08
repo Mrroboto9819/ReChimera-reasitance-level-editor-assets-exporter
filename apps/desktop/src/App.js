@@ -88,9 +88,9 @@ export function App() {
             setSummary(sum);
             log("ok", `IGHW v${sum.version_major}.${sum.version_minor} · ${sum.sections.length} sections`);
             const lyt = await levelLayout(sum.folder);
-            // Dedupe by tuid — some R2 levels emit the same instance_tuid in
-            // multiple region/zone metadata entries, which makes React choke on
-            // duplicate keys downstream. First occurrence wins.
+            
+            
+            
             const seen = new Set();
             const dedupedInstances = lyt.instances.filter((i) => {
                 if (seen.has(i.tuid))
@@ -218,12 +218,12 @@ export function App() {
                                                 dispatch(setBottomPct(size));
                                             }
                                         }, className: "workspace-pane", children: _jsx(BottomPanel, { summary: summary, console: consoleLog, collapsed: layout.consoleCollapsed, onToggleCollapsed: () => dispatch(toggleConsoleCollapsed()), errorCount: errorCount, warnCount: warnCount }) })] }) }), _jsx(PanelResizeHandle, { className: "resize-handle resize-handle-h" }), _jsx(Panel, { defaultSize: layout.inspectorPct, minSize: 14, maxSize: 45, onResize: (size) => dispatch(setInspectorPct(size)), className: "workspace-pane", children: _jsx(Inspector, { selected: primaryInstance, selectionCount: selection.count, meshes: meshes, instances: instances, onExportSelected: handleExportSelection }) })] }) })) : (_jsx("div", { className: "workspace-empty", children: _jsxs("div", { className: "hint", children: [_jsx("button", { type: "button", className: "btn btn-primary export-btn", onClick: () => setOpenLevelModalOpen(true), style: { width: "auto", marginBottom: 16 }, children: "Open Level\u2026" }), _jsxs("p", { className: "dim", children: ["Or use ", _jsx("span", { className: "kbd", children: "File \u25B8 Open Level\u2026" })] }), _jsxs("p", { className: "small dim", style: { marginTop: 12 }, children: ["Pick any folder containing ", _jsx("code", { children: "assetlookup.dat" }), " \u2014 Resistance 2/3, Ratchet & Clank Future, and other Insomniac PS3 titles."] })] }) })), _jsx(StatusBar, { summary: summary, meshesCount: meshes?.moby_assets.length ?? 0, instanceCount: instances.length, ufragCount: ufrags.length, meshes: meshes, loadPhase: loadPhase, error: error }), _jsx(OpenLevelModal, { open: openLevelModalOpen, busy: busy, onClose: () => setOpenLevelModalOpen(false), onOpen: (folder) => handleOpen(folder) }), _jsx(Modal, { open: loadPhase !== null, dismissable: false, title: "Loading level", subtitle: "Decoding meshes, terrain, and textures from disk", size: "md", children: _jsx(LoadProgress, { active: loadPhase, completed: completedPhases }) }), _jsx(Modal, { open: psarcOpen, onClose: () => setPsarcOpen(false), title: "PSARC Extractor", subtitle: "Read and extract PlayStation Archive files (PS3 .psarc)", size: "lg", children: _jsx(PsarcTools, {}) }), _jsx(Modal
-            // Stay open while in-flight; auto-close when done or cancelled.
+            
             , { 
-                // Stay open while in-flight; auto-close when done or cancelled.
+                
                 open: exportState !== null &&
                     exportState.phase !== "done" &&
                     !exportState.cancelled, onClose: () => setExportState(null), 
-                // Allow dismiss only after the dialog returns (i.e. picking is done).
+                
                 dismissable: exportState?.phase === "done" || exportState?.cancelled === true, title: "Exporting selection", subtitle: "Building scene \u2192 encoding glTF \u2192 writing to disk", size: "md", children: exportState && _jsx(ExportProgress, { state: exportState }) })] }));
 }

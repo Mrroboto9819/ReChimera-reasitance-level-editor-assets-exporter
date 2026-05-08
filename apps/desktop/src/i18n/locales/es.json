@@ -18,6 +18,18 @@
     "disclaimer": "Las traducciones fueron generadas con IA — disculpe los errores ortográficos o gramaticales. Puede enviar correcciones como un pull request en GitHub.",
     "submitPR": "Enviar una corrección"
   },
+  "views": {
+    "hierarchy": "Jerarquía",
+    "inspector": "Inspector",
+    "console": "Consola",
+    "viewport": "Vista"
+  },
+  "tabs": {
+    "dropMove": "Mover a este panel",
+    "emptyTitle": "Panel vacío",
+    "emptyHint": "Arrastra una pestaña aquí o haz clic en + para añadir una vista",
+    "addView": "Añadir una vista a este panel"
+  },
   "toolbar": {
     "renderLayers": "Capas de renderizado",
     "viewportOverlays": "Superposiciones del viewport",
@@ -93,6 +105,14 @@
     "browse": "Examinar…",
     "open": "Abrir",
     "dropHint": "Arrastra una carpeta aquí"
+  },
+  "cacheModal": {
+    "title": "Generando caché del nivel",
+    "subtitle": "Decodificando mobys, ties y texturas en _rechimera_cache/ — los GLB pre-horneados aceleran las exportaciones.",
+    "phase_mobys": "Mobys",
+    "phase_ties": "Ties",
+    "phase_textures": "Texturas",
+    "hint": "Esto se ejecuta en segundo plano. No cierres la app — la próxima vez que abras este nivel cargará al instante."
   },
   "cachePrompt": {
     "titleFound": "Datos de nivel en caché encontrados",

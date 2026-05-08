@@ -25,16 +25,16 @@ export function FpsSampler() {
 }
 const RING_SIZE = 64;
 export function FpsOverlay({ mode }) {
-    // Note: the renderer-side sampler lives inside the Canvas (via FpsSampler).
-    // This overlay is the DOM-side display. They communicate via a window-
-    // scoped event emitter set up below.
+    
+    
+    
     const [fps, setFps] = useState(0);
     const ringRef = useRef(new Float32Array(RING_SIZE));
     const indexRef = useRef({ i: 0 });
     const canvasRef = useRef(null);
-    // Wire the sampler. Because Viewport renders this overlay AS A SIBLING
-    // of the Canvas (DOM, not three.js), we expose the setter via a global
-    // hook that the in-canvas FpsSampler picks up.
+    
+    
+    
     useEffect(() => {
         window.__rechimera_fps =
             setFps;
@@ -45,7 +45,7 @@ export function FpsOverlay({ mode }) {
             delete window.__rechimera_fps_history;
         };
     }, []);
-    // Draw the sparkline graph
+    
     useEffect(() => {
         if (mode !== "graph")
             return;
@@ -60,14 +60,14 @@ export function FpsOverlay({ mode }) {
             const w = canvas.width;
             const h = canvas.height;
             ctx.clearRect(0, 0, w, h);
-            // Background
+            
             ctx.fillStyle = "rgba(7, 8, 10, 0.85)";
             ctx.fillRect(0, 0, w, h);
-            // Bars from ring buffer
+            
             const ring = ringRef.current;
             const n = ring.length;
             const startI = indexRef.current.i;
-            const max = 120; // FPS cap for normalization
+            const max = 120; 
             const barW = w / n;
             for (let k = 0; k < n; k++) {
                 const v = ring[(startI + k) % n] ?? 0;
@@ -77,7 +77,7 @@ export function FpsOverlay({ mode }) {
                 ctx.fillStyle = `hsl(${hue}, 60%, 55%)`;
                 ctx.fillRect(k * barW, h - barH, Math.max(1, barW - 0.5), barH);
             }
-            // 60 FPS reference line
+            
             const refY = h - (60 / max) * h;
             ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
             ctx.beginPath();

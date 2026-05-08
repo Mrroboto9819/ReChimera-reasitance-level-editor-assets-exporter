@@ -2,8 +2,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 export const openLevel = (folder) => invoke("open_level", { folder });
 export const listAssets = (folder, kind) => invoke("list_assets", { folder, kind });
 export const levelLayout = (folder) => invoke("level_layout", { folder });
-/** Stream the level-mesh decode. Returns when the backend sends `done`
- *  (or rejects on error). The handler is called once per event. */
+
+
 export function streamLevelMeshes(folder, onEvent) {
     const ch = new Channel();
     ch.onmessage = onEvent;

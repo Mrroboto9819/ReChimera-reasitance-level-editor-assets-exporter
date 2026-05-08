@@ -1,10 +1,10 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import { useState } from "react";
-/**
- * Right-dock Inspector panel — Unity Inspector / Unreal Details.
- * Shows the primary selection's transform + identity, with a hint when
- * multiple are selected. Export action lives at the top of the body.
- */
+
+
+
+
+
 export function Inspector({ selected, selectionCount, meshes, onExportSelected, }) {
     const [exporting, setExporting] = useState(false);
     const canExport = selectionCount > 0 && meshes != null;

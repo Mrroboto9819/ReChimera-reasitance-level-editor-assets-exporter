@@ -12,19 +12,19 @@ interface ExtractStatus {
   lastFile: string;
 }
 
-/**
- * PSARC tool panel — lives inside the bottom panel's "Tools" tab.
- *
- * Workflow:
- * 1. Paste/enter the path to a `.psarc` archive, click "List".
- * 2. Header info + file table appears.
- * 3. Paste/enter an output folder, click "Extract all" — files are
- *    decompressed (ZLIB only for now) and written to disk with a streaming
- *    progress bar.
- *
- * No file picker yet — would need `tauri-plugin-dialog`. For now this
- * matches the existing level-folder UX (paste a path).
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
 export function PsarcTools() {
   const [inputPath, setInputPath] = useState("");
   const [outputPath, setOutputPath] = useState("");

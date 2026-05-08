@@ -5,14 +5,14 @@ export interface LoadPhaseState {
   label: string;
   current: number;
   total: number;
-  /** Legacy progress hint from the backend. Kept for wire compatibility. */
+  
   chunkSize: number;
 }
 
 interface LoadProgressProps {
-  /** Currently-active phase, or null when nothing is loading. */
+  
   active: LoadPhaseState | null;
-  /** Phases already completed, in order. Used to show overall progress. */
+  
   completed: PhaseId[];
 }
 

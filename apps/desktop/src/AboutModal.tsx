@@ -2,15 +2,15 @@ import iconUrl from "../icon.png?url";
 import { Modal } from "./Modal";
 import { APP_VERSION, APP_REPO_URL, APP_ISSUES_URL, openExternal } from "./version";
 
-// Single delegated click handler — every `<a href>` inside the
-// AboutModal bubbles up to this listener, which intercepts the
-// click, prevents the default WebView2 behavior (which would open
-// in-place or silently fail), and routes the URL through Tauri's
-// opener plugin so it lands in the user's default browser.
-//
-// One handler at the root is cleaner than retrofitting onClick on
-// every anchor — and any future link added inside the modal works
-// automatically without touching this file.
+
+
+
+
+
+
+
+
+
 function onAboutClick(e: React.MouseEvent<HTMLDivElement>) {
   const target = e.target as HTMLElement | null;
   const anchor = target?.closest?.("a");
@@ -26,11 +26,11 @@ interface AboutModalProps {
 }
 
 interface CreditEntry {
-  /** GitHub handle, used for both the displayed @name and the URL. */
+  
   handle: string;
-  /** One-line role / contribution. Mirrors the README's People section
-   *  so credits stay in sync between the in-app Modal and the public
-   *  README — when adding contributors, update both. */
+  
+
+
   contribution: string;
 }
 
@@ -57,15 +57,15 @@ const PEOPLE: CreditEntry[] = [
   },
 ];
 
-/**
- * About / credits modal — mirrors the People section of the README
- * inside the app. Open via `Help → About ReChimera`.
- *
- * The list of contributors is intentionally inline (not loaded from an
- * external file) so it appears even when the app runs offline. Keep
- * `PEOPLE` in sync with the README's `### People` block — when adding
- * a contributor, update both spots in the same commit.
- */
+
+
+
+
+
+
+
+
+
 export function AboutModal({ open, onClose }: AboutModalProps) {
   return (
     <Modal

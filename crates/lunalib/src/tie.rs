@@ -1,21 +1,4 @@
-//! Tie (static-prop) mesh decoder.
-//!
-//! Ported from the new-engine path of [LibLunacy/Tie.cs](../../../../LibLunacy/Tie.cs).
-//! Each tie is its own IGHW chunk inside `ties.dat`, sliced via the
-//! `assetlookup.dat` tie pointer table.
-//!
-//! Layout (new engine):
-//! - section `0x3400` — single `Tie` header (0x80 bytes)
-//!   - `0x00` u32 pointer to `TieMesh[]` (file-relative)
-//!   - `0x0F` u8 metadataCount (mesh count)
-//!   - `0x14` u32 vertexBufferStart (relative to section `0x3000`)
-//!   - `0x18` u32 vertexBufferSize
-//!   - `0x20` Vec3 scale (per-axis multiplier on packed i16 positions)
-//!   - `0x68` u64 tuid
-//! - section `0x3000` — raw vertex bytes (stride 0x14 always)
-//! - section `0x3200` — raw u16 index buffer
-//! - `TieMesh` (0x40): indexIndex (in u16 units), vertexIndex (in strides),
-//!   vertexCount, indexCount, newShaderIndex, etc.
+
 
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
@@ -39,18 +22,13 @@ pub struct TieAsset {
     pub tuid: u64,
     pub scale: [f32; 3],
     pub meshes: Vec<TieMeshGeom>,
-    /// Per-asset shader TUID table (section `0x5600`), indexed by
-    /// `TieMeshGeom.shader_index`.
+
     pub shader_tuids: Vec<u64>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TieMeshGeom {
-    /// Index into `TieAsset.shader_tuids`. Sourced from `materialIndex`
-    /// (u16 at offset 0x28) per InsomniaToolset's `TiePrimitiveV2`. The
-    /// LibLunacy C# port mislabeled this as `oldShaderIndex` and read the
-    /// wrong field at 0x2A (which was the source of the original
-    /// `KeyNotFoundException` against R2 levels).
+
     pub shader_index: u16,
     pub vertex_count: u16,
     pub index_count: u16,
@@ -65,7 +43,6 @@ pub fn read_tie_assets(level_folder: &Path, tuids: Option<&[u64]>) -> Result<Vec
     Ok(out)
 }
 
-/// Streaming variant — see `read_moby_assets_streaming` for the rationale.
 pub fn read_tie_assets_streaming<F>(
     level_folder: &Path,
     tuids: Option<&[u64]>,
@@ -149,8 +126,6 @@ fn parse_tie<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<TieAs
         tuid_hint
     };
 
-    // Slice vertex region [vertex_buffer_start, +vertex_buffer_size) inside
-    // section 0x3000; read full index section (we'll seek inside it per-mesh).
     let vsect = ig.require_section(SECT_TIE_VERTICES)?;
     ig.stream
         .seek_to(u64::from(vsect.offset) + u64::from(vertex_buffer_start))?;
@@ -160,7 +135,6 @@ fn parse_tie<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<TieAs
     ig.stream.seek_to(u64::from(isect.offset))?;
     let index_buf = ig.stream.read_bytes(isect.length as usize)?;
 
-    // Read TieMesh records.
     let mut meshes = Vec::with_capacity(mesh_count);
     for m in 0..mesh_count {
         let mesh_base = meshes_ptr + (m as u64) * TIE_MESH_SIZE;
@@ -168,12 +142,12 @@ fn parse_tie<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<TieAs
         let index_index = ig.stream.read_u32()?;
         ig.stream.seek_to(mesh_base + 0x04)?;
         let vertex_index = ig.stream.read_u16()?;
-        // C# struct has a 2-byte gap from 0x06..0x08 before vertexCount.
+
         ig.stream.seek_to(mesh_base + 0x08)?;
         let vertex_count = ig.stream.read_u16()?;
         ig.stream.seek_to(mesh_base + 0x12)?;
         let index_count = ig.stream.read_u16()?;
-        // materialIndex per InsomniaToolset's TiePrimitiveV2 (u16 @ 0x28).
+
         ig.stream.seek_to(mesh_base + 0x28)?;
         let shader_index = ig.stream.read_u16()?;
 

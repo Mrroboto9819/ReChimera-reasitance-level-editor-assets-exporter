@@ -1,7 +1,4 @@
-//! Smoke-test CLI: walk a level's gameplay.dat and print region + moby
-//! instance summaries.
-//!
-//!   cargo run -p lunalib --example dump_gameplay -- <path/to/level/folder>
+
 
 use std::env;
 use std::path::Path;
@@ -36,7 +33,6 @@ fn main() -> ExitCode {
             continue;
         }
 
-        // Show first 5 instances + a coarse bounding box.
         for inst in r.moby_instances.iter().take(5) {
             println!(
                 "  inst 0x{:016X}  moby 0x{:016X}  pos [{:>8.2} {:>8.2} {:>8.2}]  scale {:.3}  '{}'",
@@ -70,7 +66,6 @@ fn main() -> ExitCode {
             min[0], min[1], min[2], max[0], max[1], max[2],
         );
 
-        // Count distinct moby assets used in this region.
         let mut tuids: Vec<u64> = r.moby_instances.iter().map(|i| i.moby_tuid).collect();
         tuids.sort_unstable();
         tuids.dedup();

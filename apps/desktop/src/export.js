@@ -2,22 +2,22 @@ import * as THREE from "three";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-/**
- * Export the current selection to a `.glb` file the user picks via the
- * native save dialog. Reports progress through `onProgress` callbacks so
- * the UI can show a phased modal (similar to the level-load progress).
- *
- * The phases:
- *   1. picking          — native dialog open, waiting on user
- *   2. preparing        — assemble three.js scene from selection + cached meshes
- *   3. decoding-textures — decode any textures the selection references
- *   4. encoding         — GLTFExporter serializes the scene to a binary glTF
- *   5. writing          — bytes flushed to disk via the `write_bytes` Tauri command
- *   6. done             — final state; modal can close
- *
- * If the user cancels the picker, the promise resolves with `path: null`
- * and an `ExportProgressState` with `cancelled: true` is emitted.
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 export async function exportSelectedAsGlb(selectedIds, instances, meshes, onProgress) {
     const emit = (s) => onProgress?.(s);
     if (selectedIds.size === 0 || !meshes) {
@@ -39,7 +39,7 @@ export async function exportSelectedAsGlb(selectedIds, instances, meshes, onProg
         });
         return { path: null, bytes: 0 };
     }
-    // ── Phase 1: ask the user where to save.
+    
     emit({
         phase: "picking",
         label: "Choose where to save",
@@ -60,7 +60,7 @@ export async function exportSelectedAsGlb(selectedIds, instances, meshes, onProg
         });
         return { path: null, bytes: 0 };
     }
-    // ── Phase 2: build the three.js scene from the streamed payloads.
+    
     emit({
         phase: "preparing",
         label: "Building scene from selection",
@@ -75,7 +75,7 @@ export async function exportSelectedAsGlb(selectedIds, instances, meshes, onProg
         assetLib.set(a.asset_tuid, a);
     const root = new THREE.Group();
     root.name = `ReChimera-export-${selectedInstances.length}`;
-    // Track which texture ids we'll need.
+    
     const neededAlbedos = new Set();
     for (let idx = 0; idx < selectedInstances.length; idx++) {
         const inst = selectedInstances[idx];
@@ -100,12 +100,12 @@ export async function exportSelectedAsGlb(selectedIds, instances, meshes, onProg
                 geom.setAttribute("uv", new THREE.Float32BufferAttribute(s.uvs, 2));
             }
             geom.setIndex(s.indices);
-            // Note: deliberately NOT calling computeVertexNormals() here. Three.js
-            // stores normals as Float32, but GLTFExporter wants them as normalized
-            // Int8 — the conversion produces a "Creating normalized normal
-            // attribute…" warning per mesh. Skipping the computation lets the
-            // importer (Blender / glTF viewer) generate them on load instead.
-            // The exported .glb is valid and smaller without baked normals.
+            
+            
+            
+            
+            
+            
             const material = new THREE.MeshStandardMaterial({
                 color: 0xffffff,
                 roughness: 0.85,
@@ -119,7 +119,7 @@ export async function exportSelectedAsGlb(selectedIds, instances, meshes, onProg
             node.add(mesh);
         }
         root.add(node);
-        // Yield every 32 instances so we don't block the event loop on huge selections.
+        
         if (idx % 32 === 0) {
             const frac = 0.05 + (idx / selectedInstances.length) * 0.25;
             emit({
@@ -131,7 +131,7 @@ export async function exportSelectedAsGlb(selectedIds, instances, meshes, onProg
             await yieldToBrowser();
         }
     }
-    // ── Phase 3: decode textures (PNG bytes → THREE.Texture).
+    
     emit({
         phase: "decoding-textures",
         label: `Decoding ${neededAlbedos.size} texture(s)`,
@@ -156,7 +156,7 @@ export async function exportSelectedAsGlb(selectedIds, instances, meshes, onProg
             detail: path,
         });
     }
-    // Attach textures to materials.
+    
     root.traverse((obj) => {
         if (obj instanceof THREE.Mesh) {
             const mat = obj.material;
@@ -170,7 +170,7 @@ export async function exportSelectedAsGlb(selectedIds, instances, meshes, onProg
             }
         }
     });
-    // ── Phase 4: GLTFExporter — synchronous and the slowest single step.
+    
     emit({
         phase: "encoding",
         label: "Encoding binary glTF",
@@ -179,10 +179,10 @@ export async function exportSelectedAsGlb(selectedIds, instances, meshes, onProg
     });
     await yieldToBrowser();
     const exporter = new GLTFExporter();
-    // Silence GLTFExporter's per-mesh "Creating normalized normal attribute…"
-    // warning. It fires whether or not we precompute normals — the exporter
-    // re-derives them as packed Int8 for the GLB and warns each time. The
-    // output is fine; the warning is just noise that floods DevTools.
+    
+    
+    
+    
     const origWarn = console.warn;
     console.warn = (...args) => {
         if (typeof args[0] === "string" &&
@@ -205,7 +205,7 @@ export async function exportSelectedAsGlb(selectedIds, instances, meshes, onProg
     finally {
         console.warn = origWarn;
     }
-    // ── Phase 5: write to disk via the Tauri command.
+    
     emit({
         phase: "writing",
         label: `Writing ${formatBytes(bytes.byteLength)} to disk`,
@@ -225,7 +225,7 @@ export async function exportSelectedAsGlb(selectedIds, instances, meshes, onProg
     });
     return { path, bytes: bytes.byteLength };
 }
-/** Yield to the browser between heavy synchronous chunks. */
+
 function yieldToBrowser() {
     return new Promise((resolve) => {
         if (typeof requestAnimationFrame === "function") {

@@ -1,9 +1,4 @@
-//! Decode every texture in a level, print format/size summary, and write
-//! up to N PNGs to a chosen folder for visual inspection.
-//!
-//!   cargo run -p lunalib --example dump_textures -- <level_folder> [output_dir] [max_pngs]
-//!
-//! `output_dir` defaults to `./tmp_textures`; `max_pngs` defaults to 16.
+
 
 use std::collections::BTreeMap;
 use std::env;

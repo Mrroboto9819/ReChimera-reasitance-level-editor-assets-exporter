@@ -8,36 +8,36 @@ import { Button, NumberInput } from "./ui";
 type Edits = ReturnType<typeof useEdits>;
 
 interface InspectorProps {
-  /** Primary selection — the item shown in the details list. */
+  
   selected: Instance | null;
-  /** Total number of selected instances (selected is the most recent). */
+  
   selectionCount: number;
-  /** Needed by the export action — the cached mesh data. */
+  
   meshes: LevelMeshes | null;
-  /** Texture PNG bytes keyed by id, fetched via the bulk binary IPC
-   *  command after streaming. Threaded through to AssetPreview. Null
-   *  while in flight. */
+  
+
+
   textureBlobs: TextureBlobMap | null;
-  /** Full instance list (used by the parent's export helper). */
+  
   instances: Instance[];
-  /** Edits store — used to read the live (post-edit) transform AND to
-   *  let the user type new values into the inputs. */
+  
+
   edits: Edits;
-  /** Triggered by the export button. */
+  
   onExportSelected?: () => void;
   onLoadMeshes?: () => void;
   loadingMeshes?: boolean;
-  /** Triggered by the "Go to" button — re-frame the main viewport on the
-   *  selected instance even if it's already the primary selection. */
+  
+
   onFocusSelected?: () => void;
 }
 
-/** ZYX Euler degrees ↔ quaternion roundtrip helpers for the inspector
- *  fields. Quaternions are unintuitive to type, so we expose the rotation
- *  as ZYX Euler in degrees (matching the original gameplay.dat format). */
+
+
+
 function quatToEulerDeg(q: [number, number, number, number]): [number, number, number] {
   const [x, y, z, w] = q;
-  // ZYX Euler from quaternion (Tait-Bryan).
+  
   const sinr_cosp = 2 * (w * x + y * z);
   const cosr_cosp = 1 - 2 * (x * x + y * y);
   const roll = Math.atan2(sinr_cosp, cosr_cosp);
@@ -66,12 +66,12 @@ function eulerDegToQuat([rx, ry, rz]: [number, number, number]): [number, number
   ];
 }
 
-/**
- * Right-dock Inspector — Unity Inspector / Unreal Details.
- * Shows a small interactive preview of the selected asset, the logical
- * path through the hierarchy, identity + transform fields, and action
- * buttons (Go to, Export).
- */
+
+
+
+
+
+
 export function Inspector({
   selected,
   selectionCount,
@@ -139,9 +139,9 @@ export function Inspector({
     }
   };
 
-  // Logical path through the IDE hierarchy. e.g.
-  // "Workspace › Mobys › chimeran_fence_section1". Two-segment for now;
-  // when zones grouping lands we'll have one more level.
+  
+  
+  
   const hierarchyPath = selected
     ? [
         "Workspace",
@@ -151,15 +151,7 @@ export function Inspector({
     : null;
 
   return (
-    <div className="panel pane-inspector">
-      <div className="panel-header">
-        <span>Inspector</span>
-        {selected && (
-          <span className={`tree-icon kind-${selected.kind}`}>
-            {selected.kind[0]?.toUpperCase()}
-          </span>
-        )}
-      </div>
+    <div className="panel pane-inspector view-flush">
       <div className="panel-body">
         {selectionCount > 1 && (
           <div className="multi-select-banner">
@@ -273,8 +265,8 @@ export function Inspector({
               </dl>
             </div>
             {(() => {
-              // Resolve rig + textures for the selected asset by peeking
-              // at the cached mesh data. Cheap — no decoding.
+              
+              
               if (!meshes) return null;
               const asset =
                 meshes.moby_assets.find((a) => a.asset_tuid === selected.asset_tuid) ??

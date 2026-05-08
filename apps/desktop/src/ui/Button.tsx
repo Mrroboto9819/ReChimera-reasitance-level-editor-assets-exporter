@@ -9,7 +9,7 @@ interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "typ
   size?: Size;
   icon?: LucideIcon;
   iconPosition?: "left" | "right";
-  /** Renders a spinner in place of the left-icon and disables the button. */
+  
   loading?: boolean;
   type?: "button" | "submit" | "reset";
 }

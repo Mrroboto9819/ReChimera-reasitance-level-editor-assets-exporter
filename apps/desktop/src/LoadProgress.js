@@ -13,7 +13,7 @@ export function LoadProgress({ active, completed }) {
     const pct = active.total > 0
         ? Math.min(100, Math.round((active.current / active.total) * 100))
         : 100;
-    // Phase pips show overall progress through the 6 phases.
+    
     const completedSet = new Set(completed);
     return (_jsxs("div", { className: "load-progress", role: "status", "aria-live": "polite", children: [_jsxs("div", { className: "load-progress-header", children: [_jsx("span", { className: "load-progress-label", children: active.label }), _jsx("span", { className: "load-progress-count mono small", children: active.total > 0
                             ? `${active.current.toLocaleString()} / ${active.total.toLocaleString()}`

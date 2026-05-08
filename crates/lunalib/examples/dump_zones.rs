@@ -1,6 +1,4 @@
-//! Smoke-test CLI: walk a level's zones.dat and print tie-instance summaries.
-//!
-//!   cargo run -p lunalib --example dump_zones -- <path/to/level/folder>
+
 
 use std::env;
 use std::path::Path;

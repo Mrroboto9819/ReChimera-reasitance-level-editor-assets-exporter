@@ -13,9 +13,9 @@ import {
 interface AssetPreviewProps {
   instance: Instance | null;
   meshes: LevelMeshes | null;
-  /** Texture PNG bytes keyed by id, fetched in one binary IPC call
-   *  after the level streams in. Null while in flight — preview
-   *  renders untextured during that window. */
+  
+
+
   textureBlobs: TextureBlobMap | null;
 }
 
@@ -24,16 +24,16 @@ interface BuiltSubmesh {
   material: THREE.MeshStandardMaterial;
 }
 
-/**
- * Mini interactive 3D viewer of the selected asset. Lives inside the
- * Inspector header so the user gets a visual identifier of what's
- * currently selected — useful when names are cryptic (e.g. "moby1907").
- *
- * Auto-frames the camera with drei's `<Bounds>` so any model fits the
- * canvas regardless of original scale. Auto-rotates slowly when idle.
- * The user can drag to orbit / scroll to zoom interactively — these
- * controls are local to the preview and do not affect the main viewport.
- */
+
+
+
+
+
+
+
+
+
+
 export function AssetPreview({ instance, meshes, textureBlobs }: AssetPreviewProps) {
   if (!instance) {
     return (
@@ -146,7 +146,7 @@ function PreviewScene({
     });
   }, [asset, textureBlobs]);
 
-  // Dispose GPU-backed resources when this asset changes or unmounts.
+  
   useEffect(() => {
     return () => {
       for (const s of submeshes) {
@@ -182,7 +182,7 @@ function PreviewScene({
       <directionalLight position={[5, 10, 7.5]} intensity={1.1} />
       <directionalLight position={[-5, -2, -5]} intensity={0.35} />
 
-      {/* `<Bounds fit clip observe>` auto-frames whatever's inside it. */}
+      {}
       <Bounds fit clip observe margin={1.2}>
         <group>
           {submeshes.map((s, i) => (

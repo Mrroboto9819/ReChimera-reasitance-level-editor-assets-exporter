@@ -1,15 +1,5 @@
-//! Shader parser — reads each shader IGHW chunk from `shaders.dat` and
-//! returns the texture TUIDs it references (albedo / normal / "expensive").
-//!
-//! Ported from new-engine path of [LibLunacy/Shader.cs](../../../../LibLunacy/Shader.cs).
-//!
-//! Per shader chunk:
-//! - section `0x5000` — `NewShader` (0x80 bytes); we only care about its
-//!   `renderingMode` byte at `0x21` and `alphaClip` at `0x30` (not used yet).
-//! - section `0x5D00` — `NewReferences` (0x40 bytes):
-//!   - `0x10` u32 albedoTuid (lower 32 bits of the texture's highmip TUID)
-//!   - `0x14` u32 normalTuid
-//!   - `0x18` u32 expensiveTuid
+
+
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -25,15 +15,13 @@ const SECT_SHADER_REFS: u32 = 0x5D00;
 #[derive(Debug, Clone, Copy)]
 pub struct ShaderInfo {
     pub tuid: u64,
-    /// Lower 32 bits of the albedo (diffuse) texture's TUID; `None` when the
-    /// shader has no albedo (e.g. compute-only / sky shaders).
+
     pub albedo_tex_id: Option<u32>,
     pub normal_tex_id: Option<u32>,
     pub expensive_tex_id: Option<u32>,
 }
 
-/// Read every shader in the level. Keyed by the shader's TUID so callers can
-/// resolve `mesh.shader_index → shader_tuid → ShaderInfo`.
+
 pub fn read_shaders(level_folder: &Path) -> Result<HashMap<u64, ShaderInfo>> {
     let assetlookup_path = level_folder.join("assetlookup.dat");
     let mut lookup = AssetLookup::open(BufReader::new(File::open(&assetlookup_path)?))?;
@@ -63,7 +51,7 @@ pub fn read_shaders(level_folder: &Path) -> Result<HashMap<u64, ShaderInfo>> {
                 out.insert(info.tuid, info);
             }
             Err(_e) => {
-                // Skip malformed shaders rather than aborting the whole load.
+
             }
         }
     }
