@@ -1268,7 +1268,7 @@ textarea {
 .asset-preview {
   position: relative;
   width: 100%;
-  height: 180px;
+  height: 100%;
   border-radius: var(--r-2);
   overflow: hidden;
   background: #0b0c0e;
@@ -2876,28 +2876,25 @@ textarea {
    available height (no fixed vh — we trust the dialog's max-height
    to clamp the parent stack). */
 .character-preview-body {
+  /* Single-column layout matching CacheLibraryModal's right pane —
+     canvas on top, meta beneath. Bigger preview, consistent design. */
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
-  gap: 0;
+  grid-template-columns: minmax(0, 1.6fr) minmax(320px, 380px);
+  gap: 16px;
   align-items: stretch;
   flex: 1 1 auto;
-  min-height: 0;
-  height: 100%;
+  min-height: 560px;
+  height: 78vh;
   overflow: hidden;
 }
 
 .character-preview-canvas {
   overflow: hidden;
   background: #0b0c0e;
-  /* Hairline separator from the sidebar — replaces the gap we used to
-     have. The dialog itself is rounded, so this child is corner-flush
-     on the left and we don't add a radius. */
-  border-right: 1px solid var(--hairline);
-  /* Fill the grid cell. `min-height: 0` lets the cell actually shrink
-     to fit — without it, the canvas keeps its intrinsic size and
-     pushes the right column off-screen. */
+  border-radius: var(--r-1);
+  border: 1px solid var(--border-1);
   height: 100%;
-  min-height: 0;
+  min-height: 420px;
 }
 
 .character-preview-canvas .asset-preview {
@@ -2912,14 +2909,12 @@ textarea {
   gap: 12px;
   font-size: 12px;
   color: var(--text-2);
-  /* Properties column owns its own scrollbar — `min-height: 0` lets
-     `overflow-y: auto` actually clip when content exceeds the cell
-     height. The padding restores the breathing room the body used to
-     provide (modal-body-flex strips the body's own padding so the
-     canvas sits flush; the sidebar adds its own padding back). */
   overflow-y: auto;
   min-height: 0;
-  padding: 14px 14px 14px 14px;
+  padding: 14px;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-1);
+  background: var(--bg-1);
 }
 
 .tree-label {

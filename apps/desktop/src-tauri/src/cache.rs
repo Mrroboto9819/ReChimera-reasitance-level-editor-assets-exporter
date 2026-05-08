@@ -83,6 +83,17 @@ pub struct CacheManifest {
     /// so old caches get rebuilt.
     #[serde(default)]
     pub source_mtimes: HashMap<String, u64>,
+    /// `false` while extraction is mid-flight, `true` after the writer
+    /// successfully finishes the manifest. Old manifests without this
+    /// field default to `true` — they predate the safety check, and
+    /// any cache that managed to write a manifest at all in the old
+    /// codepath was, by definition, complete.
+    #[serde(default = "default_complete")]
+    pub complete: bool,
+}
+
+fn default_complete() -> bool {
+    true
 }
 
 /// Quick check the FE uses to decide whether to offer "Extract assets" vs
@@ -107,6 +118,12 @@ pub struct CacheStatus {
     /// a pre-mtime version. Drives the "Cache stale, re-extract?" hint
     /// in the UI.
     pub stale: bool,
+    /// `true` when the previous extraction was interrupted: either the
+    /// manifest was missing entirely (recovered from a directory scan)
+    /// or it was on disk but with `complete: false`. The FE distinguishes
+    /// this from plain "stale" so the message can read "last extraction
+    /// did not finish" instead of "source files changed".
+    pub incomplete: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -290,6 +307,20 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
     let level_path = Path::new(folder);
     let root = cache_root(folder);
     ensure_dirs(&root)?;
+
+    // Mark the cache as in-progress immediately so a crash mid-extract
+    // leaves a `complete: false` manifest behind. Cache_status flags
+    // that as `incomplete`, the FE prompt explains the situation, and
+    // the user can choose to re-extract on the next open.
+    let manifest_path = root.join(MANIFEST_NAME);
+    let in_progress = CacheManifest {
+        version: MANIFEST_VERSION,
+        folder: folder.to_string(),
+        entries: Vec::new(),
+        source_mtimes: HashMap::new(),
+        complete: false,
+    };
+    write_json(&manifest_path, &in_progress)?;
 
     let shaders: HashMap<u64, ShaderInfo> =
         read_shaders(level_path).map_err(|e| e.to_string())?;
@@ -572,23 +603,68 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
     // path; their GLB conversion is a follow-up.
     let _ = tie_assets_for_glb; // suppress unused warning
 
-    // ── Final: write manifest ──
+    // ── Final: write manifest with `complete: true` ──
+    // Overwrites the in-progress placeholder written at the top of
+    // this function. If we never reach this line (panic, IO error,
+    // user kill), the on-disk manifest stays `complete: false` and
+    // the next `cache_status` will flag it as `incomplete`.
     let manifest = CacheManifest {
         version: MANIFEST_VERSION,
         folder: folder.to_string(),
         entries,
         source_mtimes: snapshot_source_mtimes(level_path),
+        complete: true,
     };
-    let manifest_path = root.join(MANIFEST_NAME);
     write_json(&manifest_path, &manifest)?;
     Ok(manifest.entries.len())
+}
+
+/// Count files in a cache subdir (e.g. `mobys/`). Used as a fallback
+/// for `cache_status` when the manifest is missing or unreadable: the
+/// raw filesystem still tells us roughly how much was extracted, so
+/// the FE can show the cache prompt instead of silently re-running
+/// the streaming pipeline. Symlinks + nested dirs are ignored — the
+/// extractor only writes flat files into these subdirs.
+fn count_files_in(dir: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .count()
 }
 
 #[tauri::command]
 pub fn cache_status(folder: String) -> Result<CacheStatus, String> {
     let root = cache_root(&folder);
     let manifest_path = root.join(MANIFEST_NAME);
+
     if !manifest_path.is_file() {
+        // No manifest — but the directory itself may still have
+        // extracted files from a prior run that crashed before the
+        // manifest was written. Surface that as `exists: true` with
+        // `incomplete: true` so the FE prompt offers re-extraction
+        // (rather than silently starting another full streaming pass).
+        if root.is_dir() {
+            let mobys = count_files_in(&root.join("mobys"));
+            let ties = count_files_in(&root.join("ties"));
+            let textures = count_files_in(&root.join("textures"));
+            let total = mobys + ties + textures;
+            if total > 0 {
+                return Ok(CacheStatus {
+                    exists: true,
+                    folder,
+                    cache_path: root.to_string_lossy().into_owned(),
+                    entry_count: total,
+                    mobys,
+                    ties,
+                    textures,
+                    stale: true,
+                    incomplete: true,
+                });
+            }
+        }
         return Ok(CacheStatus {
             exists: false,
             folder,
@@ -598,12 +674,27 @@ pub fn cache_status(folder: String) -> Result<CacheStatus, String> {
             ties: 0,
             textures: 0,
             stale: false,
+            incomplete: false,
         });
     }
-    let bytes = fs::read(&manifest_path)
-        .map_err(|e| format!("read {manifest_path:?}: {e}"))?;
-    let manifest: CacheManifest = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("parse manifest: {e}"))?;
+
+    // Manifest exists — try to parse. If parsing fails (e.g. the
+    // schema changed since the user's last extraction), fall back to
+    // the directory-count path above so the FE still gets a prompt.
+    let bytes = match fs::read(&manifest_path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("cache_status: read manifest failed: {e}");
+            return cache_status_from_dir(&folder, &root, true, true);
+        }
+    };
+    let manifest: CacheManifest = match serde_json::from_slice(&bytes) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("cache_status: parse manifest failed: {e}");
+            return cache_status_from_dir(&folder, &root, true, true);
+        }
+    };
     let mut mobys = 0usize;
     let mut ties = 0usize;
     let mut textures = 0usize;
@@ -616,6 +707,9 @@ pub fn cache_status(folder: String) -> Result<CacheStatus, String> {
         }
     }
     let stale = is_cache_stale(Path::new(&folder), &manifest.source_mtimes);
+    // An incomplete manifest (extraction was interrupted) is also
+    // treated as stale so the prompt steers the user toward re-extract.
+    let incomplete = !manifest.complete;
     Ok(CacheStatus {
         exists: true,
         folder,
@@ -624,7 +718,35 @@ pub fn cache_status(folder: String) -> Result<CacheStatus, String> {
         mobys,
         ties,
         textures,
+        stale: stale || incomplete,
+        incomplete,
+    })
+}
+
+/// Build a `CacheStatus` from a raw filesystem scan when the manifest
+/// is unreadable. Used by the recovery branch above. `incomplete` is
+/// passed through so the FE can distinguish "manifest was unreadable"
+/// from "manifest was OK but source files changed".
+fn cache_status_from_dir(
+    folder: &str,
+    root: &Path,
+    stale: bool,
+    incomplete: bool,
+) -> Result<CacheStatus, String> {
+    let mobys = count_files_in(&root.join("mobys"));
+    let ties = count_files_in(&root.join("ties"));
+    let textures = count_files_in(&root.join("textures"));
+    let total = mobys + ties + textures;
+    Ok(CacheStatus {
+        exists: total > 0,
+        folder: folder.to_owned(),
+        cache_path: root.to_string_lossy().into_owned(),
+        entry_count: total,
+        mobys,
+        ties,
+        textures,
         stale,
+        incomplete,
     })
 }
 

@@ -11,6 +11,8 @@ import { Channel } from "@tauri-apps/api/core";
 import {
   cacheStatus,
   dumpSoundBank,
+  readCachedManifest,
+  reextractLevelCache,
   extractLevelSounds,
   extractLevelStreamSounds,
   extractLevelToCache,
@@ -160,12 +162,26 @@ export function App() {
   // (Library modal, GLB export) can `read_cached_asset` without going
   // through the streaming pipeline.
   const [cacheState, setCacheState] = useState<CacheStatus | null>(null);
+  // Cache manifest — populated alongside cacheState when extraction
+  // finishes (or on level open if cache already exists). Drives the
+  // Hierarchy's "Cache" section so the user can browse the extracted
+  // assets without first opening the Cache Library modal.
+  const [cacheManifest, setCacheManifest] =
+    useState<import("./api").CacheManifest | null>(null);
   const [cacheProgress, setCacheProgress] = useState<{
     phase: "mobys" | "ties" | "textures";
     current: number;
     total: number;
   } | null>(null);
   const [cacheLibraryOpen, setCacheLibraryOpen] = useState(false);
+  // Cache prompt — when a level is opened that already has `_rechimera_cache/`,
+  // set this to `{ sum, status }` so the user can pick between using the
+  // existing cache (skip re-extraction; just load the manifest) or rebuilding
+  // it from scratch (`reextract_level_cache`). Null = no decision pending.
+  const [cachePrompt, setCachePrompt] = useState<{
+    sum: LevelSummary;
+    status: CacheStatus;
+  } | null>(null);
   // Per-source cache keyed by `${kind}:${filename}`. Separates bank
   // and stream extracts so re-clicking a stream sound doesn't trigger
   // a fresh bank decode and vice-versa. Stream extracts can be slow
@@ -506,7 +522,17 @@ export function App() {
     }
   }, [log]);
 
-  const loadFullMeshes = useCallback(async (sum: LevelSummary) => {
+  // cacheMode controls what happens after streaming "done" fires:
+  //   "auto"            — extract only if no fresh cache exists (legacy default)
+  //   "use-cache"       — never extract; just load the existing manifest
+  //   "force-reextract" — wipe the cache and rebuild it from disk
+  // The Cache prompt at level-open chooses one of the latter two; programmatic
+  // callers (re-load after edits) leave it at "auto".
+  type CacheMode = "auto" | "use-cache" | "force-reextract";
+  const loadFullMeshes = useCallback(async (
+    sum: LevelSummary,
+    cacheMode: CacheMode = "auto",
+  ) => {
     setError(null);
     setBusy(true);
     setMeshes(null);
@@ -633,60 +659,99 @@ export function App() {
             // running them concurrently caused the streaming pipeline
             // to either stall or never emit its "done" event, leaving
             // the viewport stuck on proxy boxes only.
-            cacheStatus(sum.folder)
-              .then((status) => {
-                setCacheState(status);
-                if (status.exists) {
+            //
+            // Branching by `cacheMode`:
+            //   "use-cache" — user explicitly chose the existing cache;
+            //                 just load the manifest, no decode work.
+            //   "force-reextract" — user asked to rebuild; wipe + redo.
+            //   "auto" — legacy default: extract iff no fresh cache.
+            const runExtract = (force: boolean) => {
+              log(
+                "info",
+                force
+                  ? "Rebuilding disk cache (user-requested re-extract)…"
+                  : "Building disk cache in background…",
+              );
+              const channel = new Channel<CacheEvent>();
+              let phaseTotals = { phase: "mobys" as const, total: 0 };
+              channel.onmessage = (event) => {
+                switch (event.type) {
+                  case "phase":
+                    phaseTotals = {
+                      phase: event.phase,
+                      total: event.total,
+                    } as never;
+                    setCacheProgress({
+                      phase: event.phase,
+                      current: 0,
+                      total: event.total,
+                    });
+                    break;
+                  case "progress":
+                    setCacheProgress({
+                      phase: phaseTotals.phase,
+                      current: event.current,
+                      total: phaseTotals.total,
+                    });
+                    break;
+                  case "done":
+                    setCacheProgress(null);
+                    cacheStatus(sum.folder)
+                      .then(setCacheState)
+                      .catch(() => {});
+                    readCachedManifest(sum.folder)
+                      .then(setCacheManifest)
+                      .catch(() => {});
+                    log("ok", `Cache built: ${event.entry_count} entries`);
+                    break;
+                  case "error":
+                    setCacheProgress(null);
+                    log("warn", `Cache extraction failed: ${event.message}`);
+                    break;
+                }
+              };
+              const fn = force ? reextractLevelCache : extractLevelToCache;
+              fn(sum.folder, channel).catch((e) => {
+                setCacheProgress(null);
+                log("warn", `Cache extraction failed: ${e}`);
+              });
+            };
+
+            if (cacheMode === "use-cache") {
+              cacheStatus(sum.folder)
+                .then((status) => {
+                  setCacheState(status);
                   log(
                     "ok",
-                    `Cache ready: ${status.mobys}M / ${status.ties}T / ${status.textures}tex`,
+                    `Using cached data: ${status.mobys}M / ${status.ties}T / ${status.textures}tex`,
                   );
-                  return;
-                }
-                log("info", "Building disk cache in background…");
-                const channel = new Channel<CacheEvent>();
-                let phaseTotals = { phase: "mobys" as const, total: 0 };
-                channel.onmessage = (event) => {
-                  switch (event.type) {
-                    case "phase":
-                      phaseTotals = {
-                        phase: event.phase,
-                        total: event.total,
-                      } as never;
-                      setCacheProgress({
-                        phase: event.phase,
-                        current: 0,
-                        total: event.total,
-                      });
-                      break;
-                    case "progress":
-                      setCacheProgress({
-                        phase: phaseTotals.phase,
-                        current: event.current,
-                        total: phaseTotals.total,
-                      });
-                      break;
-                    case "done":
-                      setCacheProgress(null);
-                      cacheStatus(sum.folder)
-                        .then(setCacheState)
-                        .catch(() => {});
-                      log("ok", `Cache built: ${event.entry_count} entries`);
-                      break;
-                    case "error":
-                      setCacheProgress(null);
-                      log("warn", `Cache extraction failed: ${event.message}`);
-                      break;
+                  readCachedManifest(sum.folder)
+                    .then(setCacheManifest)
+                    .catch((e) => log("warn", `Cache manifest read failed: ${e}`));
+                })
+                .catch((e) => log("warn", `Cache status check failed: ${e}`));
+            } else if (cacheMode === "force-reextract") {
+              runExtract(true);
+            } else {
+              cacheStatus(sum.folder)
+                .then((status) => {
+                  setCacheState(status);
+                  if (status.exists) {
+                    log(
+                      "ok",
+                      `Cache ready: ${status.mobys}M / ${status.ties}T / ${status.textures}tex`,
+                    );
+                    readCachedManifest(sum.folder)
+                      .then(setCacheManifest)
+                      .catch((e) =>
+                        log("warn", `Cache manifest read failed: ${e}`),
+                      );
+                    return;
                   }
-                };
-                extractLevelToCache(sum.folder, channel).catch((e) => {
-                  setCacheProgress(null);
-                  log("warn", `Cache extraction failed: ${e}`);
-                });
-              })
-              .catch((e) => {
-                log("warn", `Cache status check failed: ${e}`);
-              });
+                  runExtract(false);
+                })
+                .catch((e) => log("warn", `Cache status check failed: ${e}`));
+            }
             break;
           case "error":
             setError(e.message);
@@ -775,8 +840,27 @@ export function App() {
       // the proxy-box view stays responsive while real meshes stream in
       // and progressively replace the boxes. No await — let it run in
       // the background.
-      log("info", "Auto-loading meshes (idle-paced; safe to interact while it runs)");
-      void loadFullMeshes(sum);
+      // Probe for an existing cache BEFORE the streaming pipeline starts.
+      // If the level was already extracted, ask the user whether to use the
+      // cached data or rebuild from scratch — cheaper than always extracting,
+      // and lets them recover from a stale/corrupt cache without leaving the
+      // app. If no cache exists yet, the auto path runs the legacy flow.
+      let existing: CacheStatus | null = null;
+      try {
+        existing = await cacheStatus(sum.folder);
+      } catch (e) {
+        log("warn", `Cache status check failed: ${e}`);
+      }
+      if (existing && existing.exists) {
+        log(
+          "info",
+          `Cache detected (${existing.mobys}M / ${existing.ties}T / ${existing.textures}tex) — awaiting user choice`,
+        );
+        setCachePrompt({ sum, status: existing });
+      } else {
+        log("info", "Auto-loading meshes (idle-paced; safe to interact while it runs)");
+        void loadFullMeshes(sum, "auto");
+      }
 
       // Pre-fetch the animset directory in parallel with the mesh
       // decode. Cheap (only the 0x40 header per animset, 39 entries
@@ -878,6 +962,24 @@ export function App() {
     }
   }, [log, selection, edits, loadFullMeshes]);
 
+  // Resolve the cache prompt: kick off the load with the chosen mode.
+  // Always called from the modal's two action buttons.
+  const resolveCachePrompt = useCallback(
+    (mode: "use-cache" | "force-reextract") => {
+      const pending = cachePrompt;
+      if (!pending) return;
+      setCachePrompt(null);
+      log(
+        "info",
+        mode === "use-cache"
+          ? "Loading meshes — will reuse the existing cache"
+          : "Loading meshes — will rebuild the cache after streaming",
+      );
+      void loadFullMeshes(pending.sum, mode);
+    },
+    [cachePrompt, loadFullMeshes, log],
+  );
+
   const handleClose = useCallback(() => {
     setSummary(null);
     setInstances([]);
@@ -891,7 +993,9 @@ export function App() {
     setAnimsetClips([]);
     setOverrideAnimsetHash(null);
     setCacheState(null);
+    setCacheManifest(null);
     setCacheProgress(null);
+    setCachePrompt(null);
     selection.clear();
     edits.resetAll();
     setError(null);
@@ -1108,6 +1212,7 @@ export function App() {
                 }
                 mobyAssets={meshes?.moby_assets}
                 tieAssets={meshes?.tie_assets}
+                cacheManifest={cacheManifest}
                 onPreviewRawAsset={(tuid) => setPreviewAssetTuid(tuid)}
                 sounds={levelSounds}
                 playingSoundName={playingSoundName}
@@ -1282,6 +1387,89 @@ export function App() {
         folder={summary?.folder ?? null}
         onExport={handleCacheLibraryExport}
       />
+
+      <Modal
+        open={cachePrompt !== null}
+        dismissable={false}
+        title={
+          cachePrompt?.status.incomplete
+            ? "Previous extraction was interrupted"
+            : "Cached level data found"
+        }
+        subtitle={
+          cachePrompt
+            ? `${cachePrompt.status.mobys} mobys · ${cachePrompt.status.ties} ties · ${cachePrompt.status.textures} textures in _rechimera_cache/`
+            : undefined
+        }
+        size="md"
+        footer={
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button
+              className={
+                cachePrompt?.status.incomplete ? "btn" : "btn"
+              }
+              onClick={() => resolveCachePrompt("use-cache")}
+              disabled={cachePrompt?.status.incomplete}
+              title={
+                cachePrompt?.status.incomplete
+                  ? "The previous extraction did not finish — re-extract to get a complete cache"
+                  : undefined
+              }
+            >
+              Use cached data
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => resolveCachePrompt("force-reextract")}
+            >
+              Re-extract
+            </button>
+          </div>
+        }
+      >
+        {cachePrompt?.status.incomplete ? (
+          <>
+            <p className="small" style={{ marginTop: 0, lineHeight: 1.5 }}>
+              The previous extraction did not finish — the cache directory
+              has files on disk but the manifest is either missing or marked{" "}
+              <code>complete: false</code>. Loading from this cache would
+              skip whatever didn't finish writing.
+            </p>
+            <p className="small dim" style={{ lineHeight: 1.5 }}>
+              Re-extracting rewrites the cache from scratch. The streaming
+              mesh pipeline runs either way; only the post-stream cache
+              step differs.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="small dim" style={{ marginTop: 0, lineHeight: 1.5 }}>
+              This level was already extracted into a local cache. Loading
+              from the cache skips the heavy decode pass — the manifest,
+              GLBs, and PNGs are read straight from disk.
+            </p>
+            <p className="small dim" style={{ lineHeight: 1.5 }}>
+              Pick <strong>Re-extract</strong> if the source <code>.dat</code>{" "}
+              files have changed and you want a clean rebuild. The streaming
+              mesh pipeline runs either way; only the post-stream cache step
+              differs.
+            </p>
+          </>
+        )}
+        {cachePrompt?.status.stale && !cachePrompt.status.incomplete && (
+          <p
+            className="small"
+            style={{
+              marginTop: 8,
+              color: "var(--warn-fg, #d97706)",
+              lineHeight: 1.5,
+            }}
+          >
+            ⚠ Cache reports as <strong>stale</strong>: source files have a
+            newer mtime than the manifest. Re-extracting is recommended.
+          </p>
+        )}
+      </Modal>
 
       <Modal
         open={loadPhase !== null}

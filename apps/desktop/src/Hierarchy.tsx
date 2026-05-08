@@ -3,6 +3,8 @@ import type {
   AnimsetSummary,
   AssetKind,
   AssetMeshes,
+  CacheManifest,
+  CacheManifestEntry,
   GltfFile,
   Instance,
   LevelFile,
@@ -42,6 +44,12 @@ interface HierarchyProps {
   mobyAssets?: AssetMeshes[];
   /** Same for tie assets — grouped under a sibling subtree. */
   tieAssets?: AssetMeshes[];
+  /** Manifest of the per-level disk cache (`_rechimera_cache/`). When
+   *  present, the Hierarchy shows a "Cache" section listing the
+   *  extracted mobys / ties / textures so the user can browse them
+   *  without opening the Cache Library modal. Clicking a moby/tie
+   *  fires `onPreviewRawAsset` (same as the Asset Library section). */
+  cacheManifest?: CacheManifest | null;
   /** Callback fired when a leaf in the Asset Library tree is clicked.
    *  The parent opens `RawCharacterModal` with this asset_tuid so the
    *  user can preview + animate + export ANY asset from the lookup —
@@ -222,6 +230,7 @@ export function Hierarchy({
   onSelectAnimset,
   mobyAssets,
   tieAssets,
+  cacheManifest,
   onPreviewRawAsset,
   sounds,
   playingSoundName,
@@ -300,6 +309,44 @@ export function Hierarchy({
     if (ties.length > 0) roots.push(buildAssetTree("Ties", "tie", ties));
     return roots;
   }, [deferredMobyAssets, deferredTieAssets]);
+
+  // Cache-manifest tree — same path-grouping shape as the Asset
+  // Library tree above, but sourced from `_rechimera_cache/manifest.json`
+  // entries instead of the streamed AssetMeshes list. Lets the user
+  // browse extracted assets without first opening the Cache Library
+  // modal. Each entry only carries `tuid` + `name`, so we synthesize
+  // minimal `AssetMeshes` shells for the existing tree builder.
+  const cacheTree = useMemo(() => {
+    if (!cacheManifest || cacheManifest.entries.length === 0) return null;
+    const cacheMobys: AssetMeshes[] = [];
+    const cacheTies: AssetMeshes[] = [];
+    const shellOf = (e: CacheManifestEntry): AssetMeshes => ({
+      asset_tuid: e.tuid,
+      name: e.name,
+      submeshes: [],
+      skeleton: null,
+      animset_hash: null,
+      bind_pose_inverse_offset: 0,
+    });
+    for (const entry of cacheManifest.entries) {
+      if (entry.kind === "moby") {
+        if (!cacheMobys.some((m) => m.asset_tuid === entry.tuid)) {
+          cacheMobys.push(shellOf(entry));
+        }
+      } else if (entry.kind === "tie") {
+        if (!cacheTies.some((t) => t.asset_tuid === entry.tuid)) {
+          cacheTies.push(shellOf(entry));
+        }
+      }
+    }
+    if (cacheMobys.length === 0 && cacheTies.length === 0) return null;
+    const roots: AssetTreeNode[] = [];
+    if (cacheMobys.length > 0)
+      roots.push(buildAssetTree("Cache · Mobys", "moby", cacheMobys));
+    if (cacheTies.length > 0)
+      roots.push(buildAssetTree("Cache · Ties", "tie", cacheTies));
+    return roots;
+  }, [cacheManifest]);
 
   // Hierarchy auto-scroll: when the user picks an instance via the
   // viewport (double-click → primary changes), scroll the matching row
@@ -985,6 +1032,24 @@ export function Hierarchy({
                 {assetTree.map((root) => (
                   <AssetLibraryTree
                     key={root.path}
+                    node={root}
+                    depth={0}
+                    collapsed={assetLibCollapsed}
+                    setCollapsed={setAssetLibCollapsed}
+                    filter={filterLower}
+                    instances={instances}
+                    selection={selection}
+                    onPreviewRawAsset={onPreviewRawAsset}
+                  />
+                ))}
+              </>
+            )}
+
+            {cacheTree && cacheTree.length > 0 && (
+              <>
+                {cacheTree.map((root) => (
+                  <AssetLibraryTree
+                    key={`cache-${root.path}`}
                     node={root}
                     depth={0}
                     collapsed={assetLibCollapsed}

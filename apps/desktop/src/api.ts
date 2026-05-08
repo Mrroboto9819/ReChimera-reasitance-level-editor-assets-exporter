@@ -126,9 +126,16 @@ export interface CacheStatus {
   ties: number;
   textures: number;
   /** `true` when at least one source `.dat` is newer than the cache's
-   *  mtime snapshot, OR when the manifest is from a pre-mtime version.
+   *  mtime snapshot, OR when the manifest is from a pre-mtime version,
+   *  OR when the previous extraction did not finish (`incomplete`).
    *  UI shows a "Stale — re-extract?" hint when this is set. */
   stale: boolean;
+  /** `true` when the previous extraction was interrupted: either the
+   *  manifest is missing entirely (recovered from a directory scan) or
+   *  it's on disk but with `complete: false`. The prompt distinguishes
+   *  this from plain "stale source files" so the message can read
+   *  "last extraction did not finish". */
+  incomplete: boolean;
 }
 
 export type CacheEvent =
