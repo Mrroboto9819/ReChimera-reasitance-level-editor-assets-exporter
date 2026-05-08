@@ -5,6 +5,16 @@ import {
   type DecodedClip,
 } from "./api";
 
+/// Bind-pose interpretation strategy. None has been empirically verified
+/// for R2; the modal exposes a runtime switcher so the user can pick
+/// whichever produces a recognizable rig. See skeleton.rs for the data
+/// shapes and the on-disk semantics in dispute.
+export type BindStrategy = "it" | "direct" | "relunacy";
+
+const tmpMatA = new THREE.Matrix4();
+const tmpMatB = new THREE.Matrix4();
+const tmpMatC = new THREE.Matrix4();
+
 /**
  * Three.js side rig for one moby asset — bones, skeleton, per-submesh
  * SkinnedMeshes (or plain Meshes for unskinned sub-pieces). Returned by
@@ -32,23 +42,41 @@ export interface BuiltSkinnedAsset {
  * Construct the THREE-side rig for a moby. See module doc for callers.
  * Returns `null` when the asset has no skeleton — caller should fall back
  * to a non-skinned path.
+ *
+ * `bindStrategy` picks how the on-disk `tms0`/`tms1` arrays map to
+ * per-bone local TRS + boneInverses. Default `"it"` uses the IT-derived
+ * matrices already shipped in `bind_local`/`bind_world_inverse`. The
+ * other strategies recompute on the fly from `tms0_col`/`tms1_col`,
+ * useful for the modal's A/B test until we lock in the empirical
+ * answer for R2.
  */
-export function buildSkinnedAsset(asset: AssetMeshes): BuiltSkinnedAsset | null {
+export function buildSkinnedAsset(
+  asset: AssetMeshes,
+  bindStrategy: BindStrategy = "it",
+): BuiltSkinnedAsset | null {
   const sk = asset.skeleton;
   if (!sk || sk.bone_count === 0) return null;
 
-  const bones: THREE.Bone[] = [];
-  const tmpMat = new THREE.Matrix4();
+  // Resolve effective bind matrices given the chosen strategy. Falls
+  // back to the default IT-derived `bind_local` when the cache JSON
+  // doesn't carry the raw tms0/tms1 (pre-switcher caches).
+  const { localBindMatrices, worldInverseMatrices } = resolveBindMatrices(
+    sk,
+    bindStrategy,
+  );
 
-  // Phase 1: allocate Bone objects + decompose bind_local into TRS so
-  // Three.js's bone-update loop can re-assemble after animation.
+  const bones: THREE.Bone[] = [];
+
+  // Phase 1: allocate Bone objects + decompose the per-bone local
+  // matrix into TRS so Three.js's bone-update loop can re-assemble
+  // after animation.
   for (let i = 0; i < sk.bone_count; i++) {
     const bone = new THREE.Bone();
     bone.name = `bone_${i}`;
-    const local = sk.bind_local[i];
+    const local = localBindMatrices[i];
     if (local && local.length === 16) {
-      tmpMat.fromArray(local);
-      tmpMat.decompose(bone.position, bone.quaternion, bone.scale);
+      tmpMatA.fromArray(local);
+      tmpMatA.decompose(bone.position, bone.quaternion, bone.scale);
     }
     bones.push(bone);
   }
@@ -69,8 +97,8 @@ export function buildSkinnedAsset(asset: AssetMeshes): BuiltSkinnedAsset | null 
   // Phase 3: bone-inverses (world-space inverse bind matrices). When the
   // backend couldn't read tms1 we let THREE compute them at bind() time.
   let boneInverses: THREE.Matrix4[] | undefined;
-  if (sk.bind_world_inverse.length === sk.bone_count) {
-    boneInverses = sk.bind_world_inverse.map((m) =>
+  if (worldInverseMatrices.length === sk.bone_count) {
+    boneInverses = worldInverseMatrices.map((m) =>
       new THREE.Matrix4().fromArray(m),
     );
   }
@@ -193,4 +221,76 @@ export function buildAnimationClipFromDecoded(
 export function isSkinnedAsset(asset: AssetMeshes): boolean {
   if (!asset.skeleton || asset.skeleton.bone_count === 0) return false;
   return asset.submeshes.some((s) => s.bone_indices_b64.length > 0);
+}
+
+interface BindMatrices {
+  /** Per-bone local TRS — what gets decomposed onto each `THREE.Bone`. */
+  localBindMatrices: number[][];
+  /** Per-bone world-inverse — handed to `THREE.Skeleton` as `boneInverses`. */
+  worldInverseMatrices: number[][];
+}
+
+/// Compute the effective bind matrices for the requested strategy.
+/// Falls back to whatever the Rust backend shipped as the default if
+/// the raw tms0/tms1 columns aren't present (older caches).
+function resolveBindMatrices(
+  sk: AssetMeshes["skeleton"] & {},
+  strategy: BindStrategy,
+): BindMatrices {
+  if (strategy === "it" || !sk.tms0_col || !sk.tms1_col) {
+    return {
+      localBindMatrices: sk.bind_local,
+      worldInverseMatrices: sk.bind_world_inverse,
+    };
+  }
+
+  if (strategy === "direct") {
+    // tms0 IS the local bind directly (no parent-relative reconstruction).
+    return {
+      localBindMatrices: sk.tms0_col,
+      worldInverseMatrices: sk.tms1_col,
+    };
+  }
+
+  // strategy === "relunacy" — tms1 is local, tms0 is world inverse.
+  return {
+    localBindMatrices: sk.tms1_col,
+    worldInverseMatrices: sk.tms0_col,
+  };
+}
+
+/// Re-compute bind matrices for an asset under a new strategy without
+/// rebuilding the entire SkinnedMesh. Updates each existing bone's
+/// position/quaternion/scale + replaces the skeleton's `boneInverses`.
+/// Lets the modal flip strategies on a live rig in O(numBones) work.
+export function applyBindStrategy(
+  rig: BuiltSkinnedAsset,
+  asset: AssetMeshes,
+  strategy: BindStrategy,
+): void {
+  const sk = asset.skeleton;
+  if (!sk) return;
+  const { localBindMatrices, worldInverseMatrices } = resolveBindMatrices(
+    sk,
+    strategy,
+  );
+  for (let i = 0; i < rig.bones.length; i++) {
+    const local = localBindMatrices[i];
+    if (!local || local.length !== 16) continue;
+    tmpMatB.fromArray(local);
+    tmpMatB.decompose(
+      rig.bones[i]!.position,
+      rig.bones[i]!.quaternion,
+      rig.bones[i]!.scale,
+    );
+  }
+  if (worldInverseMatrices.length === rig.bones.length) {
+    for (let i = 0; i < rig.bones.length; i++) {
+      tmpMatC.fromArray(worldInverseMatrices[i]!);
+      rig.skeleton.boneInverses[i]!.copy(tmpMatC);
+    }
+  }
+  // Force the skeleton to recompute the bone-matrix texture on next
+  // render; without this Three.js keeps using the cached uniforms.
+  rig.skeleton.update();
 }

@@ -95,12 +95,80 @@ pub fn decompose_row_major(m: &[f32; 16]) -> ([f32; 3], [f32; 3], [f32; 4]) {
     (translation, scale, quat)
 }
 
+/// Multiply two 4×4 row-major matrices: `c = a * b`. Both inputs and
+/// the output use the same `m[r*4 + c]` indexing as `decompose_row_major`.
+pub fn mat4_mul_row_major(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
+    let mut out = [0f32; 16];
+    for r in 0..4 {
+        for c in 0..4 {
+            let mut sum = 0.0f32;
+            for k in 0..4 {
+                sum += a[r * 4 + k] * b[k * 4 + c];
+            }
+            out[r * 4 + c] = sum;
+        }
+    }
+    out
+}
+
+/// Transpose a 4×4 matrix in place. Useful for row-major↔column-major
+/// conversion at API boundaries — three.js's `Matrix4.fromArray` reads
+/// column-major, so any row-major matrix shipped over IPC needs this
+/// applied before serialization.
+pub fn transpose_4x4(m: &[f32; 16]) -> [f32; 16] {
+    [
+        m[0], m[4], m[8],  m[12],
+        m[1], m[5], m[9],  m[13],
+        m[2], m[6], m[10], m[14],
+        m[3], m[7], m[11], m[15],
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn approx(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-5
+    }
+
+    #[test]
+    fn mat4_identity_mul_returns_other() {
+        #[rustfmt::skip]
+        let id = [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ];
+        #[rustfmt::skip]
+        let other = [
+            2.0, 0.0, 0.0, 0.0,
+            0.0, 3.0, 0.0, 0.0,
+            0.0, 0.0, 4.0, 0.0,
+            5.0, 6.0, 7.0, 1.0,
+        ];
+        let r = mat4_mul_row_major(&id, &other);
+        assert_eq!(r, other);
+        let r2 = mat4_mul_row_major(&other, &id);
+        assert_eq!(r2, other);
+    }
+
+    #[test]
+    fn transpose_swaps_translation_row_and_col() {
+        // Row-major translation: r4 = (5, 6, 7, 1).
+        #[rustfmt::skip]
+        let row = [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            5.0, 6.0, 7.0, 1.0,
+        ];
+        // After transpose, translation becomes the last column (indices 3, 7, 11).
+        let col = transpose_4x4(&row);
+        assert!(approx(col[3], 5.0));
+        assert!(approx(col[7], 6.0));
+        assert!(approx(col[11], 7.0));
     }
 
     #[test]

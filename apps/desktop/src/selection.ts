@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { Instance } from "./api";
 
 export interface SelectionState {
@@ -40,7 +40,14 @@ export function clickMods(e: React.MouseEvent | MouseEvent): ClickMods {
 export function useSelection(orderedItems: () => Instance[]) {
   const [state, setState] = useState<SelectionState>(EMPTY);
 
-  const items = orderedItems;
+  // Hold the items getter behind a ref so `select`'s identity stays
+  // stable. App passes `() => instances` and re-creates that callback
+  // every time `instances` changes; without the ref, putting it in
+  // the useCallback deps re-created `select` on every render and
+  // cascaded re-renders through Viewport / Hierarchy / Inspector
+  // (audit Tier-1 #18).
+  const itemsRef = useRef(orderedItems);
+  itemsRef.current = orderedItems;
 
   const select = useCallback(
     (target: Instance | null, mods: ClickMods = {}) => {
@@ -56,7 +63,7 @@ export function useSelection(orderedItems: () => Instance[]) {
 
         // Shift+click: range from anchor to target (within current ordering).
         if (mods.shift && prev.anchor) {
-          const list = items();
+          const list = itemsRef.current();
           const anchorIdx = list.findIndex((i) => i.tuid === prev.anchor);
           const targetIdx = list.findIndex((i) => i.tuid === id);
           if (anchorIdx >= 0 && targetIdx >= 0) {
@@ -106,7 +113,7 @@ export function useSelection(orderedItems: () => Instance[]) {
         };
       });
     },
-    [items],
+    [],
   );
 
   const clear = useCallback(() => setState(EMPTY), []);

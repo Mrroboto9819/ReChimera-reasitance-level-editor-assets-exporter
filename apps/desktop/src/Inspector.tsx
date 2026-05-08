@@ -2,6 +2,8 @@ import { useState } from "react";
 import type { Instance, LevelMeshes, TextureBlobMap } from "./api";
 import { AssetPreview } from "./AssetPreview";
 import type { useEdits } from "./edits";
+import { Crosshair, Download, RefreshCw } from "lucide-react";
+import { Button, NumberInput } from "./ui";
 
 type Edits = ReturnType<typeof useEdits>;
 
@@ -198,9 +200,8 @@ export function Inspector({
         )}
 
         <div className="inspector-actions">
-          <button
-            type="button"
-            className="btn inspector-action-btn"
+          <Button
+            icon={Crosshair}
             onClick={() => onFocusSelected?.()}
             disabled={!canFocus}
             title={
@@ -209,53 +210,42 @@ export function Inspector({
                 : "Select an object to navigate to it"
             }
           >
-            <span className="inspector-action-icon" aria-hidden>
-              +
-            </span>
             Go to
-          </button>
+          </Button>
           {needsMeshes && (
-            <button
-              type="button"
-              className="btn btn-primary export-btn"
+            <Button
+              variant="primary"
+              icon={RefreshCw}
               onClick={() => onLoadMeshes?.()}
-              disabled={!onLoadMeshes || loadingMeshes}
+              disabled={!onLoadMeshes}
+              loading={loadingMeshes}
               title={
                 loadingMeshes
                   ? "Mesh decode is running in the background — interact freely"
                   : "Retry mesh decode if the auto-load failed"
               }
             >
-              <span className="export-btn-icon" aria-hidden>
-                *
-              </span>
-              <span className="export-btn-label">
-                {loadingMeshes ? "Loading meshes…" : "Reload meshes"}
-              </span>
-            </button>
+              {loadingMeshes ? "Loading meshes…" : "Reload meshes"}
+            </Button>
           )}
-          <button
-            type="button"
-            className={`btn btn-primary export-btn ${canExport ? "" : "disabled"}`}
+          <Button
+            variant="primary"
+            icon={Download}
             onClick={handleExport}
-            disabled={!canExport || exporting}
+            disabled={!canExport}
+            loading={exporting}
             title={
               canExport
                 ? `Export ${selectionCount} object(s) as .glb`
                 : "Select at least one object to export"
             }
           >
-            <span className="export-btn-icon" aria-hidden>
-              ⬇
-            </span>
-            <span className="export-btn-label">
-              {exporting
-                ? "Exporting…"
-                : selectionCount > 0
-                  ? `Export ${selectionCount} as .glb`
-                  : "Export .glb"}
-            </span>
-          </button>
+            {exporting
+              ? "Exporting…"
+              : selectionCount > 0
+                ? `Export ${selectionCount} as .glb`
+                : "Export .glb"}
+          </Button>
         </div>
 
         {selected ? (
@@ -280,10 +270,6 @@ export function Inspector({
                 <dd className="mono small">{selected.tuid.split("#")[0]}</dd>
                 <dt>Asset</dt>
                 <dd className="mono small">{selected.asset_tuid}</dd>
-                <dt>Source</dt>
-                <dd className={selected.real ? "" : "dim"}>
-                  {selected.real ? "gameplay / zones" : "debug spiral"}
-                </dd>
               </dl>
             </div>
             {(() => {
@@ -469,14 +455,11 @@ function TransformRow({
       {(["x", "y", "z"] as const).map((axis, i) => (
         <label key={axis} className={`transform-input axis-${axis}`}>
           <span className="transform-input-axis">{axis.toUpperCase()}</span>
-          <input
-            type="number"
-            value={Number.isFinite(values[i]) ? +values[i]!.toFixed(3) : 0}
-            onChange={(e) => {
-              const v = parseFloat(e.target.value);
-              if (Number.isFinite(v)) onChange(axis, v);
-            }}
+          <NumberInput
+            value={values[i] ?? 0}
+            onValueChange={(v) => onChange(axis, v)}
             step={step}
+            precision={3}
             spellCheck={false}
           />
         </label>

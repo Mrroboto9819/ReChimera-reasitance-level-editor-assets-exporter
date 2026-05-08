@@ -171,6 +171,12 @@ where
         // (Disk I/O doesn't parallelize well with one shared file handle.)
         let mut bufs: Vec<(usize, Vec<u8>, u64)> = Vec::with_capacity(slice.len());
         for (i, ptr) in slice.iter().enumerate() {
+            if ptr.length > crate::MAX_ASSET_SIZE {
+                return Err(Error::AllocLimitExceeded {
+                    size: u64::from(ptr.length),
+                    limit: u64::from(crate::MAX_ASSET_SIZE),
+                });
+            }
             mobys_file.seek(SeekFrom::Start(u64::from(ptr.offset)))?;
             let mut buf = vec![0u8; ptr.length as usize];
             mobys_file.read_exact(&mut buf)?;
@@ -323,19 +329,11 @@ fn parse_moby<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<Moby
     // Failing to parse a skeleton on a moby that's expected to have one
     // would silently break skinned rendering later, so log instead of
     // burying the error.
-    //
-    // Kill-switch: setting `RECHIMERA_SKIP_SKELETON=1` skips skeleton parse
-    // entirely — useful if you suspect skeleton parse is causing freezes
-    // and want to confirm by bypassing it.
-    let skeleton = if std::env::var("RECHIMERA_SKIP_SKELETON").is_ok() {
-        None
-    } else {
-        match read_skeleton(ig) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("warn: moby 0x{:016X} skeleton skipped: {e}", tuid);
-                None
-            }
+    let skeleton = match read_skeleton(ig) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("warn: moby 0x{:016X} skeleton skipped: {e}", tuid);
+            None
         }
     };
 

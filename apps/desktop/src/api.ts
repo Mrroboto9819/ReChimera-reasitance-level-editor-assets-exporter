@@ -29,7 +29,19 @@ export interface AssetPointer {
   length: number;
 }
 
-export type AssetKind = "shader" | "highmip" | "tie" | "moby" | "zone";
+export type AssetKind =
+  | "shader"
+  | "texture"
+  | "highmip"
+  | "cubemap"
+  | "tie"
+  | "foliage"
+  | "shrub"
+  | "moby"
+  | "animset"
+  | "cinematic"
+  | "zone"
+  | "lighting";
 
 export interface Instance {
   /** Unique placement key — instance TUID for real instances, synthetic for debug. */
@@ -44,8 +56,6 @@ export interface Instance {
   quaternion: [number, number, number, number];
   /** Per-axis scale. */
   scale: [number, number, number];
-  /** True when sourced from real gameplay data, false for debug spiral. */
-  real: boolean;
 }
 
 export const openLevel = (folder: string) =>
@@ -53,6 +63,146 @@ export const openLevel = (folder: string) =>
 
 export const listAssets = (folder: string, kind: AssetKind) =>
   invoke<AssetPointer[]>("list_assets", { folder, kind });
+
+export interface ManifestEntry {
+  /** Hex TUID. */
+  tuid: string;
+  offset: number;
+  length: number;
+}
+
+export interface ManifestGroup {
+  kind: AssetKind;
+  section_id: number;
+  /** False for asset kinds enumerated but not yet decoded by lunalib
+   *  (cubemap, foliage, shrub, cinematic, lighting, texture). The Hierarchy
+   *  shows a "decoder pending" tag for these. */
+  decoded: boolean;
+  count: number;
+  entries: ManifestEntry[];
+}
+
+export interface LevelManifest {
+  folder: string;
+  /** Engine generation. Currently always `"new"` (R2/R3/R&C ToD share the
+   *  assetlookup-based path); RFOM old-engine reader will report `"old"`. */
+  engine: "new" | "old";
+  version_major: number;
+  version_minor: number;
+  sections: Section[];
+  groups: ManifestGroup[];
+}
+
+export const buildLevelManifest = (folder: string) =>
+  invoke<LevelManifest>("build_level_manifest", { folder });
+
+// ── Disk cache (`<level_folder>/_rechimera_cache/`) ──
+
+export interface CacheManifestEntry {
+  /** `"moby"` | `"tie"` | `"texture"`. */
+  kind: "moby" | "tie" | "texture";
+  /** Hex TUID for mobys/ties; decimal id-as-string for textures. */
+  tuid: string;
+  /** Asset path-style name (mobys); empty for ties and textures. */
+  name: string;
+  /** Path under the cache root, e.g. `"mobys/0xABC.json"`. */
+  file: string;
+  size_bytes: number;
+}
+
+export interface CacheManifest {
+  version: number;
+  folder: string;
+  entries: CacheManifestEntry[];
+}
+
+export interface CacheStatus {
+  exists: boolean;
+  folder: string;
+  /** Absolute path to the cache root (whether it exists or not). */
+  cache_path: string;
+  entry_count: number;
+  mobys: number;
+  ties: number;
+  textures: number;
+  /** `true` when at least one source `.dat` is newer than the cache's
+   *  mtime snapshot, OR when the manifest is from a pre-mtime version.
+   *  UI shows a "Stale — re-extract?" hint when this is set. */
+  stale: boolean;
+}
+
+export type CacheEvent =
+  | { type: "phase"; phase: "mobys" | "ties" | "textures"; total: number }
+  | { type: "item"; kind: "moby" | "tie" | "texture"; name: string }
+  | { type: "progress"; current: number }
+  | { type: "done"; entry_count: number }
+  | { type: "error"; message: string };
+
+export const cacheStatus = (folder: string) =>
+  invoke<CacheStatus>("cache_status", { folder });
+
+export const readCachedManifest = (folder: string) =>
+  invoke<CacheManifest>("read_cached_manifest", { folder });
+
+/** Returns parsed JSON of any file in the cache (typed as `unknown`; the
+ *  caller knows the shape per `kind`). For mobys/ties this is the
+ *  `AssetMeshesDto` shape — matches what the streaming pipeline emits. */
+export const readCachedAsset = (folder: string, file: string) =>
+  invoke<unknown>("read_cached_asset", { folder, file });
+
+/** Raw bytes of a cache file. Used for PNGs since JSON-wrapping a binary
+ *  payload is wasteful. Tauri returns an `ArrayBuffer` directly. */
+export const readCachedBytes = (folder: string, file: string) =>
+  invoke<ArrayBuffer>("read_cached_bytes", { folder, file });
+
+export const extractLevelToCache = (
+  folder: string,
+  onEvent: Channel<CacheEvent>,
+) => invoke<void>("extract_level_to_cache", { folder, onEvent });
+
+export const reextractLevelCache = (
+  folder: string,
+  onEvent: Channel<CacheEvent>,
+) => invoke<void>("reextract_level_cache", { folder, onEvent });
+
+/** Copy a moby's cached `.glb` (with skeleton + animations + textures
+ *  baked in by the Rust G4 pipeline) to the user-chosen path. Replaces
+ *  the buggy `exportToGlb` (Three.js GLTFExporter) flow for cached
+ *  assets — the pre-baked file works correctly in Blender. */
+export const exportCachedMobyGlb = (
+  levelFolder: string,
+  assetTuidHex: string,
+  outPath: string,
+) =>
+  invoke<number>("export_cached_moby_glb", {
+    levelFolder,
+    assetTuidHex,
+    outPath,
+  });
+
+/** Helper: load a list of cached texture ids into a `TextureBlobMap` (the
+ *  same shape `getLevelTexturesBulk` returns). Used by the cache library
+ *  modal preview + GLB export so cached assets render with materials. */
+export async function loadCachedTextures(
+  folder: string,
+  ids: number[],
+): Promise<TextureBlobMap> {
+  const out: TextureBlobMap = new Map();
+  // Sequential for now — typical asset references 1-3 textures, so the
+  // per-IPC overhead dominates anyway. If large materials become common
+  // we'd switch to a `bulk` cache command similar to
+  // `get_level_textures_bulk`.
+  for (const id of ids) {
+    try {
+      const buf = await readCachedBytes(folder, `textures/${id}.png`);
+      out.set(id, new Blob([buf], { type: "image/png" }));
+    } catch {
+      // Texture missing from cache — skip; the renderer falls back to
+      // the default material.
+    }
+  }
+  return out;
+}
 
 export interface UFragBounds {
   tuid: string;
@@ -104,11 +254,19 @@ export interface SkeletonInfo {
   root_bone: number;
   /** Per-bone parent index. -1 = root. */
   parents: number[];
-  /** Local bind-pose matrices (column-major 4x4). May be empty if the
-   *  source moby's `tms0` pointer was null. */
+  /** Local bind-pose matrices (column-major 4x4). IT-derived default:
+   *  `tms1[parent] * tms0[child]`. Use `buildSkinnedAsset` with a
+   *  `bindStrategy` other than `"it"` to have skinning.ts recompute
+   *  these from `tms0_col` / `tms1_col`. */
   bind_local: number[][];
   /** World-space inverse bind-pose. Required by THREE.Skeleton. */
   bind_world_inverse: number[][];
+  /** Raw on-disk `tms0` (column-major). Per IT, world FORWARD bind.
+   *  Used by `buildSkinnedAsset` when `bindStrategy !== "it"`. May be
+   *  missing on older cache JSONs that pre-date the strategy switcher. */
+  tms0_col?: number[][];
+  /** Raw on-disk `tms1` (column-major). Per IT, world INVERSE bind. */
+  tms1_col?: number[][];
   /** Exponent used to scale animation scale-track values. */
   scale_shift: number;
   /** Exponent used to scale animation translation-track values
@@ -325,8 +483,12 @@ export const listGltfsInFolder = (path: string) =>
 /** Read raw bytes from any path. Used to feed GLTF files into three.js's
  *  GLTFLoader.parse() — the loader needs an ArrayBuffer for .glb or a
  *  string for .gltf. */
+/** Read raw file bytes from disk via binary IPC. Returns an
+ *  `ArrayBuffer` directly — the Rust side delivers `tauri::ipc::Response`
+ *  so the bytes don't go through a JSON number-array round-trip. ~5×
+ *  faster than the old shape on large payloads (e.g. 20 MB GLBs). */
 export const readFileBytes = (path: string) =>
-  invoke<number[]>("read_file_bytes", { path });
+  invoke<ArrayBuffer>("read_file_bytes", { path });
 
 /* ────────────────────────────────────────────────────────────────────────
  * Animation — fetch a decoded clip for a character's animset hash.

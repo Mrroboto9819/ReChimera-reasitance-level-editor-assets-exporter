@@ -28,6 +28,11 @@ type Edits = ReturnType<typeof useEdits>;
 const EMPTY_TEXTURE_BLOBS: TextureBlobMap = new Map();
 
 const SELECTED_COLOR = new THREE.Color("#ffbc33");
+/// White emissive tint applied when a material gets an emissive map
+/// late. Module-level so we don't allocate a fresh THREE.Color per
+/// render — cheap individually but the audit flagged it for being in
+/// the render body.
+const EMISSIVE_TINT_WHITE = new THREE.Color(0xffffff);
 
 export interface ViewSettings {
   showMobys: boolean;
@@ -509,13 +514,24 @@ function AssetGroup({
     return m;
   }, [instances, kind]);
 
+  // Asset-by-tuid index. Memoized so the material-refresh loop below
+  // is O(1) per asset instead of O(N) — was a flagged hot path
+  // (Viewport.tsx:512 in the original audit) where every render
+  // scanned the entire meshes array per grouped asset, costing
+  // ~O(n²) for hundreds of placements.
+  const meshesByTuid = useMemo(() => {
+    const m = new Map<string, AssetMeshes>();
+    for (const a of meshes) m.set(a.asset_tuid, a);
+    return m;
+  }, [meshes]);
+
   // Materials are cheap to build, so refresh material refs on every render
   // (so late-arriving textures attach without rebuilding). Geometries are
   // the expensive part — those go through the idle queue below.
   for (const [assetTuid] of grouped) {
     const existing = cache.byAsset.get(assetTuid);
     if (!existing) continue;
-    const a = meshes.find((x) => x.asset_tuid === assetTuid);
+    const a = meshesByTuid.get(assetTuid);
     if (!a) continue;
     for (let i = 0; i < a.submeshes.length && i < existing.length; i++) {
       const s = a.submeshes[i]!;
@@ -911,6 +927,20 @@ function CameraFocus({
   const { camera, controls } = useThree();
   const lastFocusedRef = useRef<string | null>(null);
   const lastVersionRef = useRef<number>(-1);
+  // In-flight GSAP tweens so rapid re-selection cancels the previous
+  // animation instead of letting two tweens fight over the camera.
+  // Without this, clicking three different objects in 200ms ran three
+  // concurrent tweens and the last-finished won, regardless of which
+  // selection was current.
+  const tweensRef = useRef<gsap.core.Tween[]>([]);
+
+  // Cancel any tweens still running when the component unmounts.
+  useEffect(() => {
+    return () => {
+      for (const t of tweensRef.current) t.kill();
+      tweensRef.current = [];
+    };
+  }, []);
 
   useEffect(() => {
     if (!primary) return;
@@ -924,6 +954,11 @@ function CameraFocus({
     if (!inst) return;
     lastFocusedRef.current = primary;
     lastVersionRef.current = focusVersion;
+
+    // Kill any tweens from a previous selection — see comment on
+    // tweensRef above. Cheap (each kill() is O(1)) and idempotent.
+    for (const t of tweensRef.current) t.kill();
+    tweensRef.current = [];
 
     const orbit = controls as unknown as OrbitControlsImpl;
     const cam = camera as THREE.PerspectiveCamera;
@@ -941,21 +976,25 @@ function CameraFocus({
     const newOffset = currentOffset.clone().normalize().multiplyScalar(distance);
     const newCamPos = targetPos.clone().add(newOffset);
 
-    gsap.to(orbit.target, {
-      x: targetPos.x,
-      y: targetPos.y,
-      z: targetPos.z,
-      duration: 0.5,
-      ease: "power2.out",
-      onUpdate: () => orbit.update(),
-    });
-    gsap.to(cam.position, {
-      x: newCamPos.x,
-      y: newCamPos.y,
-      z: newCamPos.z,
-      duration: 0.5,
-      ease: "power2.out",
-    });
+    tweensRef.current.push(
+      gsap.to(orbit.target, {
+        x: targetPos.x,
+        y: targetPos.y,
+        z: targetPos.z,
+        duration: 0.5,
+        ease: "power2.out",
+        onUpdate: () => orbit.update(),
+      }),
+    );
+    tweensRef.current.push(
+      gsap.to(cam.position, {
+        x: newCamPos.x,
+        y: newCamPos.y,
+        z: newCamPos.z,
+        duration: 0.5,
+        ease: "power2.out",
+      }),
+    );
   }, [primary, focusVersion, instances, camera, controls]);
 
   return null;
@@ -1234,7 +1273,7 @@ function SkinnedSelectionOverlay({
       if (normal && mat.normalMap !== normal) { mat.normalMap = normal; touched = true; }
       if (emissive && mat.emissiveMap !== emissive) {
         mat.emissiveMap = emissive;
-        mat.emissive = new THREE.Color(0xffffff);
+        mat.emissive = EMISSIVE_TINT_WHITE;
         mat.emissiveIntensity = 0.7;
         touched = true;
       }

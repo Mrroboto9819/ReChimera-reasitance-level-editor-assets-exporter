@@ -9,6 +9,18 @@
 pub mod animation;
 pub mod assetlookup;
 pub mod error;
+pub mod gltf_export;
+
+/// Hard cap on a single asset payload (slice of `mobys.dat` / `ties.dat` /
+/// `zones.dat` etc.). Disk-derived `length` fields are attacker-controllable;
+/// without a cap a crafted `assetlookup.dat` could request a 4 GiB allocation.
+pub const MAX_ASSET_SIZE: u32 = 512 * 1024 * 1024;
+
+/// Hard cap on the per-section entry count derived from `section.length`.
+/// Real levels have at most a few thousand entries per section; this cap
+/// stops a crafted IGHW with a 4 GiB section length from seeding a multi-GiB
+/// `Vec::with_capacity` before we've read a single entry.
+pub const MAX_SECTION_ENTRIES: usize = 4 * 1024 * 1024;
 pub mod gameplay;
 pub mod igfile;
 pub mod math;
@@ -27,6 +39,9 @@ pub use animation::{
 };
 pub use assetlookup::{AssetKind, AssetLookup, AssetPointer};
 pub use error::{Error, Result};
+pub use gltf_export::{
+    write_moby_geometry_glb, write_moby_glb_full, write_moby_glb_with_animations,
+};
 pub use gameplay::{read_gameplay, GameplayLayout, MobyInstance, Region};
 pub use igfile::{IgFile, SectionHeader, Version};
 pub use moby::{

@@ -63,6 +63,12 @@ impl<R: Read + Seek> IgFile<R> {
         };
 
         sh.seek_to(sections_offset)?;
+        if (section_count as usize) > crate::MAX_SECTION_ENTRIES {
+            return Err(Error::AllocLimitExceeded {
+                size: u64::from(section_count),
+                limit: crate::MAX_SECTION_ENTRIES as u64,
+            });
+        }
         let mut sections = Vec::with_capacity(section_count as usize);
         for _ in 0..section_count {
             let id = sh.read_u32()?;

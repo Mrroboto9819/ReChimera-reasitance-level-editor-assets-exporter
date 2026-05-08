@@ -1986,6 +1986,147 @@ textarea {
   border-radius: 3px;
 }
 
+/* Drop-target indicator — appears at the top of the modal body and
+   highlights when a drag is over the window. The background-image uses
+   an inline SVG for the dashed border so we can animate it later. */
+.open-level-droptarget {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1.5px dashed var(--hairline);
+  background: rgba(255, 255, 255, 0.015);
+  color: var(--text-3);
+  transition:
+    border-color 120ms ease-out,
+    background 120ms ease-out,
+    color 120ms ease-out;
+}
+.open-level-droptarget-text {
+  font-size: 11.5px;
+  letter-spacing: 0.3px;
+}
+.open-level.drop-over .open-level-droptarget {
+  border-color: var(--accent-red);
+  background: hsla(0, 100%, 70%, 0.08);
+  color: var(--text-1);
+}
+
+/* ── UI primitives (src/ui) ── */
+.text-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-1);
+  color: var(--text-3);
+  min-width: 0;
+}
+.text-input input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--text-1);
+  font-size: 12px;
+  font-family: inherit;
+}
+.text-input:focus-within {
+  border-color: var(--accent-blue);
+}
+
+.number-input {
+  width: 64px;
+  background: var(--bg-1);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-1);
+  padding: 3px 6px;
+  color: var(--text-1);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  text-align: right;
+}
+.number-input:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+}
+.checkbox input {
+  margin: 0;
+  cursor: pointer;
+}
+.checkbox.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.checkbox.disabled input {
+  cursor: not-allowed;
+}
+
+/* warn variant for Button — reuses accent-yellow */
+.btn.btn-warn {
+  color: var(--accent-yellow);
+}
+.btn.btn-warn:hover:not(:disabled) {
+  background: hsla(43, 100%, 60%, 0.12);
+  color: var(--accent-yellow);
+}
+
+/* Bind-pose strategy selector — radio-pill row inside RawCharacterModal. */
+.bind-strategy-selector {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bind-strategy-label {
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.bind-strategy-options {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--bg-1);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-1);
+  padding: 2px;
+}
+.bind-strategy-btn {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text-3);
+  padding: 3px 8px;
+  border-radius: calc(var(--r-1) - 2px);
+  cursor: pointer;
+  text-transform: lowercase;
+  letter-spacing: 0.3px;
+}
+.bind-strategy-btn:hover {
+  color: var(--text-1);
+  background: rgba(255, 255, 255, 0.04);
+}
+.bind-strategy-btn.active {
+  color: var(--text-1);
+  background: hsla(202, 100%, 67%, 0.18);
+}
+
 .btn-update {
   background: linear-gradient(180deg, hsl(35, 100%, 56%), hsl(28, 100%, 50%));
   color: #1a0e00;
@@ -2128,6 +2269,214 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+
+@keyframes rc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: rc-spin 1s linear infinite;
+}
+
+/* Status-bar cell rendered as a button (clickable to open cache lib). */
+.statusbar-cell-button {
+  background: transparent;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.statusbar-cell-button:hover {
+  color: var(--text-1);
+  text-decoration: underline;
+}
+.statusbar-cell-button.stale {
+  color: var(--accent-yellow);
+}
+.statusbar-cell-button.stale:hover {
+  color: var(--accent-yellow);
+}
+
+/* ── Cache Library modal ── */
+.cache-library-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.cache-library-body {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 16px;
+  height: 78vh;
+  min-height: 560px;
+}
+.cache-library-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-1);
+  overflow: hidden;
+  background: var(--bg-1);
+}
+.cache-library-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-1);
+}
+.cache-library-tabs {
+  display: inline-flex;
+  gap: 2px;
+}
+.cache-library-tab {
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: var(--r-1);
+  cursor: pointer;
+  font-family: inherit;
+}
+.cache-library-tab:hover {
+  color: var(--text-1);
+  background: rgba(255, 255, 255, 0.04);
+}
+.cache-library-tab.active {
+  color: var(--text-1);
+  background: hsla(202, 100%, 67%, 0.18);
+}
+.cache-library-reextract {
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: var(--r-1);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: inherit;
+}
+.cache-library-reextract:hover:not(:disabled) {
+  color: var(--text-1);
+  background: rgba(255, 255, 255, 0.04);
+}
+.cache-library-reextract:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.cache-library-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-1);
+  color: var(--text-3);
+}
+.cache-library-search input {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--text-1);
+  font-size: 12px;
+  font-family: inherit;
+}
+.cache-library-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  flex: 1;
+}
+.cache-library-bucket {
+  margin: 0;
+}
+.cache-library-group {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-3);
+  padding: 6px 10px 4px;
+  background: var(--bg-2);
+  position: sticky;
+  top: 0;
+  border-bottom: 1px solid var(--border-1);
+}
+.cache-library-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 10px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  color: var(--text-2);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.cache-library-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-1);
+}
+.cache-library-row.active {
+  background: hsla(202, 100%, 67%, 0.18);
+  color: var(--text-1);
+}
+.cache-library-leaf {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cache-library-tuid {
+  font-size: 10px;
+  color: var(--text-3);
+  margin-left: 8px;
+}
+.cache-library-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-1);
+  padding: 12px;
+  background: var(--bg-1);
+  overflow: auto;
+}
+.cache-library-canvas {
+  flex: 1 1 auto;
+  min-height: 420px;
+  border-radius: var(--r-1);
+  overflow: hidden;
+  background: var(--bg-2);
+}
+.cache-library-meta {
+  flex: 0 0 auto;
+}
+.cache-library-meta {
+  margin: 0;
+}
+.cache-library-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
 }
 
 .toolbar-btn:hover:not(:disabled) {

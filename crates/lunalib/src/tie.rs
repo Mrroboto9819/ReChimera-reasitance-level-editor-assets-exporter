@@ -104,6 +104,12 @@ where
     let mut ties_file = File::open(&ties_path)?;
 
     for ptr in filtered {
+        if ptr.length > crate::MAX_ASSET_SIZE {
+            return Err(crate::error::Error::AllocLimitExceeded {
+                size: u64::from(ptr.length),
+                limit: u64::from(crate::MAX_ASSET_SIZE),
+            });
+        }
         ties_file.seek(SeekFrom::Start(u64::from(ptr.offset)))?;
         let mut buf = vec![0u8; ptr.length as usize];
         ties_file.read_exact(&mut buf)?;

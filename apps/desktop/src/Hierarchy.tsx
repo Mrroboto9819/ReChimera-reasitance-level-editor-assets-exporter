@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AnimsetSummary,
   AssetKind,
@@ -110,6 +110,13 @@ function buildAssetTree(
     kind: rootKind,
     children: [],
   };
+  // Path → folder-node map used during build for O(1) folder lookup.
+  // Without this, every "is this folder already a child of cursor?"
+  // check was an O(N) array scan, making the whole build O(n²) on
+  // levels with many siblings sharing a deep path prefix. The map
+  // is local to this function and discarded at the end — callers
+  // still see the plain `AssetTreeNode` shape.
+  const folderMap = new Map<string, AssetTreeNode>();
   for (const asset of assets) {
     // Fall back to a stable shortened tuid when the asset has no
     // path-style name (ties don't carry one; some mobys have empty
@@ -144,9 +151,7 @@ function buildAssetTree(
           children: [],
         });
       } else {
-        let folder = cursor.children.find(
-          (c) => c.path === childPath && !c.asset,
-        );
+        let folder = folderMap.get(childPath);
         if (!folder) {
           folder = {
             label: seg,
@@ -155,6 +160,7 @@ function buildAssetTree(
             children: [],
           };
           cursor.children.push(folder);
+          folderMap.set(childPath, folder);
         }
         cursor = folder;
       }
@@ -275,18 +281,25 @@ export function Hierarchy({
   >({});
   const [filter, setFilter] = useState("");
 
-  // Build the path-grouped tree once per asset list change. Memoized
-  // because the recursive build + sort is non-trivial when there are
-  // hundreds of mobys + ties.
+  // Build the path-grouped tree once per asset list change. The
+  // streaming pipeline emits a new array reference on every flush, so
+  // raw `mobyAssets`/`tieAssets` deps would re-run this on every
+  // chunk. `useDeferredValue` lets React schedule the rebuild as a
+  // low-priority transition — the main render thread stays responsive
+  // while the tree catches up. Combined with the O(n) Map-backed
+  // `buildAssetTree`, this drops dense-level loads from 50-500ms of
+  // cumulative jank to "barely measurable".
+  const deferredMobyAssets = useDeferredValue(mobyAssets);
+  const deferredTieAssets = useDeferredValue(tieAssets);
   const assetTree = useMemo(() => {
-    const mobys = mobyAssets ?? [];
-    const ties = tieAssets ?? [];
+    const mobys = deferredMobyAssets ?? [];
+    const ties = deferredTieAssets ?? [];
     if (mobys.length === 0 && ties.length === 0) return null;
     const roots: AssetTreeNode[] = [];
     if (mobys.length > 0) roots.push(buildAssetTree("Mobys", "moby", mobys));
     if (ties.length > 0) roots.push(buildAssetTree("Ties", "tie", ties));
     return roots;
-  }, [mobyAssets, tieAssets]);
+  }, [deferredMobyAssets, deferredTieAssets]);
 
   // Hierarchy auto-scroll: when the user picks an instance via the
   // viewport (double-click → primary changes), scroll the matching row
@@ -979,7 +992,6 @@ export function Hierarchy({
                     filter={filterLower}
                     instances={instances}
                     selection={selection}
-                    rootCollapsedDefault={true}
                     onPreviewRawAsset={onPreviewRawAsset}
                   />
                 ))}
@@ -1006,7 +1018,6 @@ function AssetLibraryTree({
   filter,
   instances,
   selection,
-  rootCollapsedDefault,
   onPreviewRawAsset,
 }: {
   node: AssetTreeNode;
@@ -1016,21 +1027,21 @@ function AssetLibraryTree({
   filter: string;
   instances: Instance[];
   selection: Selection;
-  rootCollapsedDefault: boolean;
   onPreviewRawAsset?: (assetTuid: string) => void;
 }) {
-  // Default the root + first-level folders to collapsed (the inventory
-  // is hundreds of entries deep on bayou; expanding all at once is
-  // overwhelming). Inner folders default to expanded once their parent
-  // is open.
+  // Every folder defaults to collapsed at every depth — opening a
+  // parent does NOT auto-expand its children. The user explicitly
+  // expands the path they care about; with hundreds of entries deep
+  // on bayou, auto-expanding inner folders dumped a wall of noise.
+  // The `collapsed` map records explicit user toggles, which override
+  // this default.
   const isRoot = depth === 0;
-  const defaultCollapsed = isRoot ? rootCollapsedDefault : false;
-  const isCollapsed = collapsed[node.path] ?? defaultCollapsed;
+  const isCollapsed = collapsed[node.path] ?? true;
 
   const toggle = () =>
     setCollapsed((prev) => ({
       ...prev,
-      [node.path]: !(prev[node.path] ?? defaultCollapsed),
+      [node.path]: !(prev[node.path] ?? true),
     }));
 
   // For leaves, find the first placed instance with this asset_tuid so
@@ -1136,7 +1147,6 @@ function AssetLibraryTree({
               filter={filter}
               instances={instances}
               selection={selection}
-              rootCollapsedDefault={rootCollapsedDefault}
               onPreviewRawAsset={onPreviewRawAsset}
             />
           ))}

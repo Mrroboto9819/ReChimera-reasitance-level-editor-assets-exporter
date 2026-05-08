@@ -115,8 +115,19 @@ impl<R: Read + Seek> Archive<R> {
         } else {
             header.toc_entry_size
         };
-        let block_sizes_bytes =
-            header.toc_size - HEADER_BYTES - entry_size * header.toc_entries;
+        // All three operands are attacker-controlled (from the PSARC header on
+        // disk). Without `checked_*` a crafted file with `toc_entries =
+        // 0xFFFF_FFFF` wraps the subtraction and yields a multi-GiB
+        // `Vec::with_capacity`, OOM'ing the process before any data is even
+        // read.
+        let entries_bytes = entry_size
+            .checked_mul(header.toc_entries)
+            .ok_or(Error::MalformedHeader("entry_size * toc_entries overflows u32"))?;
+        let block_sizes_bytes = header
+            .toc_size
+            .checked_sub(HEADER_BYTES)
+            .and_then(|x| x.checked_sub(entries_bytes))
+            .ok_or(Error::MalformedHeader("toc_size smaller than header + entries"))?;
         let block_sizes_count = (block_sizes_bytes / 2) as usize;
         let mut block_sizes = Vec::with_capacity(block_sizes_count);
         for _ in 0..block_sizes_count {

@@ -1,8 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cache;
+
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use std::collections::{HashMap, HashSet};
 
@@ -12,13 +15,14 @@ use lunalib::{
     bulk_extract_pngs, decode_animation, downsample_rgba, encode_png, extract_bank_sounds,
     list_sounds as list_sounds_in, read_animation_control, read_animation_header, read_gameplay,
     read_moby_assets_with_total, read_shaders, read_textures_with_total,
-    read_tie_assets_with_total, read_zones, read_zones_streaming, AssetKind, AssetLookup, IgFile,
-    ShaderInfo, SoundKind,
+    read_tie_assets_with_total, read_zones, read_zones_streaming, AssetKind, AssetLookup,
+    AssetPointer, IgFile, ShaderInfo, SoundKind,
 };
 use serde::Serialize;
 use tauri::ipc::Channel;
+use tauri::State;
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct SectionDto {
     id: u32,
     offset: u32,
@@ -65,8 +69,6 @@ struct InstanceDto {
     quaternion: [f32; 4],
     /// Per-axis scale.
     scale: [f32; 3],
-    /// True when sourced from real gameplay/zone data, false for debug spiral.
-    real: bool,
 }
 
 #[derive(Serialize)]
@@ -94,7 +96,7 @@ struct LevelLayoutDto {
 /// it up in the same texture cache (filled by `LevelEvent::Texture`) for
 /// all three slots. `None` means the shader/asset doesn't reference one.
 #[derive(Serialize)]
-struct MeshDto {
+pub(crate) struct MeshDto {
     positions_b64: String,
     uvs_b64: String,
     indices_b64: String,
@@ -134,7 +136,7 @@ struct TextureDto {
 /// Inspector can show "Skeleton: N bones"; skin weights + animation come
 /// in later phases.
 #[derive(Serialize)]
-struct SkeletonDto {
+pub(crate) struct SkeletonDto {
     /// Number of bones — convenience so the UI doesn't have to count.
     bone_count: usize,
     /// Index of the root bone in `parents` / `bind_local`.
@@ -144,10 +146,19 @@ struct SkeletonDto {
     parents: Vec<i16>,
     /// Per-bone local bind-pose (column-major 4x4). Length == `bone_count`
     /// when present, empty when the moby's tms0 pointer was null.
+    /// IT-derived default: `tms1[parent] * tms0[child]`. The FE can
+    /// recompute under alternative strategies from `tms0_col` / `tms1_col`.
     bind_local: Vec<[f32; 16]>,
-    /// World-space inverse bind-pose. Length == `bone_count` when present.
+    /// World-space inverse bind-pose (= on-disk `tms1`, column-major).
     /// Required by `THREE.Skeleton`'s `boneInverses` array.
     bind_world_inverse: Vec<[f32; 16]>,
+    /// Raw on-disk `tms0`, column-major. Per IT this is the world
+    /// FORWARD bind matrix; FE strategy selector uses it to recompute
+    /// `bind_local` if the empirical answer for R2 differs.
+    tms0_col: Vec<[f32; 16]>,
+    /// Raw on-disk `tms1`, column-major. Per IT this is the world
+    /// INVERSE bind matrix.
+    tms1_col: Vec<[f32; 16]>,
     /// Power-of-2 exponent for animation scale values. Frontend computes
     /// `scale_scale = 2 ^ scale_shift` when calling `fetch_animset_clip`.
     scale_shift: u16,
@@ -160,7 +171,7 @@ struct SkeletonDto {
 /// Per-asset geometry: an asset is one moby/tie kind, made of N submeshes.
 /// The instance system reuses these via `InstancedMesh` in the frontend.
 #[derive(Serialize)]
-struct AssetMeshesDto {
+pub(crate) struct AssetMeshesDto {
     asset_tuid: String,
     /// Path-style name from section 0xD200 (e.g.
     /// `"entities/character/weapon/sawgun"`). Empty for mobys whose
@@ -235,7 +246,7 @@ fn downsample_dims(width: u32, height: u32, max_dim: u32) -> (u32, u32) {
     (new_w.max(1), new_h.max(1))
 }
 
-fn mesh_dto(
+pub(crate) fn mesh_dto(
     positions: Vec<f32>,
     uvs: Vec<f32>,
     indices: Vec<u32>,
@@ -260,7 +271,25 @@ fn mesh_dto(
 /// Build a SkeletonDto from the lib's Skeleton, or None for rigless mobys.
 /// Ties don't have skeletons — they're static — so this only gets called
 /// from the moby decode paths.
-fn build_skeleton_dto(skel: &Option<lunalib::Skeleton>) -> Option<SkeletonDto> {
+/// Resolve `(albedo, normal, emissive)` texture ids for a shader-table
+/// index. Returns all-`None` when the index is out of range or the
+/// referenced shader isn't in the loaded shader map — both happen
+/// legitimately on some assets and shouldn't abort the load.
+pub(crate) fn resolve_shader_textures(
+    shaders: &HashMap<u64, ShaderInfo>,
+    shader_tuids: &[u64],
+    shader_index: usize,
+) -> (Option<u32>, Option<u32>, Option<u32>) {
+    let Some(&st) = shader_tuids.get(shader_index) else {
+        return (None, None, None);
+    };
+    let Some(s) = shaders.get(&st) else {
+        return (None, None, None);
+    };
+    (s.albedo_tex_id, s.normal_tex_id, s.expensive_tex_id)
+}
+
+pub(crate) fn build_skeleton_dto(skel: &Option<lunalib::Skeleton>) -> Option<SkeletonDto> {
     let s = skel.as_ref()?;
     Some(SkeletonDto {
         bone_count: s.bones.len(),
@@ -268,20 +297,15 @@ fn build_skeleton_dto(skel: &Option<lunalib::Skeleton>) -> Option<SkeletonDto> {
         parents: s.bones.iter().map(|b| b.parent_index).collect(),
         bind_local: s.bind_local.clone(),
         bind_world_inverse: s.bind_world_inverse.clone(),
+        tms0_col: s.tms0_col.clone(),
+        tms1_col: s.tms1_col.clone(),
         scale_shift: s.scale_shift,
         translation_shift: s.translation_shift,
     })
 }
 
 fn parse_kind(name: &str) -> Option<AssetKind> {
-    match name {
-        "shader" => Some(AssetKind::Shader),
-        "highmip" => Some(AssetKind::HighMip),
-        "tie" => Some(AssetKind::Tie),
-        "moby" => Some(AssetKind::Moby),
-        "zone" => Some(AssetKind::Zone),
-        _ => None,
-    }
+    AssetKind::all().iter().copied().find(|k| k.name() == name)
 }
 
 fn assetlookup_path(folder: &str) -> PathBuf {
@@ -294,11 +318,42 @@ fn open_lookup(folder: &str) -> Result<AssetLookup<BufReader<File>>, String> {
     AssetLookup::open(BufReader::new(file)).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn open_level(folder: String) -> Result<LevelSummary, String> {
-    let mut lookup = open_lookup(&folder)?;
+/// Per-folder cache of `assetlookup.dat`'s parsed contents.
+///
+/// Without this, `open_level` + the FE's typical "list all kinds" sequence
+/// re-opens and re-parses the same `assetlookup.dat` 6 times in a row. The
+/// cache memoizes the section table + every kind's pointer list keyed by
+/// folder path, so the SECOND command onward is just a HashMap lookup.
+///
+/// Scope: only `open_level` and `list_assets` use it today. Other commands
+/// (`level_meshes_stream` etc.) still call `open_lookup` directly because
+/// they need the live IgFile reader for sections beyond the pointer tables;
+/// wiring them in is a larger refactor.
+struct CachedFolder {
+    version_major: u16,
+    version_minor: u16,
+    sections: Vec<SectionDto>,
+    pointers_by_section: HashMap<u32, Vec<AssetPointer>>,
+}
 
-    let sections = lookup
+#[derive(Default)]
+struct AssetCache {
+    folders: HashMap<String, CachedFolder>,
+}
+
+impl AssetCache {
+    fn ensure(&mut self, folder: &str) -> Result<&CachedFolder, String> {
+        if !self.folders.contains_key(folder) {
+            let entry = load_cached_folder(folder)?;
+            self.folders.insert(folder.to_string(), entry);
+        }
+        Ok(self.folders.get(folder).expect("just inserted"))
+    }
+}
+
+fn load_cached_folder(folder: &str) -> Result<CachedFolder, String> {
+    let mut lookup = open_lookup(folder)?;
+    let sections: Vec<SectionDto> = lookup
         .file
         .sections
         .iter()
@@ -309,32 +364,65 @@ fn open_level(folder: String) -> Result<LevelSummary, String> {
             length: s.length,
         })
         .collect();
-
-    let mut asset_counts = Vec::new();
+    let mut pointers_by_section = HashMap::new();
     for kind in AssetKind::all() {
         let ptrs = lookup.pointers(*kind).map_err(|e| e.to_string())?;
-        asset_counts.push(AssetCount {
-            kind: kind.name(),
-            section_id: kind.section_id(),
-            count: ptrs.len(),
-            present: !ptrs.is_empty(),
-        });
+        pointers_by_section.insert(kind.section_id(), ptrs);
     }
-
-    Ok(LevelSummary {
-        folder,
+    Ok(CachedFolder {
         version_major: lookup.file.version.major,
         version_minor: lookup.file.version.minor,
         sections,
+        pointers_by_section,
+    })
+}
+
+#[tauri::command]
+fn open_level(
+    folder: String,
+    cache: State<'_, Mutex<AssetCache>>,
+) -> Result<LevelSummary, String> {
+    let mut cache = cache.lock().map_err(|e| format!("cache lock: {e}"))?;
+    let entry = cache.ensure(&folder)?;
+    let asset_counts = AssetKind::all()
+        .iter()
+        .map(|kind| {
+            let count = entry
+                .pointers_by_section
+                .get(&kind.section_id())
+                .map(|v| v.len())
+                .unwrap_or(0);
+            AssetCount {
+                kind: kind.name(),
+                section_id: kind.section_id(),
+                count,
+                present: count > 0,
+            }
+        })
+        .collect();
+    Ok(LevelSummary {
+        folder: folder.clone(),
+        version_major: entry.version_major,
+        version_minor: entry.version_minor,
+        sections: entry.sections.clone(),
         asset_counts,
     })
 }
 
 #[tauri::command]
-fn list_assets(folder: String, kind: String) -> Result<Vec<AssetPointerDto>, String> {
+fn list_assets(
+    folder: String,
+    kind: String,
+    cache: State<'_, Mutex<AssetCache>>,
+) -> Result<Vec<AssetPointerDto>, String> {
     let kind = parse_kind(&kind).ok_or_else(|| format!("unknown asset kind: {kind}"))?;
-    let mut lookup = open_lookup(&folder)?;
-    let ptrs = lookup.pointers(kind).map_err(|e| e.to_string())?;
+    let mut cache = cache.lock().map_err(|e| format!("cache lock: {e}"))?;
+    let entry = cache.ensure(&folder)?;
+    let ptrs = entry
+        .pointers_by_section
+        .get(&kind.section_id())
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
     Ok(ptrs
         .iter()
         .map(|p| AssetPointerDto {
@@ -345,25 +433,97 @@ fn list_assets(folder: String, kind: String) -> Result<Vec<AssetPointerDto>, Str
         .collect())
 }
 
-/// Phase 3b: real placements parsed from gameplay.dat (mobys) and zones.dat
-/// (ties + UFrag terrain bounds). Falls back to a debug Fibonacci-spiral if
-/// neither parser produces output, so the viewport always has something.
+#[derive(Serialize)]
+struct ManifestEntry {
+    /// Hex-formatted TUID (`0x{:016X}`).
+    tuid: String,
+    offset: u32,
+    length: u32,
+}
+
+#[derive(Serialize)]
+struct ManifestGroup {
+    kind: &'static str,
+    section_id: u32,
+    /// `false` for asset kinds we enumerate but don't yet have decoders for
+    /// (Cubemap, Foliage, Shrub, Cinematic, Lighting, Texture). The FE
+    /// shows a "decoder pending" tag so users can see they exist in the
+    /// level even though the viewport can't render them yet.
+    decoded: bool,
+    count: usize,
+    entries: Vec<ManifestEntry>,
+}
+
+#[derive(Serialize)]
+struct LevelManifest {
+    folder: String,
+    /// Engine generation. Currently always `"new"` (R2/R3/R&C ToD share this
+    /// path); the eventual RFOM old-engine reader will report `"old"`.
+    engine: &'static str,
+    version_major: u16,
+    version_minor: u16,
+    sections: Vec<SectionDto>,
+    groups: Vec<ManifestGroup>,
+}
+
+/// Walk `assetlookup.dat` and return one big tree describing every asset
+/// kind defined in the IT class registry. Mirrors the shape of
+/// InsomniaToolset's `extract_assets` listing pass — every TUID/offset/length
+/// surfaced in one shot, grouped by kind. The FE Hierarchy renders this
+/// tree directly. Cached via `AssetCache`, so subsequent calls for the same
+/// folder are an in-memory walk.
+#[tauri::command]
+fn build_level_manifest(
+    folder: String,
+    cache: State<'_, Mutex<AssetCache>>,
+) -> Result<LevelManifest, String> {
+    let mut cache = cache.lock().map_err(|e| format!("cache lock: {e}"))?;
+    let entry = cache.ensure(&folder)?;
+    let groups = AssetKind::all()
+        .iter()
+        .map(|kind| {
+            let ptrs = entry
+                .pointers_by_section
+                .get(&kind.section_id())
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            let entries: Vec<ManifestEntry> = ptrs
+                .iter()
+                .map(|p| ManifestEntry {
+                    tuid: format!("0x{:016X}", p.tuid),
+                    offset: p.offset,
+                    length: p.length,
+                })
+                .collect();
+            ManifestGroup {
+                kind: kind.name(),
+                section_id: kind.section_id(),
+                decoded: kind.has_decoder(),
+                count: entries.len(),
+                entries,
+            }
+        })
+        .collect();
+    Ok(LevelManifest {
+        folder: folder.clone(),
+        engine: "new",
+        version_major: entry.version_major,
+        version_minor: entry.version_minor,
+        sections: entry.sections.clone(),
+        groups,
+    })
+}
+
+/// Real placements parsed from `gameplay.dat` (mobys) and `zones.dat`
+/// (ties + UFrag terrain bounds). Returns empty lists if a level genuinely
+/// has none of those — the FE handles the empty case.
 #[tauri::command]
 fn level_layout(folder: String) -> Result<LevelLayoutDto, String> {
     let mut instances = Vec::new();
     instances.extend(real_moby_layout(&folder).unwrap_or_default());
     instances.extend(real_tie_layout(&folder).unwrap_or_default());
-
     let ufrags = real_ufrag_bounds(&folder).unwrap_or_default();
-
-    if !instances.is_empty() || !ufrags.is_empty() {
-        return Ok(LevelLayoutDto { instances, ufrags });
-    }
-
-    Ok(LevelLayoutDto {
-        instances: debug_spiral_layout(&folder)?,
-        ufrags: Vec::new(),
-    })
+    Ok(LevelLayoutDto { instances, ufrags })
 }
 
 fn real_moby_layout(folder: &str) -> Option<Vec<InstanceDto>> {
@@ -379,7 +539,6 @@ fn real_moby_layout(folder: &str) -> Option<Vec<InstanceDto>> {
                 position: inst.position,
                 quaternion: zyx_euler_to_quat(inst.rotation),
                 scale: [inst.scale, inst.scale, inst.scale],
-                real: true,
             });
         }
     }
@@ -399,7 +558,6 @@ fn real_tie_layout(folder: &str) -> Option<Vec<InstanceDto>> {
                 position: inst.position,
                 quaternion: inst.quaternion,
                 scale: inst.scale,
-                real: true,
             });
         }
     }
@@ -425,45 +583,17 @@ fn real_ufrag_bounds(folder: &str) -> Option<Vec<UFragDto>> {
     (!out.is_empty()).then_some(out)
 }
 
-fn debug_spiral_layout(folder: &str) -> Result<Vec<InstanceDto>, String> {
-    let mut lookup = open_lookup(folder)?;
-
-    let kinds = [
-        (AssetKind::Tie, -25.0_f32, 0.0_f32),
-        (AssetKind::Moby, 25.0_f32, 1.5_f32),
-    ];
-
-    let golden_angle = std::f32::consts::PI * (3.0 - 5.0_f32.sqrt());
-    let mut out = Vec::new();
-
-    for (kind, x_anchor, y) in kinds {
-        let ptrs = lookup.pointers(kind).map_err(|e| e.to_string())?;
-        for (i, p) in ptrs.iter().enumerate() {
-            let theta = (i as f32) * golden_angle;
-            let r = (i as f32).sqrt() * 1.3;
-            let tuid_hex = format!("0x{:016X}", p.tuid);
-            out.push(InstanceDto {
-                tuid: format!("{tuid_hex}#{i}"),
-                asset_tuid: tuid_hex,
-                kind: kind.name(),
-                name: format!("{}_{i}", kind.name()),
-                position: [x_anchor + r * theta.cos(), y, r * theta.sin()],
-                quaternion: [0.0, 0.0, 0.0, 1.0],
-                scale: [1.0, 1.0, 1.0],
-                real: false,
-            });
-        }
-    }
-    Ok(out)
-}
-
 /// Items per progress chunk. Mesh buffers are sent as compact base64 binary,
 /// so we can hand manageable groups to the WebView and viewport.
 const CHUNK_SIZE: usize = 4;
-/// Yield roughly one frame between chunks so the WebView can decode the
-/// queued messages, commit React state, and let the viewport build geometry.
-const CHUNK_PAUSE_MS: u64 = 16;
-/// frontend can build BUILD_BATCH=2 mobys × 3 renders per chunk window.
+/// Cooperative throttle between chunks. Drops the worker thread for a few
+/// milliseconds so the WebView IPC pump can drain queued messages and React
+/// can commit its state. Tuned down from 16ms — at 4ms we still give the FE
+/// breathing room across ~hundreds of chunks per phase, but level loads
+/// finish ~3-5s sooner on dense levels. If FE backpressure becomes a problem
+/// (visible jank on stream flush), lower CHUNK_SIZE or memoize the
+/// Hierarchy tree rebuild on the FE side first.
+const CHUNK_PAUSE_MS: u64 = 4;
 #[inline(always)]
 fn chunk_yield(counter: usize) {
     if counter > 0 && counter % CHUNK_SIZE == 0 {
@@ -575,19 +705,6 @@ fn run_level_stream(folder: &str, on_event: &Channel<LevelEvent>) -> Result<(), 
         chunk_size: CHUNK_SIZE,
     });
     let shaders: HashMap<u64, ShaderInfo> = read_shaders(path).map_err(|e| e.to_string())?;
-    // (albedo, normal, emissive) ids for the given shader_index. Centralizes
-    // the lookup so we don't repeat the option chain at each call site.
-    let resolve_textures = |shader_tuids: &[u64], shader_index: usize|
-        -> (Option<u32>, Option<u32>, Option<u32>)
-    {
-        let Some(&st) = shader_tuids.get(shader_index) else {
-            return (None, None, None);
-        };
-        let Some(s) = shaders.get(&st) else {
-            return (None, None, None);
-        };
-        (s.albedo_tex_id, s.normal_tex_id, s.expensive_tex_id)
-    };
     let _ = on_event.send(LevelEvent::Progress { current: 1 });
 
     // Track which textures any visible mesh actually references — used as a
@@ -613,8 +730,11 @@ fn run_level_stream(folder: &str, on_event: &Channel<LevelEvent>) -> Result<(), 
                 let mut submeshes = Vec::new();
                 for bangle in asset.bangles {
                     for m in bangle.meshes {
-                        let (albedo, normal, emissive) =
-                            resolve_textures(&asset.shader_tuids, m.shader_index as usize);
+                        let (albedo, normal, emissive) = resolve_shader_textures(
+                            &shaders,
+                            &asset.shader_tuids,
+                            m.shader_index as usize,
+                        );
                         for id in [albedo, normal, emissive].into_iter().flatten() {
                             needed_albedo.insert(id);
                         }
@@ -667,8 +787,11 @@ fn run_level_stream(folder: &str, on_event: &Channel<LevelEvent>) -> Result<(), 
                     .meshes
                     .into_iter()
                     .map(|m| {
-                        let (albedo, normal, emissive) =
-                            resolve_textures(&asset.shader_tuids, m.shader_index as usize);
+                        let (albedo, normal, emissive) = resolve_shader_textures(
+                            &shaders,
+                            &asset.shader_tuids,
+                            m.shader_index as usize,
+                        );
                         for id in [albedo, normal, emissive].into_iter().flatten() {
                             needed_albedo.insert(id);
                         }
@@ -934,17 +1057,6 @@ fn run_library_stream(
     // work for the library.
     let shaders: HashMap<u64, ShaderInfo> =
         read_shaders(folder).map_err(|e| e.to_string())?;
-    let resolve_textures = |shader_tuids: &[u64], shader_index: usize|
-        -> (Option<u32>, Option<u32>, Option<u32>)
-    {
-        let Some(&st) = shader_tuids.get(shader_index) else {
-            return (None, None, None);
-        };
-        let Some(s) = shaders.get(&st) else {
-            return (None, None, None);
-        };
-        (s.albedo_tex_id, s.normal_tex_id, s.expensive_tex_id)
-    };
 
     let mut needed_albedo: HashSet<u32> = HashSet::new();
 
@@ -960,8 +1072,11 @@ fn run_library_stream(
             let mut submeshes = Vec::new();
             for bangle in asset.bangles {
                 for m in bangle.meshes {
-                    let (albedo, normal, emissive) =
-                        resolve_textures(&asset.shader_tuids, m.shader_index as usize);
+                    let (albedo, normal, emissive) = resolve_shader_textures(
+                        &shaders,
+                        &asset.shader_tuids,
+                        m.shader_index as usize,
+                    );
                     for id in [albedo, normal, emissive].into_iter().flatten() {
                         needed_albedo.insert(id);
                     }
@@ -1158,8 +1273,6 @@ fn run_psarc_extract(
             name: entry.name.clone(),
             bytes: bytes.len() as u64,
         });
-        // Yield so the JS event loop processes the event before the next file.
-        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     Ok(())
 }
@@ -1426,8 +1539,15 @@ fn list_entities_gltfs(folder: String) -> Result<GltfLibraryDto, String> {
 /// Scope: any file the user can access — paired with the explicit picker
 /// flow so the user has agency over what gets read.
 #[tauri::command]
-fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
-    std::fs::read(&path).map_err(|e| format!("read {path}: {e}"))
+/// Read raw file bytes via binary IPC. Returns `tauri::ipc::Response`
+/// instead of `Vec<u8>` so the bytes don't get JSON-serialized into a
+/// number array — for a 20 MB GLB that path would inflate to ~100 MB
+/// of JSON text and cost a multi-second JSON parse on the FE. Binary
+/// IPC delivers the bytes as an `ArrayBuffer` directly to the
+/// WebView, ~5× faster on large payloads.
+fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("read {path}: {e}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 /// One bone's animated TRS keyframes. Matches `lunalib::DecodedBone`
@@ -2363,7 +2483,28 @@ fn list_level_files(level_folder: String) -> Result<Vec<LevelFileDto>, String> {
 }
 
 fn main() {
+    // Load `.env` from the working dir or any ancestor (repo root).
+    // Silently no-op if no `.env` exists — production bundles don't
+    // need one. Done before any `std::env::var` reads so toggles like
+    // `RECHIMERA_SKEL` are visible to the rest of the app.
+    let dotenv_result = dotenvy::dotenv();
+
+    // Startup banner — confirms which dev knobs are active so you don't
+    // have to wonder whether `.env` was actually picked up. Printed to
+    // stderr so it shows in the `bun run tauri:dev` terminal alongside
+    // Tauri's own logs.
+    eprintln!("─── ReChimera startup ───");
+    match dotenv_result {
+        Ok(path) => eprintln!("  .env loaded from: {}", path.display()),
+        Err(_) => eprintln!("  .env: not found (using process environment only)"),
+    }
+    // RECHIMERA_SKEL and RECHIMERA_SKIP_SKELETON were both retired —
+    // skeleton parsing is now always on. Per-moby parse errors log
+    // a warning and the moby still ships (just without a rig).
+    eprintln!("─────────────────────────");
+
     tauri::Builder::default()
+        .manage(Mutex::new(AssetCache::default()))
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_dialog::init())
         // Auto-updater + process restart. Frontend calls
@@ -2383,6 +2524,14 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             open_level,
             list_assets,
+            build_level_manifest,
+            cache::extract_level_to_cache,
+            cache::reextract_level_cache,
+            cache::cache_status,
+            cache::read_cached_manifest,
+            cache::read_cached_asset,
+            cache::read_cached_bytes,
+            cache::export_cached_moby_glb,
             level_layout,
             level_meshes_stream,
             level_character_library_stream,

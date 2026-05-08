@@ -1,4 +1,5 @@
-import type { LevelMeshes, LevelSummary } from "./api";
+import { AlertTriangle, Database, Loader2 } from "lucide-react";
+import type { CacheStatus, LevelMeshes, LevelSummary } from "./api";
 import type { LoadPhaseState } from "./LoadProgress";
 
 interface StatusBarProps {
@@ -10,6 +11,16 @@ interface StatusBarProps {
   loadPhase: LoadPhaseState | null;
   meshLoadPhase?: LoadPhaseState | null;
   error: string | null;
+  cacheState?: CacheStatus | null;
+  cacheProgress?: {
+    phase: "mobys" | "ties" | "textures";
+    current: number;
+    total: number;
+  } | null;
+  /** When provided, the cache-status cell becomes clickable and opens
+   *  the cache library modal. Disabled (non-clickable) while extraction
+   *  is still running. */
+  onOpenCacheLibrary?: () => void;
 }
 
 function folderName(path: string): string {
@@ -31,6 +42,9 @@ export function StatusBar({
   loadPhase,
   meshLoadPhase,
   error,
+  cacheState,
+  cacheProgress,
+  onOpenCacheLibrary,
 }: StatusBarProps) {
   const activePhase = loadPhase ?? meshLoadPhase ?? null;
   const dotClass = error
@@ -95,6 +109,54 @@ export function StatusBar({
               <span className="statusbar-cell">
                 {meshes.textures.length} tex
               </span>
+            </>
+          )}
+          {cacheProgress && (
+            <>
+              <span className="statusbar-divider" />
+              <span
+                className="statusbar-cell"
+                title={`Caching ${cacheProgress.phase} ${cacheProgress.current}/${cacheProgress.total}`}
+              >
+                <Loader2 size={11} className="spin" />
+                Caching {cacheProgress.phase} {cacheProgress.current}/
+                {cacheProgress.total}
+              </span>
+            </>
+          )}
+          {!cacheProgress && cacheState?.exists && (
+            <>
+              <span className="statusbar-divider" />
+              {onOpenCacheLibrary ? (
+                <button
+                  type="button"
+                  className={`statusbar-cell statusbar-cell-button ${cacheState.stale ? "stale" : ""}`}
+                  onClick={onOpenCacheLibrary}
+                  title={
+                    cacheState.stale
+                      ? `Cache stale — source files have changed since last extract. Re-extract from the library modal. (${cacheState.cache_path})`
+                      : `Browse cache · ${cacheState.cache_path}`
+                  }
+                >
+                  {cacheState.stale ? (
+                    <AlertTriangle size={11} />
+                  ) : (
+                    <Database size={11} />
+                  )}
+                  {cacheState.mobys}M / {cacheState.ties}T /{" "}
+                  {cacheState.textures}tex
+                  {cacheState.stale ? " · stale" : " cached"}
+                </button>
+              ) : (
+                <span
+                  className="statusbar-cell"
+                  title={`Cache: ${cacheState.cache_path}`}
+                >
+                  <Database size={11} />
+                  {cacheState.mobys}M / {cacheState.ties}T /{" "}
+                  {cacheState.textures}tex cached
+                </span>
+              )}
             </>
           )}
         </>

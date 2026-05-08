@@ -2,10 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { Bounds, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
-import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
-import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import {
+  exportCachedMobyGlb,
   fetchAnimsetClip,
   type AnimsetSummary,
   type AssetMeshes,
@@ -14,11 +13,19 @@ import {
   type TextureBlobMap,
 } from "./api";
 import { Modal } from "./Modal";
+import { Button, Checkbox } from "./ui";
 import {
+  applyBindStrategy,
   buildAnimationClipFromDecoded,
   buildSkinnedAsset,
+  type BindStrategy,
   type BuiltSkinnedAsset,
 } from "./skinning";
+
+/// Module-level white tint shared with Viewport.tsx — avoids
+/// allocating a fresh THREE.Color in the render body each time an
+/// emissive map shows up.
+const EMISSIVE_TINT_WHITE = new THREE.Color(0xffffff);
 
 interface RawCharacterModalProps {
   /** Asset_tuid of the moby/tie to preview. Modal opens when non-null. */
@@ -69,12 +76,41 @@ export function RawCharacterModal({
     );
   }, [open, meshes, assetTuid]);
 
-  // Build the THREE.js rig once per asset change. Heavy step — the
-  // dispose cleanup runs when the modal closes or asset swaps.
+  // Bind-pose strategy — IT default but can be flipped at runtime via
+  // the selector below. Switching is O(numBones) (no rebuild) thanks
+  // to applyBindStrategy.
+  const [bindStrategy, setBindStrategy] = useState<BindStrategy>("it");
+
+  // Build the THREE.js rig once per asset change. Strategy is applied
+  // initially here, then mutated in place by `applyBindStrategy` on
+  // subsequent toggles.
   const built = useMemo<BuiltSkinnedAsset | null>(() => {
     if (!asset) return null;
-    return buildSkinnedAsset(asset);
+    return buildSkinnedAsset(asset, bindStrategy);
+    // bindStrategy intentionally NOT in deps — flipping it triggers
+    // applyBindStrategy via the effect below instead of a full rebuild.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [asset]);
+  useEffect(() => {
+    if (built && asset) applyBindStrategy(built, asset, bindStrategy);
+  }, [bindStrategy, built, asset]);
+  useEffect(() => {
+    if (!asset) return;
+    // Diagnostic — surface the rig shape to the console so we can tell
+    // whether the build succeeded vs returned null vs has zero meshes.
+    // Console-only; no user-facing UI noise.
+    console.log("[RawCharacterModal]", {
+      asset_tuid: asset.asset_tuid,
+      name: asset.name,
+      submeshes: asset.submeshes.length,
+      skeleton_bone_count: asset.skeleton?.bone_count ?? 0,
+      has_tms0_col: Array.isArray(asset.skeleton?.tms0_col),
+      has_tms1_col: Array.isArray(asset.skeleton?.tms1_col),
+      built_bones: built?.bones.length ?? 0,
+      built_skinned_meshes: built?.skinnedMeshes.length ?? 0,
+      built_root_children: built?.root.children.length ?? 0,
+    });
+  }, [asset, built]);
   useEffect(() => {
     return () => built?.dispose();
   }, [built]);
@@ -137,7 +173,7 @@ export function RawCharacterModal({
       if (normal && mat.normalMap !== normal) { mat.normalMap = normal; touched = true; }
       if (emissive && mat.emissiveMap !== emissive) {
         mat.emissiveMap = emissive;
-        mat.emissive = new THREE.Color(0xffffff);
+        mat.emissive = EMISSIVE_TINT_WHITE;
         mat.emissiveIntensity = 0.7;
         touched = true;
       }
@@ -234,16 +270,20 @@ export function RawCharacterModal({
     return { matching: m, others: o };
   }, [animsetClips, characterStem]);
 
-  // Export the rig + active clip as .glb.
+  // Export the rig + animations + textures as .glb. Uses the
+  // pre-baked cached GLB written by lunalib's GLB pipeline (correct
+  // bind-pose, skin, animations, embedded PNGs) — NOT Three.js's
+  // GLTFExporter, which inherits the bind-pose math bugs we've been
+  // chasing on the FE side.
   const handleExport = useCallback(async () => {
-    if (!built || !asset) return;
+    if (!asset || !levelFolder) return;
     setExportBusy(true);
     setExportError(null);
     try {
       const stem =
         characterStem.replace(/[<>:"/\\|?*]/g, "_") || "character";
       const path = await save({
-        title: "Export character with animation as .glb",
+        title: "Export .glb",
         defaultPath: `${stem}.glb`,
         filters: [{ name: "Binary glTF", extensions: ["glb"] }],
       });
@@ -251,35 +291,13 @@ export function RawCharacterModal({
         setExportBusy(false);
         return;
       }
-      const animations: THREE.AnimationClip[] = [];
-      if (activeClip) animations.push(activeClip);
-      const exporter = new GLTFExporter();
-      const bytes = await new Promise<ArrayBuffer>((resolve, reject) => {
-        exporter.parse(
-          built.root,
-          (out) => {
-            if (out instanceof ArrayBuffer) resolve(out);
-            else reject(new Error("GLTFExporter returned JSON; expected binary"));
-          },
-          (err) => reject(err),
-          {
-            binary: true,
-            includeCustomExtensions: false,
-            embedImages: true,
-            animations,
-          },
-        );
-      });
-      await invoke<void>("write_bytes", {
-        path,
-        bytes: Array.from(new Uint8Array(bytes)),
-      });
+      await exportCachedMobyGlb(levelFolder, asset.asset_tuid, path);
     } catch (e) {
       setExportError(String(e));
     } finally {
       setExportBusy(false);
     }
-  }, [built, asset, activeClip, characterStem]);
+  }, [asset, levelFolder, characterStem]);
 
   return (
     <Modal
@@ -291,17 +309,15 @@ export function RawCharacterModal({
       bodyClassName="modal-body-flex"
       footer={
         <>
-          <button
-            type="button"
-            className="btn btn-primary"
+          <Button
+            variant="primary"
             onClick={handleExport}
-            disabled={!built || exportBusy}
+            disabled={!built}
+            loading={exportBusy}
           >
             {exportBusy ? "Exporting…" : "Export .glb"}
-          </button>
-          <button type="button" className="btn" onClick={onClose}>
-            Close
-          </button>
+          </Button>
+          <Button onClick={onClose}>Close</Button>
         </>
       }
     >
@@ -344,15 +360,40 @@ export function RawCharacterModal({
             <>
               <div className="inspector-section">
                 <h4>View</h4>
-                <label className="anim-row" style={{ cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={showSkeleton}
-                    onChange={(e) => setShowSkeleton(e.target.checked)}
-                    style={{ marginRight: 6 }}
-                  />
-                  <span className="anim-row-name">Show skeleton (bones)</span>
-                </label>
+                <Checkbox
+                  className="anim-row"
+                  checked={showSkeleton}
+                  onCheckedChange={setShowSkeleton}
+                  label={
+                    <span className="anim-row-name">
+                      Show skeleton (bones)
+                    </span>
+                  }
+                />
+                <div className="bind-strategy-selector">
+                  <span className="bind-strategy-label small dim">
+                    Bind strategy
+                  </span>
+                  <div className="bind-strategy-options">
+                    {(["it", "direct", "relunacy"] as const).map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        className={`bind-strategy-btn ${bindStrategy === s ? "active" : ""}`}
+                        onClick={() => setBindStrategy(s)}
+                        title={
+                          s === "it"
+                            ? "IT-derived: tms1[parent] * tms0[child]"
+                            : s === "direct"
+                              ? "tms0 IS the local bind directly"
+                              : "ReLunacy: tms1 is local, tms0 is inverse"
+                        }
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
 
               <div className="inspector-section">

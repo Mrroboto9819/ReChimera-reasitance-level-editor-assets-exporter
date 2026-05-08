@@ -1,5 +1,22 @@
+import {
+  Activity,
+  Bone,
+  Box,
+  Compass,
+  Grid3x3,
+  type LucideIcon,
+  Move,
+  Mountain,
+  Play,
+  RotateCcw,
+  RotateCw,
+  Scaling,
+  Square,
+  Users,
+} from "lucide-react";
 import type { EditMode } from "./edits";
 import type { ViewSettings } from "./Viewport";
+import { IconButton, Toggle } from "./ui";
 
 interface ToolbarProps {
   view: ViewSettings;
@@ -23,27 +40,28 @@ interface ToolbarProps {
 interface ToggleSpec {
   key: keyof ViewSettings;
   label: string;
+  Icon: LucideIcon;
 }
 
 const RENDER_TOGGLES: ToggleSpec[] = [
-  { key: "showMobys", label: "Mobys" },
-  { key: "showTies", label: "Ties" },
-  { key: "showUFrags", label: "Terrain" },
+  { key: "showMobys", label: "Mobys", Icon: Users },
+  { key: "showTies", label: "Ties", Icon: Box },
+  { key: "showUFrags", label: "Terrain", Icon: Mountain },
 ];
 
 const VIEW_TOGGLES: ToggleSpec[] = [
-  { key: "showGrid", label: "Grid" },
-  { key: "showAxes", label: "Axes" },
-  { key: "showStats", label: "Stats" },
-  { key: "showUFragBounds", label: "UFrag bounds" },
-  { key: "showBones", label: "Bones" },
-  { key: "playAnimation", label: "Play" },
+  { key: "showGrid", label: "Grid", Icon: Grid3x3 },
+  { key: "showAxes", label: "Axes", Icon: Compass },
+  { key: "showStats", label: "Stats", Icon: Activity },
+  { key: "showUFragBounds", label: "UFrag bounds", Icon: Square },
+  { key: "showBones", label: "Bones", Icon: Bone },
+  { key: "playAnimation", label: "Play", Icon: Play },
 ];
 
-const EDIT_MODES: { mode: EditMode; label: string; icon: string }[] = [
-  { mode: "translate", label: "Move", icon: "↔" },
-  { mode: "rotate", label: "Rotate", icon: "↺" },
-  { mode: "scale", label: "Scale", icon: "⤢" },
+const EDIT_MODES: { mode: EditMode; label: string; Icon: LucideIcon }[] = [
+  { mode: "translate", label: "Move", Icon: Move },
+  { mode: "rotate", label: "Rotate", Icon: RotateCw },
+  { mode: "scale", label: "Scale", Icon: Scaling },
 ];
 
 /**
@@ -66,17 +84,15 @@ export function Toolbar({
     <div className="toolbar">
       <div className="toolbar-group" title="Edit gizmo mode">
         {EDIT_MODES.map((m) => (
-          <button
+          <IconButton
             key={m.mode}
-            type="button"
-            className={`toolbar-btn ${editMode === m.mode ? "active" : ""}`}
+            icon={m.Icon}
+            label={m.label}
+            variant={editMode === m.mode ? "active" : "default"}
             onClick={() => onEditModeChange(m.mode)}
             disabled={!hasSelection}
             title={m.label}
-          >
-            <span aria-hidden>{m.icon}</span>
-            {m.label}
-          </button>
+          />
         ))}
       </div>
 
@@ -84,15 +100,14 @@ export function Toolbar({
 
       <div className="toolbar-group" title="Render layers">
         {RENDER_TOGGLES.map((t) => (
-          <button
+          <Toggle
             key={t.key}
-            type="button"
-            className={`toolbar-btn ${view[t.key] ? "active" : ""}`}
-            onClick={() => onToggle(t.key)}
+            icon={t.Icon}
+            label={t.label}
+            pressed={view[t.key]}
+            onPressedChange={() => onToggle(t.key)}
             disabled={!hasLevel}
-          >
-            {t.label}
-          </button>
+          />
         ))}
       </div>
 
@@ -100,28 +115,26 @@ export function Toolbar({
 
       <div className="toolbar-group" title="Viewport overlays">
         {VIEW_TOGGLES.map((t) => (
-          <button
+          <Toggle
             key={t.key}
-            type="button"
-            className={`toolbar-btn ${view[t.key] ? "active" : ""}`}
-            onClick={() => onToggle(t.key)}
-          >
-            {t.label}
-          </button>
+            icon={t.Icon}
+            label={t.label}
+            pressed={view[t.key]}
+            onPressedChange={() => onToggle(t.key)}
+          />
         ))}
       </div>
 
       <div className="toolbar-spacer" />
 
       {modifiedCount > 0 && (
-        <button
-          type="button"
-          className="toolbar-btn toolbar-btn-warn"
+        <IconButton
+          icon={RotateCcw}
+          label={`${modifiedCount} modified — Reset all`}
+          variant="warn"
           onClick={onResetAllEdits}
           title="Discard all pending edits"
-        >
-          ● {modifiedCount} modified — Reset all
-        </button>
+        />
       )}
 
       {info && <span className="toolbar-info">{info}</span>}

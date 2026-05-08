@@ -7,10 +7,13 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 // rendered once on first paint and the browser caches the bytes;
 // nothing in the runtime can "lose" it.
 import brandIconUrl from "../icon.png?url";
+import { Channel } from "@tauri-apps/api/core";
 import {
+  cacheStatus,
   dumpSoundBank,
   extractLevelSounds,
   extractLevelStreamSounds,
+  extractLevelToCache,
   extractRawStreamingSounds,
   levelLayout,
   listAnimsetClips,
@@ -24,6 +27,8 @@ import {
   wavBlobUrl,
   type AnimsetSummary,
   type AssetMeshes,
+  type CacheEvent,
+  type CacheStatus,
   type ExtractedSound,
   type GltfFile,
   type Instance,
@@ -39,6 +44,7 @@ import {
 } from "./api";
 import { AboutModal } from "./AboutModal";
 import { BottomPanel, type ConsoleEntry } from "./BottomPanel";
+import { CacheLibraryModal } from "./CacheLibraryModal";
 import { GltfCharacterModal } from "./GltfCharacterModal";
 import { RawCharacterModal } from "./RawCharacterModal";
 import { Hierarchy } from "./Hierarchy";
@@ -47,6 +53,7 @@ import { LoadProgress, type LoadPhaseState } from "./LoadProgress";
 import { Menu, MenuBar, MenuCheckItem, MenuItem, MenuSpacer } from "./MenuBar";
 import { Modal } from "./Modal";
 import { OpenLevelModal } from "./OpenLevelModal";
+import { PsarcModal } from "./PsarcModal";
 import { PsarcTools } from "./PsarcTools";
 import { SoundPlayer, type NowPlaying } from "./SoundPlayer";
 import { Splash } from "./Splash";
@@ -110,6 +117,7 @@ export function App() {
   // from a fresh splash.
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [openLevelModalOpen, setOpenLevelModalOpen] = useState(false);
+  const [psarcModalOpen, setPsarcModalOpen] = useState(false);
   const [exportState, setExportState] = useState<ExportProgressState | null>(null);
   // (Removed: legacy `<level>/character/` filesystem lookup state. The
   // path-grouped Asset Library tree built from `assetlookup.dat` is
@@ -146,6 +154,18 @@ export function App() {
   // "Files" section, which acts as a survey of the level's full
   // contents + a visible roadmap of what's left to port.
   const [levelFiles, setLevelFiles] = useState<LevelFile[]>([]);
+  // Disk cache (`<level>/_rechimera_cache/`) — populated in the background
+  // after openLevel succeeds. `null` until we've checked or extracted; when
+  // populated the StatusBar shows per-kind counts and downstream UIs
+  // (Library modal, GLB export) can `read_cached_asset` without going
+  // through the streaming pipeline.
+  const [cacheState, setCacheState] = useState<CacheStatus | null>(null);
+  const [cacheProgress, setCacheProgress] = useState<{
+    phase: "mobys" | "ties" | "textures";
+    current: number;
+    total: number;
+  } | null>(null);
+  const [cacheLibraryOpen, setCacheLibraryOpen] = useState(false);
   // Per-source cache keyed by `${kind}:${filename}`. Separates bank
   // and stream extracts so re-clicking a stream sound doesn't trigger
   // a fresh bank decode and vice-versa. Stream extracts can be slow
@@ -259,6 +279,84 @@ export function App() {
       });
     }
   }, [selection.ids, instances, meshes, log]);
+
+  /// Export a single cached library asset to GLB. The cache holds
+  /// AssetMeshes for assets that aren't placed in the level (characters,
+  /// weapons, etc.); we wrap one in a synthetic Instance + LevelMeshes so
+  /// the existing exportToGlb pipeline can run unchanged. Animset clips
+  /// are still resolved live from `animsets.dat` via the export's
+  /// internal `fetchAnimsetClip` call, so the resulting .glb has the
+  /// rig's full animation library baked in as Blender Actions.
+  const handleCacheLibraryExport = useCallback(
+    async (asset: AssetMeshes, textureBlobs: TextureBlobMap) => {
+      // Cache stores both moby and tie JSONs in the same shape; the
+      // export pipeline only cares which of `moby_assets` / `tie_assets`
+      // it appears in. Detect by skeleton presence — ties are static
+      // and have none.
+      const isTie = asset.skeleton == null;
+      const synthInstance: Instance = {
+        tuid: `${asset.asset_tuid}#cache`,
+        asset_tuid: asset.asset_tuid,
+        kind: isTie ? "tie" : "moby",
+        name: asset.name || asset.asset_tuid,
+        position: [0, 0, 0],
+        quaternion: [0, 0, 0, 1],
+        scale: [1, 1, 1],
+      };
+      const synthMeshes: LevelMeshes = {
+        moby_assets: isTie ? [] : [asset],
+        tie_assets: isTie ? [asset] : [],
+        ufrag_meshes: [],
+        textures: [...textureBlobs.keys()].map((id) => ({
+          id,
+          width: 0,
+          height: 0,
+        })),
+      };
+      let path: string | null = null;
+      try {
+        path = await pickGlbExportPath([synthInstance]);
+      } catch (err) {
+        log("error", `Save dialog failed: ${err}`);
+        return;
+      }
+      if (!path) {
+        log("info", "Export cancelled");
+        return;
+      }
+      setExportState({
+        phase: "preparing",
+        label: "Building scene from cached asset",
+        fraction: 0,
+        detail: path,
+      });
+      try {
+        const result = await exportToGlb(
+          new Set([synthInstance.tuid]),
+          [synthInstance],
+          synthMeshes,
+          textureBlobs.size > 0 ? textureBlobs : null,
+          path,
+          (state) => setExportState(state),
+          summary?.folder ?? null,
+          null,
+        );
+        log(
+          "ok",
+          `Exported ${result.bytes.toLocaleString()} bytes → ${result.path}`,
+        );
+      } catch (err) {
+        log("error", `Export failed: ${err}`);
+        setExportState({
+          phase: "done",
+          label: `Export failed: ${err}`,
+          fraction: 0,
+          cancelled: true,
+        });
+      }
+    },
+    [summary?.folder, log],
+  );
 
   const toggle = useCallback(
     (key: keyof ViewSettingsState) => dispatch(toggleView(key)),
@@ -528,6 +626,67 @@ export function App() {
                 setTextureBlobs(new Map());
               }
             }
+
+            // Cache extraction runs SEQUENTIALLY after streaming, not in
+            // parallel. Both pipelines decode the same `mobys.dat` /
+            // `ties.dat` files and contend for Tauri's worker pool;
+            // running them concurrently caused the streaming pipeline
+            // to either stall or never emit its "done" event, leaving
+            // the viewport stuck on proxy boxes only.
+            cacheStatus(sum.folder)
+              .then((status) => {
+                setCacheState(status);
+                if (status.exists) {
+                  log(
+                    "ok",
+                    `Cache ready: ${status.mobys}M / ${status.ties}T / ${status.textures}tex`,
+                  );
+                  return;
+                }
+                log("info", "Building disk cache in background…");
+                const channel = new Channel<CacheEvent>();
+                let phaseTotals = { phase: "mobys" as const, total: 0 };
+                channel.onmessage = (event) => {
+                  switch (event.type) {
+                    case "phase":
+                      phaseTotals = {
+                        phase: event.phase,
+                        total: event.total,
+                      } as never;
+                      setCacheProgress({
+                        phase: event.phase,
+                        current: 0,
+                        total: event.total,
+                      });
+                      break;
+                    case "progress":
+                      setCacheProgress({
+                        phase: phaseTotals.phase,
+                        current: event.current,
+                        total: phaseTotals.total,
+                      });
+                      break;
+                    case "done":
+                      setCacheProgress(null);
+                      cacheStatus(sum.folder)
+                        .then(setCacheState)
+                        .catch(() => {});
+                      log("ok", `Cache built: ${event.entry_count} entries`);
+                      break;
+                    case "error":
+                      setCacheProgress(null);
+                      log("warn", `Cache extraction failed: ${event.message}`);
+                      break;
+                  }
+                };
+                extractLevelToCache(sum.folder, channel).catch((e) => {
+                  setCacheProgress(null);
+                  log("warn", `Cache extraction failed: ${e}`);
+                });
+              })
+              .catch((e) => {
+                log("warn", `Cache status check failed: ${e}`);
+              });
             break;
           case "error":
             setError(e.message);
@@ -671,6 +830,12 @@ export function App() {
       // Library tree built directly from `assetlookup.dat` is the
       // canonical source now. No filesystem dependency, works on any
       // level whether or not InsomniaToolset has been run.
+      //
+      // Cache extraction was here previously but ran concurrently with
+      // the streaming pipeline, contending for the same `.dat` files
+      // and Tauri worker threads. It now fires from inside
+      // loadFullMeshes' "done" handler so streaming completes first,
+      // then the cache builds afterwards. Fire-and-forget either way.
 
       // Step 4: scan ALL of the `entities/` tree (character, object,
       // unique, …) for InsomniaToolset GLTF outputs. Files come back
@@ -725,6 +890,8 @@ export function App() {
     setPreviewAssetTuid(null);
     setAnimsetClips([]);
     setOverrideAnimsetHash(null);
+    setCacheState(null);
+    setCacheProgress(null);
     selection.clear();
     edits.resetAll();
     setError(null);
@@ -776,6 +943,10 @@ export function App() {
             </MenuItem>
             <MenuItem onSelect={handleClose} disabled={!summary}>
               Close Level
+            </MenuItem>
+            <MenuSpacer />
+            <MenuItem onSelect={() => setPsarcModalOpen(true)}>
+              Extract PSARC…
             </MenuItem>
           </Menu>
 
@@ -1070,6 +1241,9 @@ export function App() {
         loadPhase={loadPhase}
         meshLoadPhase={meshLoadPhase}
         error={error}
+        cacheState={cacheState}
+        cacheProgress={cacheProgress}
+        onOpenCacheLibrary={() => setCacheLibraryOpen(true)}
       />
 
       <OpenLevelModal
@@ -1077,6 +1251,11 @@ export function App() {
         busy={busy}
         onClose={() => setOpenLevelModalOpen(false)}
         onOpen={(folder) => handleOpen(folder)}
+      />
+
+      <PsarcModal
+        open={psarcModalOpen}
+        onClose={() => setPsarcModalOpen(false)}
       />
 
       <GltfCharacterModal
@@ -1096,6 +1275,13 @@ export function App() {
 
       {/* CharacterPreviewModal removed — RawCharacterModal above
           handles all asset previews from `assetlookup.dat` directly. */}
+
+      <CacheLibraryModal
+        open={cacheLibraryOpen}
+        onClose={() => setCacheLibraryOpen(false)}
+        folder={summary?.folder ?? null}
+        onExport={handleCacheLibraryExport}
+      />
 
       <Modal
         open={loadPhase !== null}

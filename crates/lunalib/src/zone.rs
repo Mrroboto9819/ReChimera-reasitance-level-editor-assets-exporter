@@ -23,7 +23,7 @@ use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::assetlookup::{AssetKind, AssetLookup};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::igfile::IgFile;
 use crate::math::decompose_row_major;
 use crate::moby::{half_to_f32, read_shader_table};
@@ -124,6 +124,12 @@ where
     let mut zones_file = File::open(&zones_dat_path)?;
 
     for ptr in zone_ptrs {
+        if ptr.length > crate::MAX_ASSET_SIZE {
+            return Err(Error::AllocLimitExceeded {
+                size: u64::from(ptr.length),
+                limit: u64::from(crate::MAX_ASSET_SIZE),
+            });
+        }
         zones_file.seek(SeekFrom::Start(u64::from(ptr.offset)))?;
         let mut buf = vec![0u8; ptr.length as usize];
         zones_file.read_exact(&mut buf)?;
@@ -206,10 +212,23 @@ fn parse_zone<R: Read + Seek>(zone: &mut IgFile<R>, zone_tuid: u64) -> Result<Zo
         .collect::<Result<_>>()?;
 
     // Third pass: resolve tie asset TUIDs from the per-zone tuid table.
+    //
+    // Note on bounds: real R2 levels (e.g. `bay area`) have valid
+    // `tie_index` values that read past the section's reported
+    // `length` field — the IGHW format apparently has slack here and
+    // the original parsers never checked. We keep `checked_mul` /
+    // `checked_add` to prevent u64 overflow (which would wrap to a
+    // bogus seek), but skip the strict `index < length/8` test —
+    // `read_u64` returns a clean I/O error if the seek truly lands
+    // past the embedded buffer.
     let mut tie_instances = Vec::with_capacity(count);
     for ((r, m), name) in raws.iter().zip(metas.iter()).zip(names.into_iter()) {
-        zone.stream
-            .seek_to(u64::from(tuid_section.offset) + 8 * u64::from(r.tie_index))?;
+        let tie_index = u64::from(r.tie_index);
+        let byte_offset = tie_index
+            .checked_mul(8)
+            .and_then(|x| x.checked_add(u64::from(tuid_section.offset)))
+            .ok_or(Error::OffsetOverflow { id: SECT_TIE_TUID_TABLE })?;
+        zone.stream.seek_to(byte_offset)?;
         let tie_tuid = zone.stream.read_u64()?;
         tie_instances.push(TieInstance {
             tie_tuid,

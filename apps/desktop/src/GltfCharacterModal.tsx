@@ -19,6 +19,7 @@ import {
   type GltfFile,
 } from "./api";
 import { Modal } from "./Modal";
+import { Button, Checkbox } from "./ui";
 
 interface GltfCharacterModalProps {
   /** Open when non-null. */
@@ -90,8 +91,15 @@ export function GltfCharacterModal({
     setGltf(null);
     (async () => {
       try {
-        const bytes = await readFileBytes(file.path);
-        const buf = new Uint8Array(bytes).buffer;
+        // Tauri v2 binary IPC returns either `ArrayBuffer` or
+        // `Uint8Array` depending on the runtime — GLTFLoader.parse is
+        // strict about taking ArrayBuffer and silently produces an
+        // empty scene when handed a Uint8Array, so normalize first.
+        const raw = await readFileBytes(file.path);
+        const buf: ArrayBuffer =
+          raw instanceof ArrayBuffer
+            ? raw
+            : ((raw as unknown as Uint8Array).buffer.slice(0) as ArrayBuffer);
         const loader = new GLTFLoader();
         // baseUrl is "" because we're handing it the parsed bytes
         // directly. External resources (.bin, textures) won't resolve;
@@ -262,14 +270,17 @@ export function GltfCharacterModal({
         for (const [channel, path] of channels) {
           if (!path) continue;
           try {
-            const bytes = await readFileBytes(path);
+            const ddsRaw = await readFileBytes(path);
+            const ddsBuf: ArrayBuffer =
+              ddsRaw instanceof ArrayBuffer
+                ? ddsRaw
+                : ((ddsRaw as unknown as Uint8Array).buffer.slice(0) as ArrayBuffer);
             if (cancelled) return;
             // DDSLoader's `parse()` takes an ArrayBuffer and returns a
             // CompressedTexture-like result with mipmaps + format set.
             // Wrapping it in a THREE.Texture isn't right — DDSLoader
             // hands back its own typed result we feed to a Texture's
             // image+mipmaps slots.
-            const ddsBuf = new Uint8Array(bytes).buffer;
             const parsed = loader.parse(ddsBuf, true);
             // DDSLoader returns a `format` typed as `CompressedPixelFormat
             // | PixelFormat` (DDS can hold raw RGBA too), but every
@@ -501,18 +512,16 @@ export function GltfCharacterModal({
       bodyClassName="modal-body-flex"
       footer={
         <>
-          <button
-            type="button"
-            className="btn btn-primary"
+          <Button
+            variant="primary"
             onClick={handleExport}
-            disabled={!gltf || exportBusy}
+            disabled={!gltf}
+            loading={exportBusy}
             title="Export the character + currently selected animations as .glb (one Action per clip when imported into Blender)"
           >
             {exportBusy ? "Exporting…" : "Export .glb"}
-          </button>
-          <button type="button" className="btn" onClick={onClose}>
-            Close
-          </button>
+          </Button>
+          <Button onClick={onClose}>Close</Button>
         </>
       }
     >
@@ -561,15 +570,16 @@ export function GltfCharacterModal({
             <>
               <div className="inspector-section">
                 <h4>View</h4>
-                <label className="anim-row" style={{ cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={showSkeleton}
-                    onChange={(e) => setShowSkeleton(e.target.checked)}
-                    style={{ marginRight: 6 }}
-                  />
-                  <span className="anim-row-name">Show skeleton (bones)</span>
-                </label>
+                <Checkbox
+                  className="anim-row"
+                  checked={showSkeleton}
+                  onCheckedChange={setShowSkeleton}
+                  label={
+                    <span className="anim-row-name">
+                      Show skeleton (bones)
+                    </span>
+                  }
+                />
               </div>
 
               <div className="inspector-section">

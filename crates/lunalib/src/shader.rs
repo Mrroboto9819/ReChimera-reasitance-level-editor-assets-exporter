@@ -47,6 +47,12 @@ pub fn read_shaders(level_folder: &Path) -> Result<HashMap<u64, ShaderInfo>> {
 
     let mut out = HashMap::with_capacity(ptrs.len());
     for ptr in ptrs {
+        if ptr.length > crate::MAX_ASSET_SIZE {
+            return Err(crate::error::Error::AllocLimitExceeded {
+                size: u64::from(ptr.length),
+                limit: u64::from(crate::MAX_ASSET_SIZE),
+            });
+        }
         shaders_file.seek(SeekFrom::Start(u64::from(ptr.offset)))?;
         let mut buf = vec![0u8; ptr.length as usize];
         shaders_file.read_exact(&mut buf)?;

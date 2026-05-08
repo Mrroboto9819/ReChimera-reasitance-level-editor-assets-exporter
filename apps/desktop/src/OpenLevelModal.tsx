@@ -1,12 +1,30 @@
 import { useCallback, useEffect, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { File, Folder, X } from "lucide-react";
 import { Modal } from "./Modal";
+import { Button } from "./ui";
+import { useFileDrop } from "./useFileDrop";
 
 interface OpenLevelModalProps {
   open: boolean;
   busy: boolean;
   onClose: () => void;
   onOpen: (folderPath: string) => void;
+}
+
+/// Accepts a folder drop OR a path ending in `assetlookup.dat`. The
+/// caller derives the parent folder from the latter.
+function acceptLevelDrop(p: string): boolean {
+  if (p.endsWith("assetlookup.dat")) return true;
+  // Folders don't have an extension — exclude obvious files. The Tauri
+  // drag-drop event delivers absolute paths only, so a path with no
+  // extension is almost certainly a directory the user dropped.
+  return !/\.[a-z0-9]{1,6}$/i.test(p);
+}
+
+function parentDir(p: string): string {
+  const sep = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return sep > 0 ? p.slice(0, sep) : p;
 }
 
 const RECENT_KEY = "rechimera.recentLevels";
@@ -110,6 +128,28 @@ export function OpenLevelModal({
 
   const handleConfirm = useCallback(() => confirm(path), [confirm, path]);
 
+  const handleDrop = useCallback(
+    (paths: string[]) => {
+      if (paths.length === 0) {
+        setWarning("Drop a folder or an `assetlookup.dat` file.");
+        return;
+      }
+      const first = paths[0]!;
+      const folder = first.toLowerCase().endsWith("assetlookup.dat")
+        ? parentDir(first)
+        : first;
+      setWarning(null);
+      setPath(folder);
+    },
+    [],
+  );
+
+  const dropPhase = useFileDrop({
+    enabled: open && !busy,
+    accept: acceptLevelDrop,
+    onDrop: handleDrop,
+  });
+
   const removeRecent = useCallback((folder: string) => {
     const next = loadRecent().filter((p) => p !== folder);
     try {
@@ -129,26 +169,28 @@ export function OpenLevelModal({
       size="lg"
       footer={
         <>
-          <button
-            type="button"
-            className="btn"
-            onClick={onClose}
-            disabled={busy}
-          >
+          <Button onClick={onClose} disabled={busy}>
             Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
+          </Button>
+          <Button
+            variant="primary"
             onClick={handleConfirm}
-            disabled={busy || !path.trim()}
+            disabled={!path.trim()}
+            loading={busy}
           >
             {busy ? "Loading…" : "Open"}
-          </button>
+          </Button>
         </>
       }
     >
-      <div className="open-level">
+      <div className={`open-level ${dropPhase === "over" ? "drop-over" : ""}`}>
+        <div className="open-level-droptarget">
+          <div className="open-level-droptarget-text">
+            {dropPhase === "over"
+              ? "Drop to open this level"
+              : "Drag a folder or assetlookup.dat here"}
+          </div>
+        </div>
         <div className="open-level-pickers">
           <button
             type="button"
@@ -156,7 +198,9 @@ export function OpenLevelModal({
             onClick={handleBrowseFolder}
             disabled={busy}
           >
-            <div className="open-level-card-icon" aria-hidden>📁</div>
+            <div className="open-level-card-icon" aria-hidden>
+              <Folder size={28} strokeWidth={1.5} />
+            </div>
             <div className="open-level-card-text">
               <div className="open-level-card-title">Pick a folder</div>
               <div className="open-level-card-sub small dim">
@@ -171,7 +215,9 @@ export function OpenLevelModal({
             onClick={handleBrowseFile}
             disabled={busy}
           >
-            <div className="open-level-card-icon" aria-hidden>📄</div>
+            <div className="open-level-card-icon" aria-hidden>
+              <File size={28} strokeWidth={1.5} />
+            </div>
             <div className="open-level-card-text">
               <div className="open-level-card-title">
                 Pick <code>assetlookup.dat</code>
@@ -229,7 +275,7 @@ export function OpenLevelModal({
                     title="Remove from recent"
                     aria-label="Remove"
                   >
-                    ×
+                    <X size={14} strokeWidth={2} />
                   </button>
                 </li>
               ))}

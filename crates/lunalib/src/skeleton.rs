@@ -7,8 +7,11 @@
 //!   - `0x00` u16 numBones
 //!   - `0x02` u16 rootBone
 //!   - `0x04` u32 bonesPtr           — file-relative pointer to `Bone[numBones]`
-//!   - `0x08` u32 tms0Ptr            — pointer to `Matrix44[numBones]` (bind pose)
-//!   - `0x0C` u32 tms1Ptr            — pointer to `Matrix44[numBones]` (inverse bind / world)
+//!   - `0x08` u32 tms0Ptr            — pointer to `Matrix44[numBones]`
+//!     (per-bone local bind-pose; consumed by THREE.js as a column-major
+//!     matrix decomposed into bone TRS — no transpose required for R2)
+//!   - `0x0C` u32 tms1Ptr            — pointer to `Matrix44[numBones]`
+//!     (per-bone world-space inverse bind, used as `boneInverses`)
 //!   - `0x10` u16 scaleShift
 //!   - `0x12` u16 translationShift
 //!   - `0x14` u32 spuRefPoseBuffer   — pointer (unused for our needs)
@@ -73,13 +76,22 @@ impl Bone {
 pub struct Skeleton {
     pub root_bone: u16,
     pub bones: Vec<Bone>,
-    /// `tms0` array — typically the local bind-pose transform per bone
-    /// (column-major float4x4 as stored in the file). Empty when the
-    /// pointer is null.
+    /// On-disk `tms0` array — empirically the per-bone LOCAL bind
+    /// matrix in a layout `THREE.Matrix4.fromArray` consumes directly
+    /// (matches develop branch's working render). Empty when the
+    /// moby has no `tms0` pointer.
     pub bind_local: Vec<[f32; 16]>,
-    /// `tms1` array — typically the world-space inverse bind-pose used to
-    /// undo the rest-pose when applying skinning.
+    /// On-disk `tms1` array — per-bone WORLD-INVERSE bind. Used
+    /// directly as `THREE.Skeleton.boneInverses` / glTF
+    /// `inverseBindMatrices`.
     pub bind_world_inverse: Vec<[f32; 16]>,
+    /// Alias of `bind_local` (raw `tms0`). Kept as a separate field
+    /// so the FE strategy switcher in `RawCharacterModal` has stable
+    /// data to feed into alternative interpretations (`direct` /
+    /// `relunacy` / `it`) without needing a Rust rebuild.
+    pub tms0_col: Vec<[f32; 16]>,
+    /// Alias of `bind_world_inverse` (raw `tms1`). Same reason as above.
+    pub tms1_col: Vec<[f32; 16]>,
     pub scale_shift: u16,
     pub translation_shift: u16,
 }
@@ -140,17 +152,31 @@ pub fn read_skeleton<R: Read + Seek>(ig: &mut IgFile<R>) -> Result<Option<Skelet
         });
     }
 
-    // Matrix arrays are best-effort — if either pointer is bad, return what
-    // we have rather than failing the whole skeleton.
+    // Matrix arrays are best-effort — if either pointer is bad, return
+    // what we have rather than failing the whole skeleton. Raw bytes
+    // straight from disk: empirically these are already in a layout
+    // `THREE.Matrix4.fromArray` reads correctly without transpose
+    // (verified against the develop branch's working render). The IT
+    // C++ `GenerateSkeleton` does parent-multiplication for its own
+    // glTF output pipeline, but the on-disk PS3 matrices for R2 are
+    // already per-bone LOCAL — at least for the cases we render.
+    //
+    // tms0_col / tms1_col are aliases shipped through the API so the
+    // FE strategy switcher in RawCharacterModal has data to swap
+    // between alternative interpretations without a Rust rebuild.
     let bind_local = read_matrix_array(ig, tms0_ptr, num_bones).unwrap_or_default();
     let bind_world_inverse =
         read_matrix_array(ig, tms1_ptr, num_bones).unwrap_or_default();
+    let tms0_col = bind_local.clone();
+    let tms1_col = bind_world_inverse.clone();
 
     Ok(Some(Skeleton {
         root_bone,
         bones,
         bind_local,
         bind_world_inverse,
+        tms0_col,
+        tms1_col,
         scale_shift,
         translation_shift,
     }))
