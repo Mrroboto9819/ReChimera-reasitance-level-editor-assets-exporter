@@ -148,6 +148,8 @@ where
     Ok(())
 }
 
+const TARGET_LOG_HASH: u64 = 0x5ED3_7B1C_9C40_3839;
+
 fn parse_moby<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<MobyAsset> {
     let header_section = ig.require_section(SECT_MOBY_HEADER)?;
     let header_off = u64::from(header_section.offset);
@@ -200,12 +202,34 @@ fn parse_moby<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<Moby
 
     let shader_tuids = read_shader_table(ig, SECT_MOBY_SHADER_TABLE)?;
 
+    let log_target = tuid == TARGET_LOG_HASH;
+    if log_target {
+        eprintln!(
+            "[target 0x{:016X}] header bangle_count={} bangles_ptr=0x{:X} scale={} bind_pose_inverse_offset={} indices.len={} vertices.len={}",
+            tuid,
+            bangle_count,
+            bangles_ptr,
+            scale,
+            bind_pose_inverse_offset,
+            index_buf.len(),
+            vertex_buf.len(),
+        );
+    }
+
     let mut bangles = Vec::with_capacity(bangle_count as usize);
+    let mut prim_global_idx: usize = 0;
     for b in 0..bangle_count {
         let bangle_base = bangles_ptr + (b as u64) * BANGLE_SIZE;
         ig.stream.seek_to(bangle_base + 0x00)?;
         let meshes_ptr = u64::from(ig.stream.read_u32()?);
         let mesh_count = ig.stream.read_u32()?;
+
+        if log_target {
+            eprintln!(
+                "[target 0x{:016X}] bangle[{}] meshes_ptr=0x{:X} mesh_count={}",
+                tuid, b, meshes_ptr, mesh_count
+            );
+        }
 
         let mut meshes = Vec::with_capacity(mesh_count as usize);
         for m in 0..mesh_count {
@@ -220,8 +244,9 @@ fn parse_moby<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<Moby
             let bone_map_count = ig.stream.read_u8()?;
             let vertex_type = ig.stream.read_u8()?;
 
-            ig.stream.seek_to(mesh_base + 0x12)?;
-            let index_count = ig.stream.read_u16()?;
+            ig.stream.seek_to(mesh_base + 0x10)?;
+            let index_count_u32 = ig.stream.read_u32()?;
+            let index_count = index_count_u32 as u16;
 
             ig.stream.seek_to(mesh_base + 0x20)?;
             let bone_map_ptr = u64::from(ig.stream.read_u32()?);
@@ -229,6 +254,26 @@ fn parse_moby<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<Moby
                 .unwrap_or_default();
 
             let stride = if vertex_type == 1 { 0x1C } else { 0x14 };
+
+            if log_target {
+                eprintln!(
+                    "[target 0x{:016X}] prim[{}] (b={} m={}) idx_idx={} vtx_off={} shader={} vtx_count={} idx_count_u32={} bones={} vtype={} stride={} pal={:?}",
+                    tuid,
+                    prim_global_idx,
+                    b,
+                    m,
+                    index_index,
+                    vertex_offset,
+                    shader_index,
+                    vertex_count,
+                    index_count_u32,
+                    bone_map_count,
+                    vertex_type,
+                    stride,
+                    &bone_map[..bone_map.len().min(16)],
+                );
+            }
+
             let mesh = decode_moby_mesh(
                 &index_buf,
                 &vertex_buf,
@@ -242,6 +287,7 @@ fn parse_moby<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<Moby
                 &bone_map,
             )?;
             meshes.push(mesh);
+            prim_global_idx += 1;
         }
         bangles.push(MobyBangle { meshes });
     }
@@ -358,12 +404,23 @@ fn decode_moby_mesh(
 
         if stride == 0x1C {
 
+            let mut slot_bones = [0u16; 4];
+            let mut slot_weights = [0u8; 4];
             for i in 0..4 {
                 let local = vertex_buf[base + 0x08 + i] as usize;
-                bone_indices.push(map_local(local));
+                slot_bones[i] = map_local(local);
+                slot_weights[i] = vertex_buf[base + 0x0C + i];
             }
             for i in 0..4 {
-                bone_weights.push(vertex_buf[base + 0x0C + i]);
+                if slot_weights[i] == 0 {
+                    slot_bones[i] = 0;
+                }
+            }
+            for i in 0..4 {
+                bone_indices.push(slot_bones[i]);
+            }
+            for i in 0..4 {
+                bone_weights.push(slot_weights[i]);
             }
         } else if !bone_map.is_empty() {
 

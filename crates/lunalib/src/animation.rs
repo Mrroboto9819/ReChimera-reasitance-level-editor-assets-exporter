@@ -96,7 +96,21 @@ pub fn read_animation_header<R: Read + Seek>(
     let Some(section) = ig.section(SECT_ANIMATION) else {
         return Ok(None);
     };
-    let off = u64::from(section.offset);
+    read_animation_header_at(ig, u64::from(section.offset)).map(Some)
+}
+
+pub fn animation_section_offsets<R: Read + Seek>(ig: &IgFile<R>) -> Vec<u64> {
+    ig.sections
+        .iter()
+        .filter(|s| s.id == SECT_ANIMATION)
+        .map(|s| u64::from(s.offset))
+        .collect()
+}
+
+pub fn read_animation_header_at<R: Read + Seek>(
+    ig: &mut IgFile<R>,
+    off: u64,
+) -> Result<AnimationHeader> {
     ig.stream.seek_to(off + 0x00)?;
     let anim_index = ig.stream.read_u16()?;
     let flags = ig.stream.read_u16()?;
@@ -123,7 +137,7 @@ pub fn read_animation_header<R: Read + Seek>(
         String::new()
     };
 
-    Ok(Some(AnimationHeader {
+    Ok(AnimationHeader {
         anim_index,
         flags,
         num_bones,
@@ -137,7 +151,7 @@ pub fn read_animation_header<R: Read + Seek>(
         num_8bit_tracks,
         control_ptr,
         frames_ptr,
-    }))
+    })
 }
 
 #[derive(Debug, Clone)]

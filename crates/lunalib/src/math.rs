@@ -74,6 +74,70 @@ pub fn decompose_row_major(m: &[f32; 16]) -> ([f32; 3], [f32; 3], [f32; 4]) {
     (translation, scale, quat)
 }
 
+pub fn decompose_col_major(m: &[f32; 16]) -> ([f32; 3], [f32; 3], [f32; 4]) {
+    let translation = [m[12], m[13], m[14]];
+
+    let c0 = [m[0], m[1], m[2]];
+    let c1 = [m[4], m[5], m[6]];
+    let c2 = [m[8], m[9], m[10]];
+
+    let s0 = (c0[0] * c0[0] + c0[1] * c0[1] + c0[2] * c0[2]).sqrt();
+    let s1 = (c1[0] * c1[0] + c1[1] * c1[1] + c1[2] * c1[2]).sqrt();
+    let s2 = (c2[0] * c2[0] + c2[1] * c2[1] + c2[2] * c2[2]).sqrt();
+    let scale = [s0, s1, s2];
+
+    if s0 == 0.0 || s1 == 0.0 || s2 == 0.0 {
+        return (translation, scale, [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    let r00 = c0[0] / s0;
+    let r10 = c0[1] / s0;
+    let r20 = c0[2] / s0;
+    let r01 = c1[0] / s1;
+    let r11 = c1[1] / s1;
+    let r21 = c1[2] / s1;
+    let r02 = c2[0] / s2;
+    let r12 = c2[1] / s2;
+    let r22 = c2[2] / s2;
+
+    let trace = r00 + r11 + r22;
+    let quat = if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        [
+            (r21 - r12) / s,
+            (r02 - r20) / s,
+            (r10 - r01) / s,
+            0.25 * s,
+        ]
+    } else if r00 > r11 && r00 > r22 {
+        let s = (1.0 + r00 - r11 - r22).sqrt() * 2.0;
+        [
+            0.25 * s,
+            (r01 + r10) / s,
+            (r02 + r20) / s,
+            (r21 - r12) / s,
+        ]
+    } else if r11 > r22 {
+        let s = (1.0 + r11 - r00 - r22).sqrt() * 2.0;
+        [
+            (r01 + r10) / s,
+            0.25 * s,
+            (r12 + r21) / s,
+            (r02 - r20) / s,
+        ]
+    } else {
+        let s = (1.0 + r22 - r00 - r11).sqrt() * 2.0;
+        [
+            (r02 + r20) / s,
+            (r12 + r21) / s,
+            0.25 * s,
+            (r10 - r01) / s,
+        ]
+    };
+
+    (translation, scale, quat)
+}
+
 pub fn mat4_mul_row_major(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     let mut out = [0f32; 16];
     for r in 0..4 {

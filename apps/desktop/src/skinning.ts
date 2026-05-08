@@ -57,19 +57,48 @@ export function buildSkinnedAsset(
   const sk = asset.skeleton;
   if (!sk || sk.bone_count === 0) return null;
 
-  
-  
-  
   const { localBindMatrices, worldInverseMatrices } = resolveBindMatrices(
     sk,
     bindStrategy,
   );
 
-  const bones: THREE.Bone[] = [];
+  console.group(`[skin:build] ${asset.asset_tuid}`);
+  console.log("bone_count:", sk.bone_count);
+  console.log("submeshes:", asset.submeshes.length);
+  console.log("localBindMatrices.length:", localBindMatrices.length);
+  console.log("worldInverseMatrices.length:", worldInverseMatrices.length);
+  console.log("parents:", JSON.stringify(sk.parents.slice(0, 32)));
+  console.log("scale_shift:", sk.scale_shift, "translation_shift:", sk.translation_shift);
 
-  
-  
-  
+  const dumpBone = (idx: number, label: string) => {
+    if (idx < 0 || idx >= sk.bone_count) return;
+    const lb = localBindMatrices[idx];
+    const ibm = worldInverseMatrices[idx];
+    const tms0 = sk.tms0_col?.[idx];
+    const tms1 = sk.tms1_col?.[idx];
+    const parent = sk.parents[idx];
+    console.group(`bone[${idx}] (${label})`);
+    console.log("parent:", parent);
+    if (tms0) console.log("tms0_col raw:", Array.from(tms0).map((n) => +n.toFixed(3)));
+    if (tms1) console.log("tms1_col raw:", Array.from(tms1).map((n) => +n.toFixed(3)));
+    if (lb) console.log("localBind:", Array.from(lb).map((n) => +n.toFixed(3)));
+    if (ibm) console.log("ibm:", Array.from(ibm).map((n) => +n.toFixed(3)));
+    if (lb) {
+      const m = new THREE.Matrix4().fromArray(lb);
+      const t = new THREE.Vector3();
+      const q = new THREE.Quaternion();
+      const s = new THREE.Vector3();
+      m.decompose(t, q, s);
+      console.log("localBind decomposed → T:", t.toArray().map((n) => +n.toFixed(3)),
+        "Q:", q.toArray().map((n) => +n.toFixed(3)),
+        "S:", s.toArray().map((n) => +n.toFixed(3)));
+    }
+    console.groupEnd();
+  };
+  dumpBone(0, "root");
+  if (sk.bone_count > 1) dumpBone(1, "bone 1");
+
+  const bones: THREE.Bone[] = [];
   for (let i = 0; i < sk.bone_count; i++) {
     const bone = new THREE.Bone();
     bone.name = `bone_${i}`;
@@ -80,22 +109,28 @@ export function buildSkinnedAsset(
     }
     bones.push(bone);
   }
+  if (bones[0]) {
+    console.log("bone[0] decomposed:", {
+      pos: bones[0].position.toArray().map((n) => +n.toFixed(3)),
+      quat: bones[0].quaternion.toArray().map((n) => +n.toFixed(3)),
+      scale: bones[0].scale.toArray().map((n) => +n.toFixed(3)),
+    });
+  }
 
-  
-  
   const root = new THREE.Group();
   root.name = `skin_${asset.asset_tuid}`;
+  let rootBoneCount = 0;
   for (let i = 0; i < sk.bone_count; i++) {
     const pi = sk.parents[i] ?? -1;
     if (pi < 0 || pi >= bones.length) {
       root.add(bones[i]!);
+      rootBoneCount++;
     } else {
       bones[pi]!.add(bones[i]!);
     }
   }
+  console.log("rootBones:", rootBoneCount);
 
-  
-  
   let boneInverses: THREE.Matrix4[] | undefined;
   if (worldInverseMatrices.length === sk.bone_count) {
     boneInverses = worldInverseMatrices.map((m) =>
@@ -104,12 +139,15 @@ export function buildSkinnedAsset(
   }
   const skeleton = new THREE.Skeleton(bones, boneInverses);
 
-  
+
   const materials: THREE.Material[] = [];
   const geometries: THREE.BufferGeometry[] = [];
   const skinnedMeshes: THREE.SkinnedMesh[] = [];
-  for (const s of asset.submeshes) {
+  for (let smi = 0; smi < asset.submeshes.length; smi++) {
+    const s = asset.submeshes[smi]!;
     const decoded = decodeMeshGeom(s);
+
+
     const geom = new THREE.BufferGeometry();
     geom.setAttribute("position", new THREE.BufferAttribute(decoded.positions, 3));
     if (decoded.uvs.length > 0) {
@@ -152,6 +190,9 @@ export function buildSkinnedAsset(
       root.add(mesh);
     }
   }
+
+  console.log("skinnedMeshes:", skinnedMeshes.length);
+  console.groupEnd();
 
   return {
     root,

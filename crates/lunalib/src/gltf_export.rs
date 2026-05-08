@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use crate::animation::DecodedClip;
 use crate::error::{Error, Result};
-use crate::math::{mat4_inverse_row_major, mat4_mul_row_major, transpose_4x4};
+use crate::math::decompose_col_major;
 use crate::moby::{MobyAsset, MobyMesh};
 use crate::shader::ShaderInfo;
 use crate::skeleton::Skeleton;
@@ -210,18 +210,28 @@ fn emit_skin(
     let bone_node_base = nodes.len() as u32;
 
     for i in 0..bone_count {
-        let matrix: Option<[f32; 16]> = skel.bind_local.get(i).copied();
+        let (translation, scale, quat) = match skel.bind_local.get(i).copied() {
+            Some(local) => {
+                let mut clean = local;
+                clean[3] = 0.0;
+                clean[7] = 0.0;
+                clean[11] = 0.0;
+                clean[15] = 1.0;
+                decompose_col_major(&clean)
+            }
+            None => ([0.0; 3], [1.0; 3], [0.0, 0.0, 0.0, 1.0]),
+        };
         nodes.push(gltf_json::Node {
             camera: None,
             children: None,
             extensions: Default::default(),
             extras: Default::default(),
-            matrix,
+            matrix: None,
             mesh: None,
             name: Some(format!("bone_{i}")),
-            rotation: None,
-            scale: None,
-            translation: None,
+            rotation: Some(gltf_json::scene::UnitQuaternion(quat)),
+            scale: Some(scale),
+            translation: Some(translation),
             skin: None,
             weights: None,
         });
@@ -279,28 +289,20 @@ fn emit_skin(
 }
 
 fn pack_ibms(skel: &Skeleton, bone_count: usize) -> Vec<u8> {
-    let mut world_row: Vec<[f32; 16]> = vec![IDENTITY_MAT4; bone_count];
-    for i in 0..bone_count {
-        let local_col = skel.bind_local.get(i).copied().unwrap_or(IDENTITY_MAT4);
-        let parent = skel
-            .bones
-            .get(i)
-            .map(|b| b.parent_index)
-            .unwrap_or(-1);
-        let parent_w_row = if parent >= 0 && (parent as usize) < bone_count {
-            world_row[parent as usize]
-        } else {
-            IDENTITY_MAT4
-        };
-        world_row[i] = mat4_mul_row_major(&local_col, &parent_w_row);
-    }
-
     let mut out = Vec::with_capacity(bone_count * 64);
     for i in 0..bone_count {
-        let inv_row = mat4_inverse_row_major(&world_row[i]).unwrap_or(IDENTITY_MAT4);
-        let inv_col = transpose_4x4(&inv_row);
-        for v in inv_col {
-            out.write_f32::<LittleEndian>(v).expect("vec write");
+        let mut ibm = skel
+            .bind_world_inverse
+            .get(i)
+            .copied()
+            .unwrap_or(IDENTITY_MAT4);
+        ibm[3] = 0.0;
+        ibm[7] = 0.0;
+        ibm[11] = 0.0;
+        ibm[15] = 1.0;
+        for v in ibm {
+            let cleaned = if v.is_finite() { v } else { 0.0 };
+            out.write_f32::<LittleEndian>(cleaned).expect("vec write");
         }
     }
     out

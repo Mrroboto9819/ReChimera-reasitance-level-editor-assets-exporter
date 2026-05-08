@@ -5,20 +5,24 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use lunalib::{
-    decode_animation, read_animation_control, read_animation_header,
+    animation_section_offsets, decode_animation, read_animation_control, read_animation_header_at,
     read_moby_assets_with_total, read_shaders, read_tie_assets_with_total,
-    AssetKind, AssetLookup, DecodedClip, IgFile, ShaderInfo,
+    read_zones, AssetKind, AssetLookup, DecodedClip, IgFile, ShaderInfo, UFrag, Zone,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
-use crate::{build_skeleton_dto, mesh_dto, resolve_shader_textures, AssetMeshesDto};
+use crate::{
+    build_skeleton_dto, mesh_dto, resolve_shader_textures, AssetMeshesDto, UFragMeshDto,
+};
 
 const CACHE_DIR_NAME: &str = "_rechimera_cache";
 const MANIFEST_NAME: &str = "manifest.json";
 
 const MANIFEST_VERSION: u32 = 2;
 const TEXTURE_MAX_DIM: u32 = 512;
+
+const TARGET_LOG_HASH: u64 = 0x5ED3_7B1C_9C40_3839;
 
 const SOURCE_FILES: &[&str] = &[
     "assetlookup.dat",
@@ -164,37 +168,65 @@ impl AnimsetIndex {
     }
 }
 
-fn decode_clip_for_moby(
+fn decode_clips_for_moby(
     level_folder: &Path,
     index: &AnimsetIndex,
     animsets_file: &mut std::fs::File,
     animset_hash: u64,
     position_scale: f32,
     scale_scale: f32,
-) -> Option<DecodedClip> {
-    let (offset, length) = *index.by_hash.get(&animset_hash)?;
+) -> Vec<DecodedClip> {
+    let Some(&(offset, length)) = index.by_hash.get(&animset_hash) else {
+        return Vec::new();
+    };
     use std::io::{Read, Seek, SeekFrom};
     if animsets_file
         .seek(SeekFrom::Start(u64::from(offset)))
         .is_err()
     {
-        return None;
+        return Vec::new();
     }
     let mut buf = vec![0u8; length as usize];
     if animsets_file.read_exact(&mut buf).is_err() {
-        return None;
+        return Vec::new();
     }
-    let mut ig = IgFile::open(std::io::Cursor::new(buf)).ok()?;
-    let header = read_animation_header(&mut ig).ok().flatten()?;
-    let ctrl = read_animation_control(&mut ig, &header).ok()?;
-    decode_animation(&mut ig, &header, &ctrl, position_scale, scale_scale).ok().or_else(
-        || {
-            eprintln!(
-                "warn: animset 0x{animset_hash:016X} decode failed for level {level_folder:?}"
-            );
-            None
-        },
-    )
+    let mut ig = match IgFile::open(std::io::Cursor::new(buf)) {
+        Ok(ig) => ig,
+        Err(_) => return Vec::new(),
+    };
+    let offsets = animation_section_offsets(&ig);
+    let mut out = Vec::with_capacity(offsets.len());
+    for (i, off) in offsets.into_iter().enumerate() {
+        let header = match read_animation_header_at(&mut ig, off) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!(
+                    "warn: animset 0x{animset_hash:016X} clip[{i}] header read failed: {e}"
+                );
+                continue;
+            }
+        };
+        let ctrl = match read_animation_control(&mut ig, &header) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "warn: animset 0x{animset_hash:016X} clip[{i}] '{}' control read failed: {e}",
+                    header.name
+                );
+                continue;
+            }
+        };
+        match decode_animation(&mut ig, &header, &ctrl, position_scale, scale_scale) {
+            Ok(clip) => out.push(clip),
+            Err(e) => {
+                eprintln!(
+                    "warn: animset 0x{animset_hash:016X} clip[{i}] '{}' decode failed (level {level_folder:?}): {e}",
+                    header.name
+                );
+            }
+        }
+    }
+    out
 }
 
 fn ensure_dirs(root: &Path) -> Result<(), String> {
@@ -273,6 +305,88 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
             None,
             phase_total_emit,
             |asset| {
+
+                if asset.tuid == TARGET_LOG_HASH {
+                    eprintln!(
+                        "[target 0x{:016X}] moby name={:?} animset={:?} bind_pose_inverse_offset={}",
+                        asset.tuid,
+                        asset.name,
+                        asset.animset_hash.map(|h| format!("0x{:016X}", h)),
+                        asset.bind_pose_inverse_offset,
+                    );
+                    eprintln!(
+                        "[target 0x{:016X}] shader_tuids.len={} bangles.len={}",
+                        asset.tuid,
+                        asset.shader_tuids.len(),
+                        asset.bangles.len(),
+                    );
+                    if let Some(skel) = asset.skeleton.as_ref() {
+                        eprintln!(
+                            "[target 0x{:016X}] skeleton bones={} root={} scale_shift={} translation_shift={}",
+                            asset.tuid,
+                            skel.bones.len(),
+                            skel.root_bone,
+                            skel.scale_shift,
+                            skel.translation_shift,
+                        );
+                        if !skel.tms0_col.is_empty() {
+                            eprintln!(
+                                "[target 0x{:016X}] tms0_col[0] = {:?}",
+                                asset.tuid, skel.tms0_col[0]
+                            );
+                            eprintln!(
+                                "[target 0x{:016X}] tms0_col[0] T@[12,13,14] = ({}, {}, {})",
+                                asset.tuid,
+                                skel.tms0_col[0][12],
+                                skel.tms0_col[0][13],
+                                skel.tms0_col[0][14],
+                            );
+                        }
+                        if !skel.tms1_col.is_empty() {
+                            eprintln!(
+                                "[target 0x{:016X}] tms1_col[0] = {:?}",
+                                asset.tuid, skel.tms1_col[0]
+                            );
+                            eprintln!(
+                                "[target 0x{:016X}] tms1_col[0] T@[12,13,14] = ({}, {}, {})",
+                                asset.tuid,
+                                skel.tms1_col[0][12],
+                                skel.tms1_col[0][13],
+                                skel.tms1_col[0][14],
+                            );
+                        }
+                        if !skel.bind_local.is_empty() {
+                            let last = skel.bind_local.len() - 1;
+                            eprintln!(
+                                "[target 0x{:016X}] bind_local[0] T@[12,13,14] = ({}, {}, {})",
+                                asset.tuid,
+                                skel.bind_local[0][12],
+                                skel.bind_local[0][13],
+                                skel.bind_local[0][14],
+                            );
+                            eprintln!(
+                                "[target 0x{:016X}] bind_local[{}] T@[12,13,14] = ({}, {}, {})",
+                                asset.tuid,
+                                last,
+                                skel.bind_local[last][12],
+                                skel.bind_local[last][13],
+                                skel.bind_local[last][14],
+                            );
+                        }
+                        let parents: Vec<i16> =
+                            skel.bones.iter().map(|b| b.parent_index).collect();
+                        eprintln!(
+                            "[target 0x{:016X}] parents (first 32) = {:?}",
+                            asset.tuid,
+                            &parents[..parents.len().min(32)]
+                        );
+                    } else {
+                        eprintln!(
+                            "[target 0x{:016X}] no skeleton parsed",
+                            asset.tuid
+                        );
+                    }
+                }
 
                 moby_assets_for_glb.push(asset.clone());
 
@@ -397,6 +511,74 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
     )
     .map_err(|e| e.to_string())?;
 
+    let zones: Vec<Zone> = match read_zones(level_path) {
+        Ok(z) => z,
+        Err(e) => {
+            eprintln!("warn: read_zones failed: {e}; skipping ufrag cache phase");
+            Vec::new()
+        }
+    };
+    let mut total_ufrags = 0usize;
+    for z in &zones {
+        for u in &z.ufrags {
+            if u.positions.is_empty() || u.indices.is_empty() {
+                continue;
+            }
+            total_ufrags += 1;
+        }
+    }
+    let _ = on_event.send(CacheEvent::Phase {
+        phase: "ufrags",
+        total: total_ufrags,
+    });
+    fs::create_dir_all(root.join("ufrags")).map_err(|e| format!("create ufrags dir: {e}"))?;
+    let mut ufrag_done = 0usize;
+    for zone in zones {
+        let zone_tuid_hex = format!("0x{:016X}", zone.tuid);
+        let shader_tuids = zone.ufrag_shader_tuids.clone();
+        for u in zone.ufrags {
+            if u.positions.is_empty() || u.indices.is_empty() {
+                continue;
+            }
+            let UFrag {
+                tuid,
+                shader_index,
+                position,
+                positions,
+                uvs,
+                indices,
+                ..
+            } = u;
+            let shader_info = shader_tuids
+                .get(shader_index as usize)
+                .and_then(|st| shaders.get(st));
+            let albedo = shader_info.and_then(|s| s.albedo_tex_id);
+            let normal = shader_info.and_then(|s| s.normal_tex_id);
+            let emissive = shader_info.and_then(|s| s.expensive_tex_id);
+            for id in [albedo, normal, emissive].into_iter().flatten() {
+                needed_textures.insert(id);
+            }
+            let dto = UFragMeshDto {
+                tuid: format!("0x{:016X}", tuid),
+                zone_tuid: zone_tuid_hex.clone(),
+                position,
+                mesh: mesh_dto(positions, uvs, indices, albedo, normal, emissive, Vec::new(), Vec::new()),
+            };
+            let file_rel = format!("ufrags/{}.json", dto.tuid);
+            let path = root.join(&file_rel);
+            let size_bytes = write_json(&path, &dto).unwrap_or(0);
+            entries.push(CacheManifestEntry {
+                kind: "ufrag".into(),
+                tuid: dto.tuid,
+                name: dto.zone_tuid,
+                file: file_rel,
+                size_bytes,
+            });
+            ufrag_done += 1;
+            let _ = on_event.send(CacheEvent::Progress { current: ufrag_done });
+        }
+    }
+
     let needed_ids: Vec<u32> = needed_textures.iter().copied().collect();
     let _ = on_event.send(CacheEvent::Phase {
         phase: "textures",
@@ -440,18 +622,51 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
             animsets_file.as_mut(),
         ) {
             (Some(hash), Some(idx), Some(file)) => {
-                let pos_scale = 2f32.powi(asset.bind_pose_inverse_offset as i32);
-                let scale_scale = asset
+                let trans_shift = asset
                     .skeleton
                     .as_ref()
-                    .map(|s| 2f32.powi(s.scale_shift as i32))
-                    .unwrap_or(1.0);
-                decode_clip_for_moby(level_path, idx, file, hash, pos_scale, scale_scale)
-                    .into_iter()
-                    .collect()
+                    .map(|s| s.translation_shift)
+                    .unwrap_or(0);
+                let scale_shift_v = asset
+                    .skeleton
+                    .as_ref()
+                    .map(|s| s.scale_shift)
+                    .unwrap_or(0);
+                let pos_scale = if (trans_shift as u32) < 15 {
+                    1.0 / (0x8000u32 >> trans_shift) as f32
+                } else {
+                    1.0 / 32768.0
+                };
+                let scale_scale = if (scale_shift_v as u32) < 15 {
+                    1.0 / (0x8000u32 >> scale_shift_v) as f32
+                } else {
+                    1.0 / 32768.0
+                };
+                decode_clips_for_moby(level_path, idx, file, hash, pos_scale, scale_scale)
             }
             _ => Vec::new(),
         };
+        if asset.tuid == TARGET_LOG_HASH {
+            eprintln!(
+                "[target 0x{:016X}] writing GLB: clips={} shaders.len={} texture_pngs.len={}",
+                asset.tuid,
+                clips.len(),
+                shaders.len(),
+                texture_pngs.len(),
+            );
+            for (i, clip) in clips.iter().enumerate() {
+                eprintln!(
+                    "[target 0x{:016X}] clip[{}] name={:?} frames={} fps={} bones={} looping={}",
+                    asset.tuid,
+                    i,
+                    clip.name,
+                    clip.num_frames,
+                    clip.frame_rate,
+                    clip.bones.len(),
+                    clip.looping
+                );
+            }
+        }
         match lunalib::write_moby_glb_full(&asset, &clips, &shaders, &texture_pngs) {
             Ok(glb_bytes) => {
                 let glb_rel = format!("mobys/0x{:016X}.glb", asset.tuid);
@@ -477,7 +692,33 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         let _ = on_event.send(CacheEvent::Progress { current: glb_done });
     }
 
-    let _ = tie_assets_for_glb;
+    fs::create_dir_all(root.join("ties")).map_err(|e| format!("create ties dir: {e}"))?;
+    for tie in tie_assets_for_glb.into_iter() {
+        let synth = tie_as_moby(&tie);
+        match lunalib::write_moby_glb_full(&synth, &[], &shaders, &texture_pngs) {
+            Ok(glb_bytes) => {
+                let glb_rel = format!("ties/0x{:016X}.glb", tie.tuid);
+                let glb_path = root.join(&glb_rel);
+                if fs::write(&glb_path, &glb_bytes).is_ok() {
+                    entries.push(CacheManifestEntry {
+                        kind: "tie_glb".into(),
+                        tuid: format!("0x{:016X}", tie.tuid),
+                        name: synth.name.clone(),
+                        file: glb_rel,
+                        size_bytes: glb_bytes.len() as u64,
+                    });
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "warn: GLB export failed for tie 0x{:016X}: {e}",
+                    tie.tuid
+                );
+            }
+        }
+        glb_done += 1;
+        let _ = on_event.send(CacheEvent::Progress { current: glb_done });
+    }
 
     let manifest = CacheManifest {
         version: MANIFEST_VERSION,
@@ -618,21 +859,20 @@ pub fn export_cached_moby_glb(
     asset_tuid_hex: String,
     out_path: String,
 ) -> Result<u64, String> {
-    let cache_glb = cache_root(&level_folder)
-        .join("mobys")
-        .join(format!("{asset_tuid_hex}.glb"));
-    if !cache_glb.is_file() {
+    let root = cache_root(&level_folder);
+    let moby_glb = root.join("mobys").join(format!("{asset_tuid_hex}.glb"));
+    let tie_glb = root.join("ties").join(format!("{asset_tuid_hex}.glb"));
+    let cache_glb = if moby_glb.is_file() {
+        moby_glb
+    } else if tie_glb.is_file() {
+        tie_glb
+    } else {
         return Err(format!(
-            "Cached GLB not found at {} — re-extract the level cache first",
-            cache_glb.display()
+            "Cached GLB not found in mobys/ or ties/ for {asset_tuid_hex} — re-extract the level cache first"
         ));
-    }
+    };
     fs::copy(&cache_glb, &out_path).map_err(|e| {
-        format!(
-            "copy {} → {}: {e}",
-            cache_glb.display(),
-            out_path
-        )
+        format!("copy {} → {}: {e}", cache_glb.display(), out_path)
     })
 }
 
@@ -674,5 +914,34 @@ fn sanitized_cache_path(folder: &str, file: &str) -> Result<PathBuf, String> {
         return Err(format!("rejected absolute path: {file}"));
     }
     Ok(cache_root(folder).join(file))
+}
+
+fn tie_as_moby(tie: &lunalib::TieAsset) -> lunalib::MobyAsset {
+    let meshes: Vec<lunalib::MobyMesh> = tie
+        .meshes
+        .iter()
+        .map(|m| lunalib::MobyMesh {
+            shader_index: m.shader_index,
+            vertex_count: m.vertex_count,
+            index_count: m.index_count,
+            vertex_stride: 0x14,
+            positions: m.positions.clone(),
+            uvs: m.uvs.clone(),
+            indices: m.indices.clone(),
+            bone_indices: Vec::new(),
+            bone_weights: Vec::new(),
+        })
+        .collect();
+    lunalib::MobyAsset {
+        tuid: tie.tuid,
+        name: format!("tie_{:016X}", tie.tuid),
+        bangles: vec![lunalib::MobyBangle { meshes }],
+        bsphere_position: [0.0, 0.0, 0.0],
+        bsphere_radius: 0.0,
+        shader_tuids: tie.shader_tuids.clone(),
+        skeleton: None,
+        animset_hash: None,
+        bind_pose_inverse_offset: 0,
+    }
 }
 

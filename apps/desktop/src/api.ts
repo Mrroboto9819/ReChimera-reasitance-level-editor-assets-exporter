@@ -99,13 +99,9 @@ export const buildLevelManifest = (folder: string) =>
 
 
 export interface CacheManifestEntry {
-  
-  kind: "moby" | "tie" | "texture";
-  
+  kind: "moby" | "tie" | "texture" | "ufrag";
   tuid: string;
-  
   name: string;
-  
   file: string;
   size_bytes: number;
 }
@@ -195,20 +191,89 @@ export async function loadCachedTextures(
   ids: number[],
 ): Promise<TextureBlobMap> {
   const out: TextureBlobMap = new Map();
-  
-  
-  
-  
   for (const id of ids) {
     try {
       const buf = await readCachedBytes(folder, `textures/${id}.png`);
       out.set(id, new Blob([buf], { type: "image/png" }));
     } catch {
-      
-      
+      /* ignore — missing texture */
     }
   }
   return out;
+}
+
+export interface CacheLoadProgress {
+  phase: "manifest" | "mobys" | "ties" | "ufrags" | "textures";
+  current: number;
+  total: number;
+}
+
+export async function loadFromCache(
+  folder: string,
+  onProgress?: (p: CacheLoadProgress) => void,
+): Promise<LevelMeshes> {
+  onProgress?.({ phase: "manifest", current: 0, total: 1 });
+  const manifest = await readCachedManifest(folder);
+
+  const mobyEntries = manifest.entries.filter(
+    (e) => e.kind === "moby" && e.file.endsWith(".json"),
+  );
+  const tieEntries = manifest.entries.filter(
+    (e) => e.kind === "tie" && e.file.endsWith(".json"),
+  );
+  const ufragEntries = manifest.entries.filter((e) => e.kind === "ufrag");
+  const textureEntries = manifest.entries.filter((e) => e.kind === "texture");
+
+  const moby_assets: AssetMeshes[] = [];
+  onProgress?.({ phase: "mobys", current: 0, total: mobyEntries.length });
+  for (let i = 0; i < mobyEntries.length; i++) {
+    try {
+      const data = (await readCachedAsset(folder, mobyEntries[i]!.file)) as AssetMeshes;
+      moby_assets.push(data);
+    } catch {
+      /* skip corrupted entry */
+    }
+    if ((i + 1) % 8 === 0 || i === mobyEntries.length - 1) {
+      onProgress?.({ phase: "mobys", current: i + 1, total: mobyEntries.length });
+    }
+  }
+
+  const tie_assets: AssetMeshes[] = [];
+  onProgress?.({ phase: "ties", current: 0, total: tieEntries.length });
+  for (let i = 0; i < tieEntries.length; i++) {
+    try {
+      const data = (await readCachedAsset(folder, tieEntries[i]!.file)) as AssetMeshes;
+      tie_assets.push(data);
+    } catch {
+      /* skip */
+    }
+    if ((i + 1) % 8 === 0 || i === tieEntries.length - 1) {
+      onProgress?.({ phase: "ties", current: i + 1, total: tieEntries.length });
+    }
+  }
+
+  const ufrag_meshes: UFragMesh[] = [];
+  onProgress?.({ phase: "ufrags", current: 0, total: ufragEntries.length });
+  for (let i = 0; i < ufragEntries.length; i++) {
+    try {
+      const data = (await readCachedAsset(folder, ufragEntries[i]!.file)) as UFragMesh;
+      ufrag_meshes.push(data);
+    } catch {
+      /* skip */
+    }
+    if ((i + 1) % 16 === 0 || i === ufragEntries.length - 1) {
+      onProgress?.({ phase: "ufrags", current: i + 1, total: ufragEntries.length });
+    }
+  }
+
+  const textures: TexturePayload[] = textureEntries.map((e) => ({
+    id: parseInt(e.tuid, 10),
+    width: 0,
+    height: 0,
+  }));
+  onProgress?.({ phase: "textures", current: textures.length, total: textures.length });
+
+  return { moby_assets, tie_assets, ufrag_meshes, textures };
 }
 
 export interface UFragBounds {

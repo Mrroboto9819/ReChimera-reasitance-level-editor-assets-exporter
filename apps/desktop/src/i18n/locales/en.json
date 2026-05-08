@@ -106,6 +106,18 @@
     "open": "Open",
     "dropHint": "Drop a folder here"
   },
+  "loadModal": {
+    "title": "Loading level",
+    "subtitle": "Decoding mobys, ties, terrain, and textures from the source .dat files.",
+    "phase_layout": "Layout",
+    "phase_shaders": "Shaders",
+    "phase_mobys": "Mobys",
+    "phase_ties": "Ties",
+    "phase_ufrags": "Terrain",
+    "phase_textures": "Textures",
+    "warning": "Heavy decoding — the window may briefly freeze. Don't close the app; it keeps working in the background and will return when the current phase finishes.",
+    "hint": "This runs once per level open. The next time you open this level it will be much faster."
+  },
   "cacheModal": {
     "title": "Building level cache",
     "subtitle": "Decoding mobys, ties, and textures into _rechimera_cache/ — pre-baked GLBs make exports faster.",

@@ -106,6 +106,18 @@
     "open": "Ouvrir",
     "dropHint": "Déposez un dossier ici"
   },
+  "loadModal": {
+    "title": "Chargement du niveau",
+    "subtitle": "Décodage des mobys, ties, terrain et textures depuis les fichiers .dat sources.",
+    "phase_layout": "Layout",
+    "phase_shaders": "Shaders",
+    "phase_mobys": "Mobys",
+    "phase_ties": "Ties",
+    "phase_ufrags": "Terrain",
+    "phase_textures": "Textures",
+    "warning": "Décodage intensif — la fenêtre peut se figer brièvement. Ne fermez pas l'application ; elle continue en arrière-plan et reviendra à la fin de la phase actuelle.",
+    "hint": "S'exécute une fois par ouverture de niveau. Les prochaines fois seront beaucoup plus rapides."
+  },
   "cacheModal": {
     "title": "Génération du cache du niveau",
     "subtitle": "Décodage des mobys, ties et textures dans _rechimera_cache/ — les GLB pré-cuits accélèrent les exports.",

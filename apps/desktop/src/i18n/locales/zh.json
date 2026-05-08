@@ -106,6 +106,18 @@
     "open": "打开",
     "dropHint": "在此处拖放文件夹"
   },
+  "loadModal": {
+    "title": "正在加载关卡",
+    "subtitle": "从源 .dat 文件解码 mobys、ties、地形和贴图。",
+    "phase_layout": "布局",
+    "phase_shaders": "着色器",
+    "phase_mobys": "Mobys",
+    "phase_ties": "Ties",
+    "phase_ufrags": "地形",
+    "phase_textures": "贴图",
+    "warning": "繁重解码 — 窗口可能短暂卡住。不要关闭应用,它在后台继续工作,当前阶段完成后会恢复。",
+    "hint": "每次打开关卡运行一次。下次打开此关卡会快得多。"
+  },
   "cacheModal": {
     "title": "正在生成关卡缓存",
     "subtitle": "将 mobys、ties 和贴图解码到 _rechimera_cache/ — 预烘焙的 GLB 让导出更快。",

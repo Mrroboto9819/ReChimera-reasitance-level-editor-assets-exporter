@@ -23,17 +23,9 @@ import { Button } from "./ui";
 interface CacheLibraryModalProps {
   open: boolean;
   onClose: () => void;
-  
   folder: string | null;
-  
-
-
-
-
-  onExport: (
-    asset: AssetMeshes,
-    textureBlobs: TextureBlobMap,
-  ) => Promise<void> | void;
+  initialAssetTuid?: string | null;
+  onRequestExtract?: () => void;
 }
 
 type LibraryFilter = "moby" | "tie";
@@ -82,7 +74,8 @@ export function CacheLibraryModal({
   open,
   onClose,
   folder,
-  onExport,
+  initialAssetTuid,
+  onRequestExtract,
 }: CacheLibraryModalProps) {
   const [manifest, setManifest] = useState<CacheManifest | null>(null);
   const [manifestError, setManifestError] = useState<string | null>(null);
@@ -213,10 +206,21 @@ export function CacheLibraryModal({
   }, [manifest, search, filter]);
 
   
-  
   useEffect(() => {
     setSelectedTuid(null);
   }, [filter]);
+
+  useEffect(() => {
+    if (!open || !initialAssetTuid || !manifest) return;
+    const entry = manifest.entries.find(
+      (e) =>
+        (e.kind === "moby" || e.kind === "tie") && e.tuid === initialAssetTuid,
+    );
+    if (entry) {
+      setFilter(entry.kind as LibraryFilter);
+      setSelectedTuid(initialAssetTuid);
+    }
+  }, [open, initialAssetTuid, manifest]);
 
   const totalShown = useMemo(
     () => grouped.reduce((sum, b) => sum + b.rows.length, 0),
@@ -259,47 +263,63 @@ export function CacheLibraryModal({
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const handleExport = async () => {
     if (!selectedAsset || exporting || !folder) return;
-    
-    
-    
-    
+    console.group("[export:cache-modal] click");
+    console.log("asset_tuid:", selectedAsset.asset_tuid);
+    console.log("name:", selectedAsset.name);
+    console.log("kind:", filter);
+    console.log("submeshes:", selectedAsset.submeshes.length);
+    console.log("hasSkeleton:", selectedAsset.skeleton != null);
+    console.log("textures available:", selectedTextures.size);
+    console.log("folder:", folder);
+
     const filenameStem =
       selectedAsset.name && selectedAsset.name.length > 0
         ? selectedAsset.name.replace(/[\\/:"*?<>|]/g, "_")
         : selectedAsset.asset_tuid.replace(/^0x/, "");
+
     let path: string | null = null;
     try {
+      console.log("step 1: opening save dialog…");
       path = await saveDialog({
         defaultPath: `${filenameStem}.glb`,
         filters: [{ name: "Binary glTF", extensions: ["glb"] }],
         title: "Export .glb",
       });
     } catch (e) {
+      console.error("[export:cache-modal] save dialog failed", e);
       setExportStatus(`Save dialog failed: ${e}`);
+      console.groupEnd();
       return;
     }
-    if (!path) return;
+    if (!path) {
+      console.log("[export:cache-modal] cancelled — no path picked");
+      console.groupEnd();
+      return;
+    }
+    console.log("step 1 ok: target path =", path);
+
     setExporting(true);
     setExportStatus("Copying cached GLB…");
     try {
+      console.log(
+        "step 2: invoking exportCachedMobyGlb (Rust copies pre-baked GLB from _rechimera_cache/mobys/)…",
+      );
       const bytes = await exportCachedMobyGlb(
         folder,
         selectedAsset.asset_tuid,
         path,
       );
+      console.log("step 2 ok: wrote", bytes, "bytes →", path);
+      console.log(
+        "[export:cache-modal] success — single Rust copy, NO double-export anymore",
+      );
       setExportStatus(`Exported ${bytes.toLocaleString()} bytes → ${path}`);
-      
-      
-      
-      try {
-        await Promise.resolve(onExport(selectedAsset, selectedTextures));
-      } catch {
-        
-      }
     } catch (e) {
+      console.error("[export:cache-modal] failed", e);
       setExportStatus(`Export failed: ${e}`);
     } finally {
       setExporting(false);
+      console.groupEnd();
     }
   };
 
@@ -426,8 +446,21 @@ export function CacheLibraryModal({
             <span className="dim small">{totalShown}</span>
           </div>
           {manifestError && (
-            <div className="dim small" style={{ padding: 12 }}>
-              Cache not available: {manifestError}
+            <div className="cache-library-extract-cta">
+              <div className="cache-library-extract-title">No cache yet</div>
+              <div className="cache-library-extract-hint small dim">
+                {manifestError}
+              </div>
+              {onRequestExtract && (
+                <Button
+                  variant="primary"
+                  icon={Download}
+                  onClick={onRequestExtract}
+                  disabled={!folder}
+                >
+                  Extract level to cache
+                </Button>
+              )}
             </div>
           )}
           {!manifest && !manifestError && (
@@ -435,6 +468,32 @@ export function CacheLibraryModal({
               Loading manifest…
             </div>
           )}
+          {manifest &&
+            initialAssetTuid &&
+            !manifest.entries.some(
+              (e) =>
+                (e.kind === "moby" || e.kind === "tie") &&
+                e.tuid === initialAssetTuid,
+            ) && (
+              <div className="cache-library-extract-cta">
+                <div className="cache-library-extract-title">
+                  Asset not in cache
+                </div>
+                <div className="cache-library-extract-hint small dim">
+                  Extract the level to populate this asset.
+                </div>
+                {onRequestExtract && (
+                  <Button
+                    variant="primary"
+                    icon={Download}
+                    onClick={onRequestExtract}
+                    disabled={!folder}
+                  >
+                    Extract level to cache
+                  </Button>
+                )}
+              </div>
+            )}
           {manifest && totalShown === 0 && (
             <div className="dim small" style={{ padding: 12 }}>
               No mobys match this search.
@@ -480,6 +539,7 @@ export function CacheLibraryModal({
                   instance={previewInstance}
                   meshes={previewMeshes}
                   textureBlobs={selectedTextures.size > 0 ? selectedTextures : null}
+                  cacheFolder={folder ?? undefined}
                 />
               </div>
               <dl className="kv cache-library-meta">

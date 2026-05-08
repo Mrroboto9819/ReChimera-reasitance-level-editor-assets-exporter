@@ -24,8 +24,9 @@ pub mod tie;
 pub mod zone;
 
 pub use animation::{
-    decode_animation, read_animation_control, read_animation_frame, read_animation_header,
-    AnimationControl, AnimationHeader, DecodedBone, DecodedClip, TrackKind, TrackMask,
+    animation_section_offsets, decode_animation, read_animation_control, read_animation_frame,
+    read_animation_header, read_animation_header_at, AnimationControl, AnimationHeader,
+    DecodedBone, DecodedClip, TrackKind, TrackMask,
 };
 pub use assetlookup::{AssetKind, AssetLookup, AssetPointer};
 pub use error::{Error, Result};

@@ -17,6 +17,8 @@ import { Channel } from "@tauri-apps/api/core";
 import {
   cacheStatus,
   dumpSoundBank,
+  loadCachedTextures,
+  loadFromCache,
   readCachedManifest,
   reextractLevelCache,
   extractLevelSounds,
@@ -27,14 +29,11 @@ import {
   listAnimsetClips,
   listEntitiesGltfs,
   listGltfsInFolder,
-  getLevelTexturesBulk,
   listLevelFiles,
   listLevelSounds,
   openLevel,
-  streamLevelMeshes,
   wavBlobUrl,
   type AnimsetSummary,
-  type AssetMeshes,
   type CacheEvent,
   type CacheStatus,
   type ExtractedSound,
@@ -46,15 +45,12 @@ import {
   type PhaseId,
   type SoundEntry,
   type TextureBlobMap,
-  type TexturePayload,
   type UFragBounds,
-  type UFragMesh,
 } from "./api";
 import { AboutModal } from "./AboutModal";
 import { BottomPanel, type ConsoleEntry } from "./BottomPanel";
 import { CacheLibraryModal } from "./CacheLibraryModal";
 import { GltfCharacterModal } from "./GltfCharacterModal";
-import { RawCharacterModal } from "./RawCharacterModal";
 import { Hierarchy } from "./Hierarchy";
 import { Inspector } from "./Inspector";
 import { LoadProgress, type LoadPhaseState } from "./LoadProgress";
@@ -259,7 +255,7 @@ export function App() {
   
   
   
-  const [animsetClips, setAnimsetClips] = useState<AnimsetSummary[]>([]);
+  const [_animsetClips, setAnimsetClips] = useState<AnimsetSummary[]>([]);
   
   
   
@@ -372,12 +368,19 @@ export function App() {
   }, [error, log]);
 
   const handleExportSelection = useCallback(async () => {
-    if (selection.ids.size === 0 || !meshes) return;
+    console.log("[export:inspector] click", {
+      selectionSize: selection.ids.size,
+      hasMeshes: !!meshes,
+      mobyAssets: meshes?.moby_assets.length ?? 0,
+      tieAssets: meshes?.tie_assets.length ?? 0,
+      textureBlobs: textureBlobs?.size ?? 0,
+      overrideAnimsetHash,
+    });
+    if (selection.ids.size === 0 || !meshes) {
+      console.warn("[export:inspector] aborted — no selection or meshes");
+      return;
+    }
 
-    
-    
-    
-    
     let path: string | null = null;
     try {
       const selectedInstances = instances.filter((i) =>
@@ -385,15 +388,17 @@ export function App() {
       );
       path = await pickGlbExportPath(selectedInstances);
     } catch (err) {
+      console.error("[export:inspector] save dialog failed", err);
       log("error", `Save dialog failed: ${err}`);
       return;
     }
     if (!path) {
+      console.log("[export:inspector] cancelled — no path picked");
       log("info", "Export cancelled");
       return;
     }
 
-    
+    console.log("[export:inspector] using FE pipeline (exportToGlb)", { path });
     setExportState({
       phase: "preparing",
       label: "Building scene from selection",
@@ -411,11 +416,16 @@ export function App() {
         summary?.folder ?? null,
         overrideAnimsetHash,
       );
+      console.log("[export:inspector] success", {
+        bytes: result.bytes,
+        path: result.path,
+      });
       log(
         "ok",
         `Exported ${result.bytes.toLocaleString()} bytes → ${result.path}`,
       );
     } catch (err) {
+      console.error("[export:inspector] failed", err);
       log("error", `Export failed: ${err}`);
       setExportState({
         phase: "done",
@@ -433,77 +443,6 @@ export function App() {
   
   
   
-  const handleCacheLibraryExport = useCallback(
-    async (asset: AssetMeshes, textureBlobs: TextureBlobMap) => {
-      
-      
-      
-      
-      const isTie = asset.skeleton == null;
-      const synthInstance: Instance = {
-        tuid: `${asset.asset_tuid}#cache`,
-        asset_tuid: asset.asset_tuid,
-        kind: isTie ? "tie" : "moby",
-        name: asset.name || asset.asset_tuid,
-        position: [0, 0, 0],
-        quaternion: [0, 0, 0, 1],
-        scale: [1, 1, 1],
-      };
-      const synthMeshes: LevelMeshes = {
-        moby_assets: isTie ? [] : [asset],
-        tie_assets: isTie ? [asset] : [],
-        ufrag_meshes: [],
-        textures: [...textureBlobs.keys()].map((id) => ({
-          id,
-          width: 0,
-          height: 0,
-        })),
-      };
-      let path: string | null = null;
-      try {
-        path = await pickGlbExportPath([synthInstance]);
-      } catch (err) {
-        log("error", `Save dialog failed: ${err}`);
-        return;
-      }
-      if (!path) {
-        log("info", "Export cancelled");
-        return;
-      }
-      setExportState({
-        phase: "preparing",
-        label: "Building scene from cached asset",
-        fraction: 0,
-        detail: path,
-      });
-      try {
-        const result = await exportToGlb(
-          new Set([synthInstance.tuid]),
-          [synthInstance],
-          synthMeshes,
-          textureBlobs.size > 0 ? textureBlobs : null,
-          path,
-          (state) => setExportState(state),
-          summary?.folder ?? null,
-          null,
-        );
-        log(
-          "ok",
-          `Exported ${result.bytes.toLocaleString()} bytes → ${result.path}`,
-        );
-      } catch (err) {
-        log("error", `Export failed: ${err}`);
-        setExportState({
-          phase: "done",
-          label: `Export failed: ${err}`,
-          fraction: 0,
-          cancelled: true,
-        });
-      }
-    },
-    [summary?.folder, log],
-  );
-
   const toggle = useCallback(
     (key: keyof ViewSettingsState) => dispatch(toggleView(key)),
     [dispatch],
@@ -660,243 +599,138 @@ export function App() {
   
   
   type CacheMode = "auto" | "use-cache" | "force-reextract";
-  const loadFullMeshes = useCallback(async (
-    sum: LevelSummary,
-    cacheMode: CacheMode = "auto",
-  ) => {
-    setError(null);
-    setBusy(true);
-    setMeshes(null);
-    setTextureBlobs(null);
-    setMeshLoadPhase({
-      phase: "layout",
-      label: "Preparing mesh stream",
-      current: 0,
-      total: 1,
-      chunkSize: 1,
-    });
-    setCompletedPhases([]);
 
-    
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    );
-
-    const acc: LevelMeshes = {
-      moby_assets: [],
-      tie_assets: [],
-      ufrag_meshes: [],
-      textures: [],
-    };
-    let flushPending = false;
-    const flushMeshes = () => {
-      setMeshes({
-        moby_assets: [...acc.moby_assets],
-        tie_assets: [...acc.tie_assets],
-        ufrag_meshes: [...acc.ufrag_meshes],
-        textures: [...acc.textures],
-      });
-    };
-    const scheduleMeshFlush = () => {
-      if (flushPending) return;
-      flushPending = true;
-      requestAnimationFrame(() => {
-        flushPending = false;
-        flushMeshes();
-      });
-    };
-
-    const completedLocal: PhaseId[] = [];
-    let activePhase: PhaseId | null = null;
-
-    try {
-      await streamLevelMeshes(sum.folder, (e) => {
-        switch (e.type) {
-          case "phase":
-            if (activePhase && activePhase !== e.phase) {
-              completedLocal.push(activePhase);
-              log("ok", `Phase complete: ${activePhase}`);
-            }
-            activePhase = e.phase;
-            setMeshLoadPhase({
-              phase: e.phase,
-              label: e.label,
-              current: 0,
-              total: e.total,
-              chunkSize: e.chunk_size,
-            });
-            setCompletedPhases([...completedLocal]);
-            log("info", `${e.label} (${e.total.toLocaleString()})`);
-            break;
-          case "progress":
-            setMeshLoadPhase((p) => (p ? { ...p, current: e.current } : p));
-            break;
-          case "moby_asset":
-            acc.moby_assets.push(e.asset as AssetMeshes);
-            scheduleMeshFlush();
-            break;
-          case "tie_asset":
-            acc.tie_assets.push(e.asset as AssetMeshes);
-            scheduleMeshFlush();
-            break;
-          case "ufrag_mesh":
-            acc.ufrag_meshes.push(e.mesh as UFragMesh);
-            scheduleMeshFlush();
-            break;
-          case "texture":
-            acc.textures.push(e.texture as TexturePayload);
-            scheduleMeshFlush();
-            break;
-          case "done":
-            if (activePhase) completedLocal.push(activePhase);
-            setCompletedPhases([...completedLocal]);
-            flushMeshes();
-            setMeshLoadPhase(null);
-            log(
-              "ok",
-              `Level decode finished: ${acc.moby_assets.length} mobys, ${acc.tie_assets.length} ties, ${acc.ufrag_meshes.length} terrain, ${acc.textures.length} textures`,
-            );
-            
-            
-            
-            
-            
-            
-            {
-              const ids = acc.textures.map((t) => t.id);
-              if (ids.length > 0) {
-                const t0 = performance.now();
-                getLevelTexturesBulk(sum.folder, ids)
-                  .then((map) => {
-                    const dt = performance.now() - t0;
-                    let totalBytes = 0;
-                    for (const b of map.values()) totalBytes += b.size;
-                    console.log(
-                      `[texture-bulk-ipc] ${map.size}/${ids.length} textures · ${(totalBytes / 1024 / 1024).toFixed(2)} MB · ${dt.toFixed(0)} ms`,
-                    );
-                    setTextureBlobs(map);
-                  })
-                  .catch((err) => {
-                    log("error", `Texture bulk fetch failed: ${err}`);
-                  });
-              } else {
-                setTextureBlobs(new Map());
-              }
-            }
-
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            
-            const runExtract = (force: boolean) => {
-              log(
-                "info",
-                force
-                  ? "Rebuilding disk cache (user-requested re-extract)…"
-                  : "Building disk cache in background…",
-              );
-              const channel = new Channel<CacheEvent>();
-              let phaseTotals = { phase: "mobys" as const, total: 0 };
-              channel.onmessage = (event) => {
-                switch (event.type) {
-                  case "phase":
-                    phaseTotals = {
-                      phase: event.phase,
-                      total: event.total,
-                    } as never;
-                    setCacheProgress({
-                      phase: event.phase,
-                      current: 0,
-                      total: event.total,
-                    });
-                    break;
-                  case "progress":
-                    setCacheProgress({
-                      phase: phaseTotals.phase,
-                      current: event.current,
-                      total: phaseTotals.total,
-                    });
-                    break;
-                  case "done":
-                    setCacheProgress(null);
-                    cacheStatus(sum.folder)
-                      .then(setCacheState)
-                      .catch(() => {});
-                    readCachedManifest(sum.folder)
-                      .then(setCacheManifest)
-                      .catch(() => {});
-                    log("ok", `Cache built: ${event.entry_count} entries`);
-                    break;
-                  case "error":
-                    setCacheProgress(null);
-                    log("warn", `Cache extraction failed: ${event.message}`);
-                    break;
-                }
-              };
-              const fn = force ? reextractLevelCache : extractLevelToCache;
-              fn(sum.folder, channel).catch((e) => {
-                setCacheProgress(null);
-                log("warn", `Cache extraction failed: ${e}`);
+  const runCacheExtract = useCallback(
+    (folder: string, force: boolean): Promise<void> => {
+      return new Promise((resolve, reject) => {
+        log(
+          "info",
+          force
+            ? "Rebuilding disk cache (user-requested re-extract)…"
+            : "Extracting level to disk cache…",
+        );
+        const channel = new Channel<CacheEvent>();
+        let phaseTotals = { phase: "mobys" as const, total: 0 };
+        channel.onmessage = (event) => {
+          switch (event.type) {
+            case "phase":
+              phaseTotals = { phase: event.phase, total: event.total } as never;
+              setCacheProgress({
+                phase: event.phase,
+                current: 0,
+                total: event.total,
               });
-            };
-
-            if (cacheMode === "use-cache") {
-              cacheStatus(sum.folder)
-                .then((status) => {
-                  setCacheState(status);
-                  log(
-                    "ok",
-                    `Using cached data: ${status.mobys}M / ${status.ties}T / ${status.textures}tex`,
-                  );
-                  readCachedManifest(sum.folder)
-                    .then(setCacheManifest)
-                    .catch((e) => log("warn", `Cache manifest read failed: ${e}`));
-                })
-                .catch((e) => log("warn", `Cache status check failed: ${e}`));
-            } else if (cacheMode === "force-reextract") {
-              runExtract(true);
-            } else {
-              cacheStatus(sum.folder)
-                .then((status) => {
-                  setCacheState(status);
-                  if (status.exists) {
-                    log(
-                      "ok",
-                      `Cache ready: ${status.mobys}M / ${status.ties}T / ${status.textures}tex`,
-                    );
-                    readCachedManifest(sum.folder)
-                      .then(setCacheManifest)
-                      .catch((e) =>
-                        log("warn", `Cache manifest read failed: ${e}`),
-                      );
-                    return;
-                  }
-                  runExtract(false);
-                })
-                .catch((e) => log("warn", `Cache status check failed: ${e}`));
-            }
-            break;
-          case "error":
-            setError(e.message);
-            setMeshLoadPhase(null);
-            break;
-        }
+              break;
+            case "progress":
+              setCacheProgress({
+                phase: phaseTotals.phase,
+                current: event.current,
+                total: phaseTotals.total,
+              });
+              break;
+            case "done":
+              setCacheProgress(null);
+              cacheStatus(folder).then(setCacheState).catch(() => {});
+              log("ok", `Cache built: ${event.entry_count} entries`);
+              resolve();
+              break;
+            case "error":
+              setCacheProgress(null);
+              log("warn", `Cache extraction failed: ${event.message}`);
+              reject(new Error(event.message));
+              break;
+          }
+        };
+        const fn = force ? reextractLevelCache : extractLevelToCache;
+        fn(folder, channel).catch((e) => {
+          setCacheProgress(null);
+          log("warn", `Cache extraction failed: ${e}`);
+          reject(e instanceof Error ? e : new Error(String(e)));
+        });
       });
-    } catch (e) {
-      setError(`Mesh decode failed: ${e}`);
+    },
+    [log],
+  );
+
+  const loadFullMeshes = useCallback(
+    async (sum: LevelSummary, cacheMode: CacheMode = "auto") => {
+      setError(null);
+      setBusy(true);
+      setMeshes(null);
+      setTextureBlobs(null);
       setMeshLoadPhase(null);
-    } finally {
-      setBusy(false);
-    }
-  }, [log]);
+      setCompletedPhases([]);
+
+      try {
+        let needExtract = cacheMode === "force-reextract";
+        if (!needExtract) {
+          const status = await cacheStatus(sum.folder);
+          setCacheState(status);
+          needExtract = !status.exists || status.incomplete;
+        }
+        if (needExtract) {
+          await runCacheExtract(sum.folder, cacheMode === "force-reextract");
+          const status = await cacheStatus(sum.folder);
+          setCacheState(status);
+        }
+
+        const manifest = await readCachedManifest(sum.folder);
+        setCacheManifest(manifest);
+
+        setMeshLoadPhase({
+          phase: "mobys",
+          label: "Loading from cache",
+          current: 0,
+          total: 1,
+          chunkSize: 1,
+        });
+        const phaseLabel: Record<string, string> = {
+          manifest: "Reading manifest",
+          mobys: "Loading mobys",
+          ties: "Loading ties",
+          ufrags: "Loading terrain",
+          textures: "Loading textures",
+        };
+        const meshes = await loadFromCache(sum.folder, (p) => {
+          setMeshLoadPhase({
+            phase: p.phase === "manifest" ? "mobys" : (p.phase as PhaseId),
+            label: phaseLabel[p.phase] ?? p.phase,
+            current: p.current,
+            total: Math.max(p.total, 1),
+            chunkSize: 1,
+          });
+        });
+        setMeshes(meshes);
+        log(
+          "ok",
+          `Loaded from cache: ${meshes.moby_assets.length} mobys, ${meshes.tie_assets.length} ties, ${meshes.ufrag_meshes.length} terrain, ${meshes.textures.length} textures`,
+        );
+
+        const ids = meshes.textures.map((t) => t.id);
+        if (ids.length > 0) {
+          loadCachedTextures(sum.folder, ids)
+            .then((map) => {
+              console.log(
+                `[texture-cache] ${map.size}/${ids.length} textures from cache`,
+              );
+              setTextureBlobs(map);
+            })
+            .catch((err) => log("error", `Texture cache fetch failed: ${err}`));
+        } else {
+          setTextureBlobs(new Map());
+        }
+
+        setMeshLoadPhase(null);
+      } catch (e) {
+        console.error("[loadFullMeshes] failed", e);
+        setError(`Cache load failed: ${e}`);
+        setMeshLoadPhase(null);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [log, runCacheExtract],
+  );
 
 
   const handleOpen = useCallback(async (rawFolder: string) => {
@@ -1059,28 +893,9 @@ export function App() {
       
       
       
-      try {
-        setGltfLibraryStatus("Scanning entities/ for GLTF assets…");
-        const lib = await listEntitiesGltfs(folder);
-        if (lib.folder && lib.files.length > 0) {
-          log(
-            "ok",
-            `Entities GLTFs found at ${lib.folder} (${lib.files.length} files)`,
-          );
-          setGltfLibrary(lib.files);
-        } else if (lib.folder) {
-          log("info", `Entities folder ${lib.folder} contains no .gltf/.glb`);
-          setGltfLibrary([]);
-        } else {
-          log("info", "No entities/ folder found near this level");
-          setGltfLibrary(null);
-        }
-      } catch (e) {
-        log("warn", `Entities GLTF scan failed: ${e}`);
-        setGltfLibrary(null);
-      } finally {
-        setGltfLibraryStatus(null);
-      }
+      void setGltfLibrary;
+      void setGltfLibraryStatus;
+      void listEntitiesGltfs;
     } catch (e) {
       setError(String(e));
       setSummary(null);
@@ -1581,23 +1396,58 @@ export function App() {
         levelFolder={summary?.folder ?? null}
       />
 
-      <RawCharacterModal
-        assetTuid={previewAssetTuid}
-        meshes={meshes}
-        textureBlobs={textureBlobs}
-        levelFolder={summary?.folder ?? null}
-        animsetClips={animsetClips}
-        onClose={() => setPreviewAssetTuid(null)}
-      />
-
-      {
-}
-
       <CacheLibraryModal
-        open={cacheLibraryOpen}
-        onClose={() => setCacheLibraryOpen(false)}
+        open={cacheLibraryOpen || previewAssetTuid !== null}
+        onClose={() => {
+          setCacheLibraryOpen(false);
+          setPreviewAssetTuid(null);
+        }}
         folder={summary?.folder ?? null}
-        onExport={handleCacheLibraryExport}
+        initialAssetTuid={previewAssetTuid}
+        onRequestExtract={() => {
+          if (!summary) return;
+          console.log("[cache-modal] user requested extract", summary.folder);
+          const channel = new Channel<CacheEvent>();
+          let phaseTotals = { phase: "mobys" as const, total: 0 };
+          channel.onmessage = (event) => {
+            switch (event.type) {
+              case "phase":
+                phaseTotals = {
+                  phase: event.phase,
+                  total: event.total,
+                } as never;
+                setCacheProgress({
+                  phase: event.phase,
+                  current: 0,
+                  total: event.total,
+                });
+                break;
+              case "progress":
+                setCacheProgress({
+                  phase: phaseTotals.phase,
+                  current: event.current,
+                  total: phaseTotals.total,
+                });
+                break;
+              case "done":
+                setCacheProgress(null);
+                cacheStatus(summary.folder).then(setCacheState).catch(() => {});
+                readCachedManifest(summary.folder)
+                  .then(setCacheManifest)
+                  .catch(() => {});
+                log("ok", `Cache built: ${event.entry_count} entries`);
+                break;
+              case "error":
+                setCacheProgress(null);
+                log("warn", `Cache extraction failed: ${event.message}`);
+                break;
+            }
+          };
+          reextractLevelCache(summary.folder, channel).catch((e) => {
+            setCacheProgress(null);
+            log("warn", `Cache extraction failed: ${e}`);
+          });
+        }}
       />
 
       <Modal
@@ -1690,12 +1540,89 @@ export function App() {
       </Modal>
 
       <Modal
-        open={cacheProgress !== null}
+        open={meshLoadPhase !== null || cacheProgress !== null}
         dismissable={false}
-        title={t("cacheModal.title")}
-        subtitle={t("cacheModal.subtitle")}
+        title={
+          cacheProgress
+            ? t("cacheModal.title")
+            : t("loadModal.title")
+        }
+        subtitle={
+          cacheProgress
+            ? t("cacheModal.subtitle")
+            : t("loadModal.subtitle")
+        }
         size="md"
       >
+        {meshLoadPhase && !cacheProgress && (
+          <>
+            <div className="cache-progress-phases">
+              {(
+                [
+                  "layout",
+                  "shaders",
+                  "mobys",
+                  "ties",
+                  "ufrags",
+                  "textures",
+                ] as const
+              ).map((p) => {
+                const order = [
+                  "layout",
+                  "shaders",
+                  "mobys",
+                  "ties",
+                  "ufrags",
+                  "textures",
+                ];
+                const idx = order.indexOf(meshLoadPhase.phase);
+                const myIdx = order.indexOf(p);
+                const state =
+                  myIdx < idx ? "done" : myIdx === idx ? "active" : "pending";
+                return (
+                  <div
+                    key={p}
+                    className={`cache-progress-phase cache-progress-phase-${state}`}
+                  >
+                    <span className="cache-progress-phase-dot" aria-hidden />
+                    <span className="cache-progress-phase-label">
+                      {t(`loadModal.phase_${p}`)}
+                    </span>
+                    {state === "active" && meshLoadPhase.total > 0 && (
+                      <span className="mono small dim">
+                        {meshLoadPhase.current.toLocaleString()} /{" "}
+                        {meshLoadPhase.total.toLocaleString()}
+                      </span>
+                    )}
+                    {state === "done" && (
+                      <span className="cache-progress-check" aria-hidden>
+                        ✓
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="cache-progress-bar">
+              <div
+                className="cache-progress-bar-fill"
+                style={{
+                  width: `${
+                    meshLoadPhase.total > 0
+                      ? Math.min(
+                          100,
+                          Math.round(
+                            (meshLoadPhase.current / meshLoadPhase.total) * 100,
+                          ),
+                        )
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
+          </>
+        )}
+
         {cacheProgress && (
           <>
             <div className="cache-progress-phases">
@@ -1746,11 +1673,15 @@ export function App() {
                 }}
               />
             </div>
-            <p className="small dim" style={{ marginTop: 12, lineHeight: 1.5 }}>
-              {t("cacheModal.hint")}
-            </p>
           </>
         )}
+
+        <p className="cache-progress-warning small">
+          ⚠ {t("loadModal.warning")}
+        </p>
+        <p className="small dim" style={{ marginTop: 6, lineHeight: 1.5 }}>
+          {cacheProgress ? t("cacheModal.hint") : t("loadModal.hint")}
+        </p>
       </Modal>
 
       <AboutModal
@@ -1759,43 +1690,6 @@ export function App() {
       />
 
       <UpdateChecker state={updater} />
-
-      {meshLoadPhase && (
-        <div className="loading-banner" role="status" aria-live="polite">
-          <span className="loading-banner-spinner" aria-hidden />
-          <div className="loading-banner-body">
-            <div className="loading-banner-title">
-              Loading assets — {meshLoadPhase.label}
-            </div>
-            {meshLoadPhase.total > 0 && (
-              <>
-                <div className="loading-banner-bar">
-                  <div
-                    className="loading-banner-fill"
-                    style={{
-                      width: `${Math.min(
-                        100,
-                        Math.round(
-                          (meshLoadPhase.current / meshLoadPhase.total) * 100,
-                        ),
-                      )}%`,
-                    }}
-                  />
-                </div>
-                <div className="loading-banner-progress small dim mono">
-                  {meshLoadPhase.current.toLocaleString()} /{" "}
-                  {meshLoadPhase.total.toLocaleString()}
-                </div>
-              </>
-            )}
-            <div className="loading-banner-warning small dim">
-              Heavy decoding — the window may briefly freeze.{" "}
-              <strong>Don't close the app</strong>; it keeps working in the
-              background and will return when the current phase finishes.
-            </div>
-          </div>
-        </div>
-      )}
 
       <Modal
         

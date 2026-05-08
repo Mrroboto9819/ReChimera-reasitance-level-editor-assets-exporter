@@ -89,19 +89,14 @@ struct LevelLayoutDto {
 
 #[derive(Serialize)]
 pub(crate) struct MeshDto {
-    positions_b64: String,
-    uvs_b64: String,
-    indices_b64: String,
-
-    albedo_id: Option<u32>,
-
-    normal_id: Option<u32>,
-
-    emissive_id: Option<u32>,
-
-    bone_indices_b64: String,
-
-    bone_weights_b64: String,
+    pub positions_b64: String,
+    pub uvs_b64: String,
+    pub indices_b64: String,
+    pub albedo_id: Option<u32>,
+    pub normal_id: Option<u32>,
+    pub emissive_id: Option<u32>,
+    pub bone_indices_b64: String,
+    pub bone_weights_b64: String,
 }
 
 
@@ -151,12 +146,11 @@ pub(crate) struct AssetMeshesDto {
 }
 
 #[derive(Serialize)]
-struct UFragMeshDto {
-    tuid: String,
-    zone_tuid: String,
-
-    position: [f32; 3],
-    mesh: MeshDto,
+pub(crate) struct UFragMeshDto {
+    pub tuid: String,
+    pub zone_tuid: String,
+    pub position: [f32; 3],
+    pub mesh: MeshDto,
 }
 
 fn encode_f32_buffer(values: &[f32]) -> String {

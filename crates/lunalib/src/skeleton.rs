@@ -4,6 +4,7 @@ use std::io::{Read, Seek};
 
 use crate::error::Result;
 use crate::igfile::IgFile;
+use crate::math::mat4_mul_row_major;
 
 pub const SECT_MOBY_SKELETON: u32 = 0xD300;
 
@@ -103,11 +104,66 @@ pub fn read_skeleton<R: Read + Seek>(ig: &mut IgFile<R>) -> Result<Option<Skelet
         });
     }
 
-    let bind_local = read_matrix_array(ig, tms0_ptr, num_bones).unwrap_or_default();
-    let bind_world_inverse =
-        read_matrix_array(ig, tms1_ptr, num_bones).unwrap_or_default();
-    let tms0_col = bind_local.clone();
-    let tms1_col = bind_world_inverse.clone();
+    let tms0_raw = read_matrix_array(ig, tms0_ptr, num_bones).unwrap_or_default();
+    let tms1_raw = read_matrix_array(ig, tms1_ptr, num_bones).unwrap_or_default();
+
+    let log_target = std::env::var("RECHIMERA_LOG_SKELETON").is_ok();
+    if log_target {
+        eprintln!(
+            "[skeleton] num_bones={num_bones} root={root_bone} scale_shift={scale_shift} translation_shift={translation_shift}"
+        );
+        eprintln!(
+            "[skeleton] tms0_raw.len={} tms1_raw.len={}",
+            tms0_raw.len(),
+            tms1_raw.len()
+        );
+        if !tms0_raw.is_empty() {
+            eprintln!("[skeleton] tms0_raw[0] (col-major) = {:?}", tms0_raw[0]);
+            eprintln!(
+                "[skeleton] tms0_raw[0] translation [12,13,14] = ({}, {}, {})",
+                tms0_raw[0][12], tms0_raw[0][13], tms0_raw[0][14]
+            );
+        }
+        if !tms1_raw.is_empty() {
+            eprintln!("[skeleton] tms1_raw[0] (col-major) = {:?}", tms1_raw[0]);
+            eprintln!(
+                "[skeleton] tms1_raw[0] translation [12,13,14] = ({}, {}, {})",
+                tms1_raw[0][12], tms1_raw[0][13], tms1_raw[0][14]
+            );
+        }
+    }
+
+    let mut bind_local = Vec::with_capacity(num_bones);
+    if tms0_raw.len() == num_bones && tms1_raw.len() == num_bones {
+        for i in 0..num_bones {
+            let parent = bones[i].parent_index;
+            let local_col = if parent < 0 || (parent as usize) >= num_bones {
+                tms0_raw[i]
+            } else {
+                mat4_mul_row_major(&tms0_raw[i], &tms1_raw[parent as usize])
+            };
+            bind_local.push(clean_rigid_col_major(local_col));
+        }
+    }
+
+    if log_target && !bind_local.is_empty() {
+        let last = bind_local.len() - 1;
+        eprintln!(
+            "[skeleton] bind_local[0] = {:?} (T at [12,13,14] = ({}, {}, {}))",
+            bind_local[0], bind_local[0][12], bind_local[0][13], bind_local[0][14]
+        );
+        eprintln!(
+            "[skeleton] bind_local[{}] = {:?} (T at [12,13,14] = ({}, {}, {}))",
+            last, bind_local[last], bind_local[last][12], bind_local[last][13], bind_local[last][14]
+        );
+    }
+
+    let bind_world_inverse: Vec<[f32; 16]> =
+        tms1_raw.iter().copied().map(clean_rigid_col_major).collect();
+    let tms0_col: Vec<[f32; 16]> =
+        tms0_raw.iter().copied().map(clean_rigid_col_major).collect();
+    let tms1_col: Vec<[f32; 16]> =
+        tms1_raw.iter().copied().map(clean_rigid_col_major).collect();
 
     Ok(Some(Skeleton {
         root_bone,
@@ -119,6 +175,19 @@ pub fn read_skeleton<R: Read + Seek>(ig: &mut IgFile<R>) -> Result<Option<Skelet
         scale_shift,
         translation_shift,
     }))
+}
+
+fn clean_rigid_col_major(mut m: [f32; 16]) -> [f32; 16] {
+    for v in m.iter_mut() {
+        if !v.is_finite() {
+            *v = 0.0;
+        }
+    }
+    m[3] = 0.0;
+    m[7] = 0.0;
+    m[11] = 0.0;
+    m[15] = 1.0;
+    m
 }
 
 fn read_matrix_array<R: Read + Seek>(
