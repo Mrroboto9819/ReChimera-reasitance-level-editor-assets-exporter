@@ -24,9 +24,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use lunalib::{
-    decode_animation, downsample_rgba, encode_png, read_animation_control,
-    read_animation_header, read_moby_assets_with_total, read_shaders,
-    read_textures_with_total, read_tie_assets_with_total,
+    decode_animation, read_animation_control, read_animation_header,
+    read_moby_assets_with_total, read_shaders, read_tie_assets_with_total,
     AssetKind, AssetLookup, DecodedClip, IgFile, ShaderInfo,
 };
 use serde::{Deserialize, Serialize};
@@ -485,46 +484,17 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
     )
     .map_err(|e| e.to_string())?;
 
-    // ── Phase 3: textures ──
-    // Streamed per-texture (not via `bulk_extract_pngs`): the bulk
-    // variant returns ALL pngs in one shot, blocking the worker
-    // thread for many seconds and starving the progress channel.
-    // Streaming lets us emit a Progress event after each texture's
-    // decode + downsample + PNG encode, so the UI never appears
-    // frozen during the texture phase.
-    let needed_set = needed_textures.clone();
-    let texture_count_estimate = needed_set.len();
+    let needed_ids: Vec<u32> = needed_textures.iter().copied().collect();
     let _ = on_event.send(CacheEvent::Phase {
         phase: "textures",
-        total: texture_count_estimate,
+        total: needed_ids.len(),
     });
+    let pngs = lunalib::bulk_extract_pngs(level_path, Some(&needed_ids), TEXTURE_MAX_DIM)
+        .map_err(|e| e.to_string())?;
+    let mut texture_pngs: HashMap<u32, Vec<u8>> = HashMap::with_capacity(pngs.len());
     let mut tex_done = 0usize;
-    let accept = |id: u32| -> bool { needed_set.contains(&id) };
-    let on_total = |_total: usize| {};
-    // In-memory PNG map for embedding into GLBs in phase 4. Memory
-    // peaks at the texture-decode high-water mark (~50MB on bayou
-    // for 200-300 textures), then is consumed by phase 4 and dropped.
-    let mut texture_pngs: HashMap<u32, Vec<u8>> = HashMap::new();
-    let mut on_each = |tex: lunalib::Texture| {
-        let id = tex.id;
-        if tex.rgba.is_empty() || tex.width == 0 || tex.height == 0 {
-            tex_done += 1;
-            let _ = on_event.send(CacheEvent::Progress { current: tex_done });
-            return;
-        }
-        let (rgba, w, h) =
-            downsample_rgba(tex.rgba, tex.width, tex.height, TEXTURE_MAX_DIM);
-        if rgba.is_empty() {
-            tex_done += 1;
-            let _ = on_event.send(CacheEvent::Progress { current: tex_done });
-            return;
-        }
-        let png = encode_png(&rgba, w, h);
-        if png.is_empty() {
-            tex_done += 1;
-            let _ = on_event.send(CacheEvent::Progress { current: tex_done });
-            return;
-        }
+    let progress_every = (pngs.len() / 50).max(1);
+    for (id, png) in pngs.into_iter() {
         let file_rel = format!("textures/{id}.png");
         let path = root.join(&file_rel);
         let size_bytes = png.len() as u64;
@@ -537,13 +507,13 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 size_bytes,
             });
         }
-        // Keep PNG bytes in memory for GLB embedding in phase 4.
         texture_pngs.insert(id, png);
         tex_done += 1;
-        let _ = on_event.send(CacheEvent::Progress { current: tex_done });
-    };
-    read_textures_with_total(level_path, accept, on_total, &mut on_each)
-        .map_err(|e| e.to_string())?;
+        if tex_done % progress_every == 0 {
+            let _ = on_event.send(CacheEvent::Progress { current: tex_done });
+        }
+    }
+    let _ = on_event.send(CacheEvent::Progress { current: tex_done });
 
     // ── Phase 4: write GLBs with materials embedded ──
     let _ = on_event.send(CacheEvent::Phase {

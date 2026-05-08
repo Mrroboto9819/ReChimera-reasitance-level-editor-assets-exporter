@@ -1,6 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, type ThreeEvent, useFrame, useThree } from "@react-three/fiber";
-import { Grid, Html, OrbitControls, TransformControls } from "@react-three/drei";
+import {
+  GizmoHelper,
+  Grid,
+  Html,
+  OrbitControls,
+  TransformControls,
+  useGizmoContext,
+} from "@react-three/drei";
 import gsap from "gsap";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
@@ -21,13 +28,13 @@ import { FpsOverlay, FpsSampler } from "./FpsOverlay";
 import type { LoadPhaseState } from "./LoadProgress";
 import { clickMods, type useSelection } from "./selection";
 import { resolvedTransform, type InstanceEdit, type useEdits } from "./edits";
+import { useAssetColors } from "./useApplySettings";
 
 type Selection = ReturnType<typeof useSelection>;
 type Edits = ReturnType<typeof useEdits>;
 
 const EMPTY_TEXTURE_BLOBS: TextureBlobMap = new Map();
 
-const SELECTED_COLOR = new THREE.Color("#ffbc33");
 /// White emissive tint applied when a material gets an emissive map
 /// late. Module-level so we don't allocate a fresh THREE.Color per
 /// render — cheap individually but the audit flagged it for being in
@@ -213,7 +220,9 @@ function ProxyPlacementGroup({
     () => instances.filter((inst) => inst.kind === kind),
     [instances, kind],
   );
-  const color = kind === "moby" ? "#55b3ff" : "#5fc992";
+  const assetColors = useAssetColors();
+  const color = kind === "moby" ? assetColors.moby : assetColors.tie;
+  const selectionColor = assetColors.selection;
 
   useEffect(() => {
     const mesh = meshRef.current;
@@ -222,6 +231,8 @@ function ProxyPlacementGroup({
     const pos = new THREE.Vector3();
     const quat = new THREE.Quaternion();
     const scl = new THREE.Vector3();
+    const baseColor = new THREE.Color(color);
+    const selColor = new THREE.Color(selectionColor);
     for (let i = 0; i < filtered.length; i++) {
       const inst = filtered[i]!;
       const t = resolvedTransform(inst, edits);
@@ -240,7 +251,7 @@ function ProxyPlacementGroup({
       );
       m.compose(pos, quat, scl);
       mesh.setMatrixAt(i, m);
-      mesh.setColorAt(i, selectedIds.has(inst.tuid) ? SELECTED_COLOR : new THREE.Color(color));
+      mesh.setColorAt(i, selectedIds.has(inst.tuid) ? selColor : baseColor);
     }
     mesh.count = filtered.length;
     mesh.instanceMatrix.needsUpdate = true;
@@ -248,7 +259,7 @@ function ProxyPlacementGroup({
     // Recompute the union bounding sphere — see InstancedAssetSubmesh
     // for why this is essential for proper frustum culling.
     mesh.computeBoundingSphere();
-  }, [filtered, selectedIds, edits, kind, color]);
+  }, [filtered, selectedIds, edits, kind, color, selectionColor]);
 
   if (!visible || filtered.length === 0) return null;
 
@@ -288,6 +299,7 @@ function InstancedAssetSubmesh({
     selectedIds: Set<string>;
     indexByTuid: Map<string, number>;
     baseColor: THREE.Color;
+    selectedColor: THREE.Color;
   } | null>(null);
   const indexByTuid = useMemo(() => {
     const m = new Map<string, number>();
@@ -296,6 +308,14 @@ function InstancedAssetSubmesh({
     }
     return m;
   }, [instances]);
+  const assetColors = useAssetColors();
+  // Memoize the THREE.Color so reference equality is stable across renders
+  // when the user hasn't changed the setting. The full-refresh path below
+  // compares by reference, not value.
+  const selectedColor = useMemo(
+    () => new THREE.Color(assetColors.selection),
+    [assetColors.selection],
+  );
 
   useEffect(() => {
     const mesh = meshRef.current;
@@ -340,7 +360,7 @@ function InstancedAssetSubmesh({
       const inst = instances[index]!;
       mesh.setColorAt(
         index,
-        selectedIds.has(inst.tuid) ? SELECTED_COLOR : baseColor,
+        selectedIds.has(inst.tuid) ? selectedColor : baseColor,
       );
     };
 
@@ -348,7 +368,8 @@ function InstancedAssetSubmesh({
     const needsFullRefresh =
       prev === null ||
       prev.indexByTuid !== indexByTuid ||
-      prev.baseColor !== baseColor;
+      prev.baseColor !== baseColor ||
+      prev.selectedColor !== selectedColor;
 
     if (needsFullRefresh) {
       for (let i = 0; i < instances.length; i++) colorAt(i);
@@ -372,8 +393,9 @@ function InstancedAssetSubmesh({
       selectedIds: new Set(selectedIds),
       indexByTuid,
       baseColor,
+      selectedColor,
     };
-  }, [instances, indexByTuid, selectedIds, baseColor]);
+  }, [instances, indexByTuid, selectedIds, baseColor, selectedColor]);
 
   if (instances.length === 0) return null;
 
@@ -1000,6 +1022,232 @@ function CameraFocus({
   return null;
 }
 
+function CameraSnap({
+  direction,
+  version,
+}: {
+  direction: "front" | "right" | "top" | null;
+  version: number;
+}) {
+  const { camera, controls } = useThree();
+  const lastVersionRef = useRef<number>(-1);
+
+  useEffect(() => {
+    if (!direction) return;
+    if (!controls) return;
+    if (version === lastVersionRef.current) return;
+    lastVersionRef.current = version;
+
+    const orbit = controls as unknown as OrbitControlsImpl;
+    const cam = camera as THREE.PerspectiveCamera;
+    const target = orbit.target.clone();
+    const distance = Math.max(20, cam.position.distanceTo(target));
+
+    const offset = new THREE.Vector3();
+    const upTarget = new THREE.Vector3(0, 1, 0);
+    switch (direction) {
+      case "front":
+        offset.set(0, 0, distance);
+        break;
+      case "right":
+        offset.set(distance, 0, 0);
+        break;
+      case "top":
+        offset.set(0, distance, 0);
+        upTarget.set(0, 0, -1);
+        break;
+    }
+    const newCamPos = target.clone().add(offset);
+
+    gsap.to(cam.position, {
+      x: newCamPos.x,
+      y: newCamPos.y,
+      z: newCamPos.z,
+      duration: 0.4,
+      ease: "power2.out",
+      onUpdate: () => {
+        cam.lookAt(target);
+        orbit.update();
+      },
+    });
+    gsap.to(cam.up, {
+      x: upTarget.x,
+      y: upTarget.y,
+      z: upTarget.z,
+      duration: 0.4,
+      ease: "power2.out",
+    });
+  }, [direction, version, camera, controls]);
+
+  return null;
+}
+
+const AXIS_X_COLOR = "#ff5577";
+const AXIS_Y_COLOR = "#7dd957";
+const AXIS_Z_COLOR = "#3aa3ff";
+const AXIS_LABEL_FG = "#0b0c0e";
+
+type AxisKey = "x" | "y" | "z";
+
+function AxisHead({
+  position,
+  arcStyle,
+  label,
+  faded,
+  onActivate,
+}: {
+  position: [number, number, number];
+  arcStyle: string;
+  label: string;
+  faded?: boolean;
+  onActivate: () => void;
+}) {
+  const gl = useThree((s) => s.gl);
+  const [hover, setHover] = useState(false);
+
+  const texture = useMemo(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext("2d")!;
+    ctx.beginPath();
+    ctx.arc(32, 32, 16, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.fillStyle = arcStyle;
+    ctx.fill();
+    if (faded) {
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = arcStyle;
+      ctx.stroke();
+    }
+    ctx.font = "bold 18px Inter, Arial, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = AXIS_LABEL_FG;
+    ctx.fillText(label, 32, 33);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.needsUpdate = true;
+    return tex;
+  }, [arcStyle, label, faded]);
+
+  const baseScale = faded ? 0.85 : 1.0;
+  const scale = baseScale * (hover ? 1.2 : 1);
+
+  return (
+    <sprite
+      position={position}
+      scale={scale}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        setHover(true);
+      }}
+      onPointerOut={(e) => {
+        e.stopPropagation();
+        setHover(false);
+      }}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        onActivate();
+      }}
+    >
+      <spriteMaterial
+        map={texture}
+        map-anisotropy={gl.capabilities.getMaxAnisotropy() || 1}
+        alphaTest={0.3}
+        opacity={faded ? 0.55 : 1}
+        toneMapped={false}
+      />
+    </sprite>
+  );
+}
+
+function AxisLine({
+  rotation,
+  color,
+}: {
+  rotation: [number, number, number];
+  color: string;
+}) {
+  return (
+    <group rotation={rotation}>
+      <mesh position={[0.4, 0, 0]}>
+        <boxGeometry args={[0.8, 0.05, 0.05]} />
+        <meshBasicMaterial color={color} toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
+
+function GizmoViewportSixAxis() {
+  const { tweenCamera } = useGizmoContext();
+  const lastSignedAxisRef = useRef<string | null>(null);
+
+  const handleClick = useCallback(
+    (axis: AxisKey, sign: 1 | -1) => {
+      const key = `${sign > 0 ? "+" : "-"}${axis}`;
+      const flip = lastSignedAxisRef.current === key;
+      const finalSign = flip ? -sign : sign;
+      const dir = new THREE.Vector3(
+        axis === "x" ? finalSign : 0,
+        axis === "y" ? finalSign : 0,
+        axis === "z" ? finalSign : 0,
+      );
+      tweenCamera(dir);
+      lastSignedAxisRef.current = `${finalSign > 0 ? "+" : "-"}${axis}`;
+    },
+    [tweenCamera],
+  );
+
+  return (
+    <group scale={40}>
+      <AxisLine rotation={[0, 0, 0]} color={AXIS_X_COLOR} />
+      <AxisLine rotation={[0, 0, Math.PI / 2]} color={AXIS_Y_COLOR} />
+      <AxisLine rotation={[0, -Math.PI / 2, 0]} color={AXIS_Z_COLOR} />
+
+      <AxisHead
+        position={[1, 0, 0]}
+        arcStyle={AXIS_X_COLOR}
+        label="X"
+        onActivate={() => handleClick("x", 1)}
+      />
+      <AxisHead
+        position={[0, 1, 0]}
+        arcStyle={AXIS_Y_COLOR}
+        label="Y"
+        onActivate={() => handleClick("y", 1)}
+      />
+      <AxisHead
+        position={[0, 0, 1]}
+        arcStyle={AXIS_Z_COLOR}
+        label="Z"
+        onActivate={() => handleClick("z", 1)}
+      />
+
+      <AxisHead
+        position={[-1, 0, 0]}
+        arcStyle={AXIS_X_COLOR}
+        label="-X"
+        faded
+        onActivate={() => handleClick("x", -1)}
+      />
+      <AxisHead
+        position={[0, -1, 0]}
+        arcStyle={AXIS_Y_COLOR}
+        label="-Y"
+        faded
+        onActivate={() => handleClick("y", -1)}
+      />
+      <AxisHead
+        position={[0, 0, -1]}
+        arcStyle={AXIS_Z_COLOR}
+        label="-Z"
+        faded
+        onActivate={() => handleClick("z", -1)}
+      />
+    </group>
+  );
+}
+
 /* ────────────────────────────────────────────────────────────────────────
  * BoneOverlay — draws cyan line segments along the skeleton hierarchy of
  * every selected moby that has a parsed skeleton (section 0xD300). One
@@ -1429,9 +1677,12 @@ interface ViewportProps {
   textureBlobs: TextureBlobMap | null;
   selection: Selection;
   view: ViewSettings;
-  /** Bumps when the user clicks the Inspector's "Go to" button. */
+  onToggle: (key: keyof ViewSettings) => void;
   focusVersion: number;
-  /** Per-instance transform overrides + edit-mode toggle. */
+  viewSnap: {
+    direction: "front" | "right" | "top" | null;
+    version: number;
+  };
   edits: Edits;
   meshLoadPhase?: LoadPhaseState | null;
   /** Path to the currently-open level. Threaded through to the
@@ -1480,7 +1731,9 @@ export function Viewport({
   textureBlobs,
   selection,
   view,
+  onToggle,
   focusVersion,
+  viewSnap,
   edits,
   meshLoadPhase,
   levelFolder,
@@ -1517,8 +1770,64 @@ export function Viewport({
     const inst = instances.find((i) => i.tuid === selection.primary);
     return inst?.asset_tuid ?? null;
   }, [selection.primary, instances]);
+
+  const statusInfo = useMemo(() => {
+    const primaryInst = selection.primary
+      ? instances.find((i) => i.tuid === selection.primary)
+      : null;
+    const primaryAsset = primaryInst && meshes
+      ? meshes.moby_assets.find((a) => a.asset_tuid === primaryInst.asset_tuid) ??
+        meshes.tie_assets.find((a) => a.asset_tuid === primaryInst.asset_tuid) ??
+        null
+      : null;
+    let verts = 0;
+    let tris = 0;
+    if (primaryAsset) {
+      for (const sm of primaryAsset.submeshes) {
+        const posBytes = Math.floor((sm.positions_b64.length * 3) / 4);
+        verts += Math.floor(posBytes / 12);
+        const idxBytes = Math.floor((sm.indices_b64.length * 3) / 4);
+        tris += Math.floor(idxBytes / 4 / 3);
+      }
+    }
+    return {
+      primaryName:
+        primaryInst?.name || primaryInst?.tuid.split("#")[0] || null,
+      primaryKind: primaryInst?.kind ?? null,
+      verts,
+      tris,
+    };
+  }, [selection.primary, instances, meshes]);
+
+  const headerToggles: Array<{
+    key: keyof ViewSettings;
+    label: string;
+    title?: string;
+  }> = [
+    { key: "showGrid", label: "Grid" },
+    { key: "showAxes", label: "Axes" },
+    { key: "showBones", label: "Bones", title: "Show skeleton bones on placed characters" },
+    { key: "showUFragBounds", label: "UFrag bounds" },
+    { key: "showStats", label: "Stats" },
+    { key: "playAnimation", label: "Play", title: "Play character animations live" },
+  ];
+
   return (
     <div className="viewport">
+      <div className="viewport-header">
+        {headerToggles.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            className={`viewport-header-btn ${view[t.key] ? "active" : ""}`}
+            onClick={() => onToggle(t.key)}
+            title={t.title ?? t.label}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div className="viewport-canvas-wrap">
       {contextLost && (
         <div className="viewport-overlay" style={{ top: 12, right: 12, color: "#ffbc33" }}>
           ⚠ WebGL context lost — reload to recover
@@ -1694,6 +2003,10 @@ export function Viewport({
           instances={instances}
           focusVersion={focusVersion}
         />
+        <CameraSnap
+          direction={viewSnap.direction}
+          version={viewSnap.version}
+        />
         <EditGizmo
           primary={selection.primary}
           instances={instances}
@@ -1704,13 +2017,76 @@ export function Viewport({
           }}
         />
         <FpsSampler />
+        <GizmoHelper alignment="top-right" margin={[72, 72]}>
+          <GizmoViewportSixAxis />
+        </GizmoHelper>
       </Canvas>
 
       <FpsOverlay mode={view.showStats ? "graph" : "counter"} />
 
+      <div
+        className="viewport-tool-strip"
+        title="Transform tools (apply to selected instance)"
+      >
+        {(
+          [
+            { mode: "translate" as const, icon: "⇄", label: "Move" },
+            { mode: "rotate" as const, icon: "↻", label: "Rotate" },
+            { mode: "scale" as const, icon: "⤢", label: "Scale" },
+          ]
+        ).map((m) => (
+          <button
+            key={m.mode}
+            type="button"
+            className={`viewport-tool-btn ${edits.mode === m.mode ? "active" : ""}`}
+            onClick={() => edits.setMode(m.mode)}
+            disabled={!selection.primary}
+            title={`${m.label} (${m.mode === "translate" ? "G" : m.mode === "rotate" ? "R" : "S"})`}
+          >
+            <span aria-hidden>{m.icon}</span>
+          </button>
+        ))}
+      </div>
+
       <div className="viewport-overlay">
         drag <span className="kbd">LMB</span> orbit · scroll zoom · drag{" "}
-        <span className="kbd">RMB</span> pan
+        <span className="kbd">RMB</span> pan ·{" "}
+        <span className="kbd">G</span>/<span className="kbd">R</span>/
+        <span className="kbd">S</span> transform · <span className="kbd">F</span> focus ·{" "}
+        <span className="kbd">Num1</span>/<span className="kbd">Num3</span>/
+        <span className="kbd">Num7</span> view
+      </div>
+      </div>
+
+      <div className="viewport-statusbar">
+        <span className="viewport-status-segment">
+          {selection.count > 0
+            ? `${selection.count.toLocaleString()} selected`
+            : "Nothing selected"}
+        </span>
+        {statusInfo.primaryName && (
+          <span className="viewport-status-segment">
+            <span className="dim">Primary:</span> {statusInfo.primaryName}
+            {statusInfo.primaryKind && (
+              <span className="dim small"> · {statusInfo.primaryKind}</span>
+            )}
+          </span>
+        )}
+        {statusInfo.verts > 0 && (
+          <span className="viewport-status-segment mono small">
+            {statusInfo.verts.toLocaleString()} v ·{" "}
+            {statusInfo.tris.toLocaleString()} tri
+          </span>
+        )}
+        <span className="viewport-status-spacer" />
+        {edits.count > 0 && (
+          <span className="viewport-status-segment viewport-status-warn">
+            ● {edits.count} modified
+          </span>
+        )}
+        <span className="viewport-status-segment dim small">
+          gizmo: {edits.mode}
+        </span>
       </div>
     </div>
   );

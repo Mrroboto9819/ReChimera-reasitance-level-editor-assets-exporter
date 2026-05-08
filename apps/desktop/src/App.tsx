@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { useTranslation } from "react-i18next";
+import {
+  Panel,
+  PanelGroup,
+  PanelResizeHandle,
+  type ImperativePanelHandle,
+} from "react-resizable-panels";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 // Static logo URL resolved by Vite at build time. Used here for the
 // persistent title-bar logo so the brand is visible even when the
@@ -56,7 +62,8 @@ import { Menu, MenuBar, MenuCheckItem, MenuItem, MenuSpacer } from "./MenuBar";
 import { Modal } from "./Modal";
 import { OpenLevelModal } from "./OpenLevelModal";
 import { PsarcModal } from "./PsarcModal";
-import { PsarcTools } from "./PsarcTools";
+import { SettingsModal } from "./SettingsModal";
+import { useApplySettings } from "./useApplySettings";
 import { SoundPlayer, type NowPlaying } from "./SoundPlayer";
 import { Splash } from "./Splash";
 import { UpdateChecker } from "./UpdateChecker";
@@ -80,6 +87,8 @@ import {
   setHierarchyPct,
   setInspectorPct,
   toggleConsoleCollapsed,
+  toggleHierarchyHidden,
+  toggleInspectorHidden,
   toggleView,
   useAppDispatch,
   useAppSelector,
@@ -87,9 +96,42 @@ import {
 } from "./store";
 
 export function App() {
+  const { t } = useTranslation();
   const dispatch = useAppDispatch();
   const view = useAppSelector((s) => s.view);
   const layout = useAppSelector((s) => s.layout);
+
+  useApplySettings();
+
+  useEffect(() => {
+    const panel = bottomPanelRef.current;
+    if (!panel) return;
+    if (layout.consoleCollapsed) {
+      if (!panel.isCollapsed()) panel.collapse();
+    } else {
+      if (panel.isCollapsed()) panel.expand();
+    }
+  }, [layout.consoleCollapsed]);
+
+  useEffect(() => {
+    const panel = hierarchyPanelRef.current;
+    if (!panel) return;
+    if (layout.hierarchyHidden) {
+      if (!panel.isCollapsed()) panel.collapse();
+    } else {
+      if (panel.isCollapsed()) panel.expand();
+    }
+  }, [layout.hierarchyHidden]);
+
+  useEffect(() => {
+    const panel = inspectorPanelRef.current;
+    if (!panel) return;
+    if (layout.inspectorHidden) {
+      if (!panel.isCollapsed()) panel.collapse();
+    } else {
+      if (panel.isCollapsed()) panel.expand();
+    }
+  }, [layout.inspectorHidden]);
 
   const [summary, setSummary] = useState<LevelSummary | null>(null);
   const [instances, setInstances] = useState<Instance[]>([]);
@@ -103,16 +145,69 @@ export function App() {
   const [textureBlobs, setTextureBlobs] = useState<TextureBlobMap | null>(null);
   const selection = useSelection(useCallback(() => instances, [instances]));
   const edits = useEdits();
+  const bottomPanelRef = useRef<ImperativePanelHandle>(null);
+  const hierarchyPanelRef = useRef<ImperativePanelHandle>(null);
+  const inspectorPanelRef = useRef<ImperativePanelHandle>(null);
   const primaryInstance = selection.primary
     ? instances.find((i) => i.tuid === selection.primary) ?? null
     : null;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.tagName === "SELECT" ||
+          t.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      switch (e.code) {
+        case "Numpad1":
+          setViewSnap((s) => ({ direction: "front", version: s.version + 1 }));
+          e.preventDefault();
+          return;
+        case "Numpad3":
+          setViewSnap((s) => ({ direction: "right", version: s.version + 1 }));
+          e.preventDefault();
+          return;
+        case "Numpad7":
+          setViewSnap((s) => ({ direction: "top", version: s.version + 1 }));
+          e.preventDefault();
+          return;
+      }
+      if (!selection.primary) return;
+      switch (e.key.toLowerCase()) {
+        case "g":
+          edits.setMode("translate");
+          e.preventDefault();
+          break;
+        case "r":
+          edits.setMode("rotate");
+          e.preventDefault();
+          break;
+        case "s":
+          edits.setMode("scale");
+          e.preventDefault();
+          break;
+        case "f":
+          setFocusVersion((v) => v + 1);
+          e.preventDefault();
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selection.primary, edits.setMode]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadPhase, setLoadPhase] = useState<LoadPhaseState | null>(null);
   const [meshLoadPhase, setMeshLoadPhase] = useState<LoadPhaseState | null>(null);
   const [completedPhases, setCompletedPhases] = useState<PhaseId[]>([]);
   const [consoleLog, setConsoleLog] = useState<ConsoleEntry[]>([]);
-  const [psarcOpen, setPsarcOpen] = useState(false);
   const updater = useUpdater();
   // About / credits modal — opened from `Help → About ReChimera…`.
   // Rendered always (not gated on level state) so Help is reachable
@@ -120,6 +215,7 @@ export function App() {
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [openLevelModalOpen, setOpenLevelModalOpen] = useState(false);
   const [psarcModalOpen, setPsarcModalOpen] = useState(false);
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [exportState, setExportState] = useState<ExportProgressState | null>(null);
   // (Removed: legacy `<level>/character/` filesystem lookup state. The
   // path-grouped Asset Library tree built from `assetlookup.dat` is
@@ -221,6 +317,10 @@ export function App() {
   // watches it as a dep so it re-runs the focus tween even when the
   // primary selection hasn't changed.
   const [focusVersion, setFocusVersion] = useState(0);
+  const [viewSnap, setViewSnap] = useState<{
+    direction: "front" | "right" | "top" | null;
+    version: number;
+  }>({ direction: null, version: 0 });
   // Splash screen visibility. Stays up for at least 1.2s after mount so
   // the user actually sees it instead of a flash. Goes to false → Splash
   // runs its GSAP fade-out → onExit unmounts it.
@@ -1041,37 +1141,33 @@ export function App() {
             <span className="brand-version mono small">v{APP_VERSION}</span>
           </span>
 
-          <Menu label="File">
+          <Menu label={t("menu.file")}>
             <MenuItem onSelect={() => setOpenLevelModalOpen(true)}>
-              Open Level…
+              {t("menu.openLevel")}
             </MenuItem>
             <MenuItem onSelect={handleClose} disabled={!summary}>
-              Close Level
-            </MenuItem>
-            <MenuSpacer />
-            <MenuItem onSelect={() => setPsarcModalOpen(true)}>
-              Extract PSARC…
+              {t("menu.closeLevel")}
             </MenuItem>
           </Menu>
 
-          <Menu label="View">
+          <Menu label={t("menu.view")}>
             <MenuCheckItem
               checked={view.showGrid}
               onToggle={() => toggle("showGrid")}
             >
-              Grid
+              {t("menu.grid")}
             </MenuCheckItem>
             <MenuCheckItem
               checked={view.showAxes}
               onToggle={() => toggle("showAxes")}
             >
-              Axes
+              {t("menu.axes")}
             </MenuCheckItem>
             <MenuCheckItem
               checked={view.showStats}
               onToggle={() => toggle("showStats")}
             >
-              FPS Graph (vs counter)
+              {t("menu.fpsGraph")}
             </MenuCheckItem>
           </Menu>
 
@@ -1121,11 +1217,15 @@ export function App() {
           </Menu>
 
           <Menu label="Tools">
-            <MenuItem onSelect={() => setPsarcOpen(true)}>
-              PSARC Extractor…
+            <MenuItem onSelect={() => setPsarcModalOpen(true)}>
+              {t("menu.extractPsarc")}
             </MenuItem>
             <MenuItem onSelect={() => handleBrowseGltfFolder()}>
               Browse GLTF folder…
+            </MenuItem>
+            <MenuSpacer />
+            <MenuItem onSelect={() => setSettingsModalOpen(true)}>
+              {t("menu.settings")}
             </MenuItem>
           </Menu>
 
@@ -1142,6 +1242,68 @@ export function App() {
           </Menu>
 
           <MenuSpacer />
+
+          <div className="menubar-panel-toggles" data-tauri-drag-region="false">
+            <button
+              className={`menubar-icon-btn ${layout.hierarchyHidden ? "" : "active"}`}
+              onClick={() => dispatch(toggleHierarchyHidden())}
+              title="Toggle left panel (Hierarchy)"
+              aria-label="Toggle left panel"
+              data-tauri-drag-region="false"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+                <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+                <rect x="1.5" y="2.5" width="4.5" height="11" rx="1.5" fill="currentColor" />
+              </svg>
+            </button>
+            <button
+              className={`menubar-icon-btn ${layout.consoleCollapsed ? "" : "active"}`}
+              onClick={() => dispatch(toggleConsoleCollapsed())}
+              title="Toggle bottom panel (Console)"
+              aria-label="Toggle bottom panel"
+              data-tauri-drag-region="false"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+                <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+                <rect x="1.5" y="9.5" width="13" height="4" rx="1.5" fill="currentColor" />
+              </svg>
+            </button>
+            <button
+              className={`menubar-icon-btn ${layout.inspectorHidden ? "" : "active"}`}
+              onClick={() => dispatch(toggleInspectorHidden())}
+              title="Toggle right panel (Inspector)"
+              aria-label="Toggle right panel"
+              data-tauri-drag-region="false"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+                <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+                <rect x="10" y="2.5" width="4.5" height="11" rx="1.5" fill="currentColor" />
+              </svg>
+            </button>
+          </div>
+
+          <button
+            className="menubar-icon-btn"
+            onClick={() => setSettingsModalOpen(true)}
+            title={t("menu.settings")}
+            aria-label={t("menu.settings")}
+            data-tauri-drag-region="false"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
 
           {updater.phase.kind === "available" && (
             <button
@@ -1170,11 +1332,8 @@ export function App() {
         onToggle={toggle}
         hasLevel={summary != null}
         info={toolbarInfo}
-        editMode={edits.mode}
-        onEditModeChange={edits.setMode}
         modifiedCount={edits.count}
         onResetAllEdits={edits.resetAll}
-        hasSelection={selection.count > 0}
       />
 
       <div className="workspace">
@@ -1191,10 +1350,15 @@ export function App() {
             className="workspace-h"
           >
             <Panel
-              defaultSize={layout.hierarchyPct}
+              ref={hierarchyPanelRef}
+              collapsible
+              collapsedSize={0}
+              defaultSize={layout.hierarchyHidden ? 0 : layout.hierarchyPct}
               minSize={10}
               maxSize={40}
-              onResize={(size) => dispatch(setHierarchyPct(size))}
+              onResize={(size) => {
+                if (size > 1) dispatch(setHierarchyPct(size));
+              }}
               className="workspace-pane"
             >
               <Hierarchy
@@ -1242,7 +1406,9 @@ export function App() {
                       textureBlobs={textureBlobs}
                       selection={selection}
                       view={view}
+                      onToggle={toggle}
                       focusVersion={focusVersion}
+                      viewSnap={viewSnap}
                       edits={edits}
                       meshLoadPhase={meshLoadPhase}
                       levelFolder={summary?.folder ?? null}
@@ -1272,15 +1438,16 @@ export function App() {
                 <PanelResizeHandle className="resize-handle resize-handle-v" />
 
                 <Panel
+                  ref={bottomPanelRef}
+                  collapsible
+                  collapsedSize={3}
                   defaultSize={
-                    layout.consoleCollapsed ? 4 : layout.bottomPct
+                    layout.consoleCollapsed ? 3 : layout.bottomPct
                   }
-                  minSize={layout.consoleCollapsed ? 4 : 12}
+                  minSize={12}
                   maxSize={60}
                   onResize={(size) => {
-                    if (!layout.consoleCollapsed) {
-                      dispatch(setBottomPct(size));
-                    }
+                    if (size > 4) dispatch(setBottomPct(size));
                   }}
                   className="workspace-pane"
                 >
@@ -1301,10 +1468,15 @@ export function App() {
             <PanelResizeHandle className="resize-handle resize-handle-h" />
 
             <Panel
-              defaultSize={layout.inspectorPct}
+              ref={inspectorPanelRef}
+              collapsible
+              collapsedSize={0}
+              defaultSize={layout.inspectorHidden ? 0 : layout.inspectorPct}
               minSize={14}
               maxSize={45}
-              onResize={(size) => dispatch(setInspectorPct(size))}
+              onResize={(size) => {
+                if (size > 1) dispatch(setInspectorPct(size));
+              }}
               className="workspace-pane"
             >
               <Inspector
@@ -1363,6 +1535,11 @@ export function App() {
         onClose={() => setPsarcModalOpen(false)}
       />
 
+      <SettingsModal
+        open={settingsModalOpen}
+        onClose={() => setSettingsModalOpen(false)}
+      />
+
       <GltfCharacterModal
         file={previewGltfFile}
         onClose={() => setPreviewGltfFile(null)}
@@ -1393,36 +1570,38 @@ export function App() {
         dismissable={false}
         title={
           cachePrompt?.status.incomplete
-            ? "Previous extraction was interrupted"
-            : "Cached level data found"
+            ? t("cachePrompt.titleIncomplete")
+            : t("cachePrompt.titleFound")
         }
         subtitle={
           cachePrompt
-            ? `${cachePrompt.status.mobys} mobys · ${cachePrompt.status.ties} ties · ${cachePrompt.status.textures} textures in _rechimera_cache/`
+            ? t("cachePrompt.subtitle", {
+                mobys: cachePrompt.status.mobys,
+                ties: cachePrompt.status.ties,
+                textures: cachePrompt.status.textures,
+              })
             : undefined
         }
         size="md"
         footer={
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
             <button
-              className={
-                cachePrompt?.status.incomplete ? "btn" : "btn"
-              }
+              className="btn"
               onClick={() => resolveCachePrompt("use-cache")}
               disabled={cachePrompt?.status.incomplete}
               title={
                 cachePrompt?.status.incomplete
-                  ? "The previous extraction did not finish — re-extract to get a complete cache"
+                  ? t("cachePrompt.useCachedDisabledTitle")
                   : undefined
               }
             >
-              Use cached data
+              {t("cachePrompt.useCached")}
             </button>
             <button
               className="btn btn-primary"
               onClick={() => resolveCachePrompt("force-reextract")}
             >
-              Re-extract
+              {t("cachePrompt.reextract")}
             </button>
           </div>
         }
@@ -1430,29 +1609,19 @@ export function App() {
         {cachePrompt?.status.incomplete ? (
           <>
             <p className="small" style={{ marginTop: 0, lineHeight: 1.5 }}>
-              The previous extraction did not finish — the cache directory
-              has files on disk but the manifest is either missing or marked{" "}
-              <code>complete: false</code>. Loading from this cache would
-              skip whatever didn't finish writing.
+              {t("cachePrompt.cacheBodyIncomplete")}
             </p>
             <p className="small dim" style={{ lineHeight: 1.5 }}>
-              Re-extracting rewrites the cache from scratch. The streaming
-              mesh pipeline runs either way; only the post-stream cache
-              step differs.
+              {t("cachePrompt.cacheBodyIncompleteHint")}
             </p>
           </>
         ) : (
           <>
             <p className="small dim" style={{ marginTop: 0, lineHeight: 1.5 }}>
-              This level was already extracted into a local cache. Loading
-              from the cache skips the heavy decode pass — the manifest,
-              GLBs, and PNGs are read straight from disk.
+              {t("cachePrompt.cacheBodyOk")}
             </p>
             <p className="small dim" style={{ lineHeight: 1.5 }}>
-              Pick <strong>Re-extract</strong> if the source <code>.dat</code>{" "}
-              files have changed and you want a clean rebuild. The streaming
-              mesh pipeline runs either way; only the post-stream cache step
-              differs.
+              {t("cachePrompt.cacheBodyOkHint")}
             </p>
           </>
         )}
@@ -1465,8 +1634,7 @@ export function App() {
               lineHeight: 1.5,
             }}
           >
-            ⚠ Cache reports as <strong>stale</strong>: source files have a
-            newer mtime than the manifest. Re-extracting is recommended.
+            ⚠ {t("cachePrompt.staleWarning")}
           </p>
         )}
       </Modal>
@@ -1484,16 +1652,6 @@ export function App() {
           <strong>Don't close the app</strong> — it keeps working in the
           background and will return as soon as the current phase finishes.
         </p>
-      </Modal>
-
-      <Modal
-        open={psarcOpen}
-        onClose={() => setPsarcOpen(false)}
-        title="PSARC Extractor"
-        subtitle="Read and extract PlayStation Archive files (PS3 .psarc)"
-        size="lg"
-      >
-        <PsarcTools />
       </Modal>
 
       <AboutModal

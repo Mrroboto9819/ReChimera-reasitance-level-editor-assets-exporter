@@ -22,13 +22,21 @@
   --text-4: #6a6b6c;
   --text-disabled: #434345;
 
-  --accent-red: #FF6363;                /* brand */
-  --accent-blue: hsl(202, 100%, 67%);   /* interactive */
+  --accent-red: #FF6363;
+  --accent-blue: hsl(202, 100%, 67%);
   --accent-green: hsl(151, 59%, 59%);
   --accent-yellow: hsl(43, 100%, 60%);
 
   --tint-blue: hsla(202, 100%, 67%, 0.15);
   --tint-red: hsla(0, 100%, 69%, 0.15);
+
+  --brand-fixed: #FF6363;
+  --brand-color: var(--accent-red);
+  --asset-moby: #ff8a3d;
+  --asset-tie: #3dd0ff;
+  --asset-ufrag: #97de82;
+  --asset-selection: #3eb1ff;
+  --asset-proxy: #8a8a8a;
 
   /* Typography */
   --font-sans: "Inter", "Inter Fallback", -apple-system, BlinkMacSystemFont,
@@ -63,6 +71,45 @@
   font-feature-settings: var(--opentype);
   font-size: 13px;
   letter-spacing: 0.2px;
+}
+
+/* Light-theme override — only the palette tokens are overridden; spacing,
+   typography, and elevation cascade unchanged from `:root` above. The
+   data-theme attribute is set by `useApplySettings.ts`. */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f7f7f8;
+  --surface-100: #ffffff;
+  --surface-200: #f1f2f4;
+  --card: #ffffff;
+  --border: hsl(195, 8%, 84%);
+  --border-strong: #c8cacd;
+  --hairline: rgba(0, 0, 0, 0.06);
+
+  --text-1: #1a1b1d;
+  --text-2: #2d2f33;
+  --text-3: #5a5d63;
+  --text-4: #8a8d93;
+  --text-disabled: #b1b3b7;
+
+  --tint-blue: hsla(202, 80%, 50%, 0.12);
+  --tint-red: hsla(0, 80%, 55%, 0.12);
+
+  --shadow-ring:
+    rgba(0, 0, 0, 0.08) 0px 0px 0px 1px,
+    rgba(255, 255, 255, 0.6) 0px 0px 0px 1px inset;
+  --shadow-button:
+    rgba(255, 255, 255, 0.8) 0px 1px 0px 0px inset,
+    rgba(0, 0, 0, 0.12) 0px 0px 0px 1px,
+    rgba(0, 0, 0, 0.08) 0px -1px 0px 0px inset;
+  --shadow-card:
+    rgba(0, 0, 0, 0.08) 0px 1.189px 2.377px,
+    rgba(255, 255, 255, 0.5) 0px 1px 0px 0px inset;
+  --shadow-floating:
+    rgba(0, 0, 0, 0.18) 0px 0px 0px 2px,
+    rgba(0, 0, 0, 0.08) 0px 0px 14px,
+    rgba(255, 255, 255, 0.4) 0px 1px 0px 0px inset;
 }
 
 * {
@@ -245,7 +292,7 @@ textarea {
   font-weight: 600;
   font-size: 13px;
   letter-spacing: 0.4px;
-  color: var(--accent-red);
+  color: var(--brand-fixed);
   padding: 0 8px 0 4px;
   margin-right: 4px;
   user-select: none;
@@ -519,6 +566,46 @@ textarea {
 
 .menubar-spacer {
   flex: 1;
+}
+
+.menubar-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  margin: 0 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-2);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background-color 80ms ease-out, color 80ms ease-out, border-color 80ms ease-out;
+}
+.menubar-icon-btn:hover {
+  background: var(--surface-100);
+  color: var(--text-1);
+  border-color: var(--hairline);
+}
+.menubar-icon-btn.active {
+  color: var(--accent-blue);
+}
+.menubar-icon-btn.active:hover {
+  color: var(--accent-blue);
+}
+
+.menubar-panel-toggles {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 4px;
+  padding: 0 4px 0 8px;
+  border-left: 1px solid var(--hairline);
+  height: 22px;
+}
+.menubar-panel-toggles .menubar-icon-btn {
+  margin: 0;
 }
 
 .menubar-path {
@@ -867,59 +954,101 @@ textarea {
   min-height: 0;
 }
 
-/* Resize handles — Unity/VS Code-style 4px hairlines that brighten on hover. */
 .resize-handle {
-  background: transparent;
   position: relative;
   z-index: 1;
-  transition: background-color 120ms ease-out;
   flex-shrink: 0;
+  background: transparent;
 }
-
 .resize-handle-h {
   width: 6px;
   cursor: col-resize;
 }
-
 .resize-handle-v {
   height: 6px;
   cursor: row-resize;
 }
 
-.resize-handle:hover,
-.resize-handle[data-resize-handle-active="pointer"],
-.resize-handle[data-resize-handle-active="keyboard"] {
-  background: var(--accent-blue);
-}
-
-/* Subtle inner indicator so the handle is discoverable even when not hovered. */
-.resize-handle::after {
+.resize-handle::before {
   content: "";
   position: absolute;
   background: var(--hairline);
-  border-radius: 2px;
-  transition: background-color 120ms ease-out;
+  transition: background-color 120ms ease-out, transform 120ms ease-out;
 }
-
-.resize-handle-h::after {
-  top: 50%;
+.resize-handle-h::before {
+  top: 0;
+  bottom: 0;
   left: 50%;
   width: 1px;
+  transform: translateX(-50%);
+}
+.resize-handle-v::before {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  transform: translateY(-50%);
+}
+
+.resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  background: var(--text-4);
+  border-radius: 999px;
+  opacity: 0.55;
+  transition: opacity 140ms ease-out, background-color 140ms ease-out,
+    transform 140ms ease-out, width 140ms ease-out, height 140ms ease-out;
+  pointer-events: none;
+}
+.resize-handle-h::after {
+  width: 3px;
   height: 28px;
   transform: translate(-50%, -50%);
 }
-
 .resize-handle-v::after {
-  top: 50%;
-  left: 50%;
   width: 28px;
-  height: 1px;
+  height: 3px;
   transform: translate(-50%, -50%);
 }
 
-.resize-handle:hover::after,
-.resize-handle[data-resize-handle-active]::after {
-  background: rgba(255, 255, 255, 0.6);
+.resize-handle:hover::before,
+.resize-handle[data-resize-handle-active="pointer"]::before,
+.resize-handle[data-resize-handle-active="keyboard"]::before {
+  background: var(--accent-blue);
+}
+.resize-handle-h:hover::before,
+.resize-handle-h[data-resize-handle-active="pointer"]::before,
+.resize-handle-h[data-resize-handle-active="keyboard"]::before {
+  width: 2px;
+}
+.resize-handle-v:hover::before,
+.resize-handle-v[data-resize-handle-active="pointer"]::before,
+.resize-handle-v[data-resize-handle-active="keyboard"]::before {
+  height: 2px;
+}
+
+.resize-handle:hover::after {
+  background: var(--accent-blue);
+  opacity: 1;
+}
+.resize-handle-h:hover::after {
+  height: 40px;
+}
+.resize-handle-v:hover::after {
+  width: 40px;
+}
+.resize-handle[data-resize-handle-active="pointer"]::after,
+.resize-handle[data-resize-handle-active="keyboard"]::after {
+  background: var(--accent-blue);
+  opacity: 1;
+}
+.resize-handle-h[data-resize-handle-active]::after {
+  height: 48px;
+}
+.resize-handle-v[data-resize-handle-active]::after {
+  width: 48px;
 }
 
 .workspace-empty {
@@ -1065,6 +1194,25 @@ textarea {
 .panel-icon-btn:hover {
   background: rgba(255, 255, 255, 0.06);
   color: var(--text-1);
+}
+
+.panel-header-toggle {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  transition: background-color 100ms ease-out;
+}
+.panel-header-toggle:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.panel-header-toggle .panel-tab {
+  pointer-events: none;
 }
 
 /* Panel header badge cluster (used by Console tab to surface counts). */
@@ -1540,7 +1688,7 @@ textarea {
   font-size: 56px;
   font-weight: 600;
   letter-spacing: 0.5px;
-  color: var(--accent-red);
+  color: var(--brand-fixed);
   font-family: var(--font-sans);
   font-feature-settings: var(--opentype);
   line-height: 1;
@@ -2977,12 +3125,121 @@ textarea {
   width: 100%;
   height: 100%;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.viewport-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--surface-100);
+  border-bottom: 1px solid var(--hairline);
+  font-size: 11px;
+  z-index: 5;
+}
+.viewport-header-btn {
+  background: transparent;
+  border: 0;
+  color: var(--text-2);
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background-color 80ms ease-out, color 80ms ease-out;
+}
+.viewport-header-btn:hover {
+  background: var(--surface-200);
+  color: var(--text-1);
+}
+.viewport-header-btn.active {
+  background: var(--accent-blue);
+  color: #0b0c0e;
+}
+
+.viewport-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.viewport-statusbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 4px 10px;
+  background: var(--surface-100);
+  border-top: 1px solid var(--hairline);
+  font-size: 11px;
+  color: var(--text-2);
+  z-index: 5;
+  min-height: 22px;
+}
+.viewport-status-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.viewport-status-spacer {
+  flex: 1;
+}
+.viewport-status-warn {
+  color: var(--accent-yellow);
+}
+
+.viewport-tool-strip {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px;
+  background: rgba(7, 8, 10, 0.85);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.viewport-tool-btn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text-2);
+  font-size: 16px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 80ms ease-out, color 80ms ease-out;
+  padding: 0;
+}
+.viewport-tool-btn:hover:not(:disabled) {
+  background: var(--surface-100);
+  color: var(--text-1);
+}
+.viewport-tool-btn.active {
+  background: var(--accent-blue);
+  color: #0b0c0e;
+}
+.viewport-tool-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 /* --- FPS overlay (always-on inside viewport) --- */
 .fps-overlay {
   position: absolute;
-  top: 8px;
+  bottom: 8px;
   right: 8px;
   display: inline-flex;
   align-items: center;
@@ -2996,7 +3253,7 @@ textarea {
   color: var(--text-2);
   pointer-events: none;
   user-select: none;
-  z-index: 5;
+  z-index: 4;
   box-shadow: var(--shadow-card);
 }
 
@@ -3300,4 +3557,239 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   SettingsModal — appearance prefs (theme + per-kind asset colors).
+   Uses the existing `.btn`, `.btn-primary`, and Modal classes; only the
+   layout primitives below are new.
+   ────────────────────────────────────────────────────────────────────── */
+.settings-section {
+  margin-bottom: 20px;
+}
+.settings-section + .settings-section {
+  border-top: 1px solid var(--hairline);
+  padding-top: 16px;
+}
+.settings-heading {
+  margin: 0 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 0;
+}
+.settings-row + .settings-row {
+  border-top: 1px solid var(--hairline);
+}
+.settings-row-text {
+  flex: 1;
+  min-width: 0;
+}
+.settings-row-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-1);
+  margin-bottom: 2px;
+}
+.settings-row-hint {
+  line-height: 1.4;
+}
+.settings-theme-toggle {
+  display: flex;
+  gap: 6px;
+}
+.settings-color-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.settings-color-swatch {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.settings-color-swatch::-webkit-color-swatch-wrapper {
+  padding: 2px;
+  border-radius: var(--r-2);
+}
+.settings-color-swatch::-webkit-color-swatch {
+  border: none;
+  border-radius: 4px;
+}
+.settings-color-text {
+  width: 96px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  background: var(--surface-100);
+  color: var(--text-1);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.settings-color-text:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+.settings-language-select {
+  min-width: 140px;
+  padding: 6px 28px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  background: var(--surface-100);
+  color: var(--text-1);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='%239c9c9d' d='M0 0l5 6 5-6z'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+.settings-language-select:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+.settings-ai-banner {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-3);
+  background: var(--tint-blue);
+}
+.settings-ai-banner-icon {
+  font-size: 16px;
+  line-height: 1.2;
+  flex-shrink: 0;
+}
+.settings-ai-banner-text {
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.settings-ai-banner-link {
+  color: var(--accent-blue);
+  text-decoration: none;
+  font-weight: 500;
+}
+.settings-ai-banner-link:hover {
+  text-decoration: underline;
+}
+
+.settings-modal-body {
+  padding: 0 0 4px;
+}
+.settings-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 24px 18px;
+  border-bottom: 1px solid var(--hairline);
+  background: linear-gradient(
+    180deg,
+    var(--surface-100) 0%,
+    transparent 100%
+  );
+}
+.settings-hero-logo {
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  object-fit: contain;
+}
+.settings-hero-text {
+  flex: 1;
+  min-width: 0;
+}
+.settings-hero-name {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--brand-fixed);
+  line-height: 1.1;
+}
+.settings-hero-meta {
+  margin-top: 4px;
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-100);
+}
+.settings-tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 10px 14px;
+  margin-bottom: -1px;
+  color: var(--text-3);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 80ms ease-out, border-color 80ms ease-out;
+}
+.settings-tab:hover {
+  color: var(--text-1);
+}
+.settings-tab.active {
+  color: var(--text-1);
+  border-bottom-color: var(--accent-blue);
+}
+
+.settings-tab-content {
+  padding: 18px 24px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.settings-credits {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+}
+.settings-credit-row {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 12px;
+  padding: 8px 0;
+  align-items: baseline;
+  line-height: 1.4;
+}
+.settings-credit-row + .settings-credit-row {
+  border-top: 1px solid var(--hairline);
+}
+.settings-credit-handle {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent-blue);
+  text-decoration: none;
+}
+.settings-credit-handle:hover {
+  text-decoration: underline;
+}
+.settings-about-links {
+  display: flex;
+  gap: 8px;
+  margin-top: 20px;
 }

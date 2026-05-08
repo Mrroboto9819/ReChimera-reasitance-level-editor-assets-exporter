@@ -72,21 +72,21 @@ const viewSlice = createSlice({
  * ──────────────────────────────────────────────────────────────────────── */
 
 export interface LayoutState {
-  /** Horizontal split: hierarchy / center / inspector */
   hierarchyPct: number;
   inspectorPct: number;
-  /** Vertical split inside center: viewport / bottom panel */
   bottomPct: number;
   consoleCollapsed: boolean;
+  hierarchyHidden: boolean;
+  inspectorHidden: boolean;
 }
 
 const DEFAULT_LAYOUT: LayoutState = {
   hierarchyPct: 18,
   inspectorPct: 22,
   bottomPct: 24,
-  // Start folded — the bottom panel only has useful content when there's a
-  // log/asset/tools state worth seeing. The user expands it explicitly.
   consoleCollapsed: true,
+  hierarchyHidden: false,
+  inspectorHidden: false,
 };
 
 const layoutSlice = createSlice({
@@ -105,6 +105,12 @@ const layoutSlice = createSlice({
     toggleConsoleCollapsed(state) {
       state.consoleCollapsed = !state.consoleCollapsed;
     },
+    toggleHierarchyHidden(state) {
+      state.hierarchyHidden = !state.hierarchyHidden;
+    },
+    toggleInspectorHidden(state) {
+      state.inspectorHidden = !state.inspectorHidden;
+    },
     resetLayout() {
       return DEFAULT_LAYOUT;
     },
@@ -117,8 +123,92 @@ export const {
   setInspectorPct,
   setBottomPct,
   toggleConsoleCollapsed,
+  toggleHierarchyHidden,
+  toggleInspectorHidden,
   resetLayout,
 } = layoutSlice.actions;
+
+/* ────────────────────────────────────────────────────────────────────────
+ * Settings — appearance preferences. Theme + brand color flow into CSS
+ * custom properties; per-kind asset colors flow into Three.js material
+ * tints (proxy boxes, placeholders, selection outline). Persisted so the
+ * user's chosen palette survives reloads.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+export type ThemeMode = "dark" | "light";
+
+export type Language = "en" | "es" | "fr" | "zh" | "ru";
+
+export interface AssetColors {
+  /** Moby proxy boxes + placeholder material tint (orange by default). */
+  moby: string;
+  /** Tie proxy boxes + placeholder material tint (cyan by default). */
+  tie: string;
+  /** UFrag (terrain) placeholder when textures haven't arrived. */
+  ufrag: string;
+  /** Selection outline / highlight color. */
+  selection: string;
+  /** Untextured proxy boxes — gray by default; drawn while real meshes
+   *  are still streaming in. */
+  proxy: string;
+}
+
+export interface SettingsState {
+  theme: ThemeMode;
+  brandColor: string;
+  assetColors: AssetColors;
+  language: Language;
+}
+
+const DEFAULT_SETTINGS: SettingsState = {
+  theme: "dark",
+  brandColor: "#FF6363",
+  assetColors: {
+    moby: "#ff8a3d",
+    tie: "#3dd0ff",
+    ufrag: "#97de82",
+    selection: "#3eb1ff",
+    proxy: "#8a8a8a",
+  },
+  language: "en",
+};
+
+const settingsSlice = createSlice({
+  name: "settings",
+  initialState: DEFAULT_SETTINGS,
+  reducers: {
+    setTheme(state, action: PayloadAction<ThemeMode>) {
+      state.theme = action.payload;
+    },
+    toggleTheme(state) {
+      state.theme = state.theme === "dark" ? "light" : "dark";
+    },
+    setBrandColor(state, action: PayloadAction<string>) {
+      state.brandColor = action.payload;
+    },
+    setAssetColor(
+      state,
+      action: PayloadAction<{ key: keyof AssetColors; value: string }>,
+    ) {
+      state.assetColors[action.payload.key] = action.payload.value;
+    },
+    setLanguage(state, action: PayloadAction<Language>) {
+      state.language = action.payload;
+    },
+    resetSettings() {
+      return DEFAULT_SETTINGS;
+    },
+  },
+});
+
+export const {
+  setTheme,
+  toggleTheme,
+  setBrandColor,
+  setAssetColor,
+  setLanguage,
+  resetSettings,
+} = settingsSlice.actions;
 
 /* ────────────────────────────────────────────────────────────────────────
  * Persistence — stash everything in localStorage. The whitelist keeps us
@@ -129,16 +219,15 @@ export const {
 const rootReducer = combineReducers({
   view: viewSlice.reducer,
   layout: layoutSlice.reducer,
+  settings: settingsSlice.reducer,
 });
 
 const persistedReducer = persistReducer(
   {
     key: "rechimera-config",
-    // v2: changed `consoleCollapsed` default to true so the bottom panel
-    // starts folded. Bumping the version invalidates v1 saves.
-    version: 2,
+    version: 4,
     storage,
-    whitelist: ["view", "layout"],
+    whitelist: ["view", "layout", "settings"],
   },
   rootReducer,
 );
@@ -165,4 +254,5 @@ export const useAppSelector: TypedUseSelectorHook<RootState> = useSelector;
 export function resetAll(dispatch: AppDispatch) {
   dispatch(resetView());
   dispatch(resetLayout());
+  dispatch(resetSettings());
 }
