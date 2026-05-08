@@ -35,6 +35,7 @@ use std::collections::HashMap;
 
 use crate::animation::DecodedClip;
 use crate::error::{Error, Result};
+use crate::math::{mat4_inverse_row_major, mat4_mul_row_major, transpose_4x4};
 use crate::moby::{MobyAsset, MobyMesh};
 use crate::shader::ShaderInfo;
 use crate::skeleton::Skeleton;
@@ -283,7 +284,10 @@ fn emit_skin(
     // three.js) handle it. The on-disk bytes are already in the layout
     // these consumers expect.
     for i in 0..bone_count {
-        let matrix: Option<[f32; 16]> = skel.bind_local.get(i).copied();
+        let matrix: Option<[f32; 16]> = skel
+            .bind_local
+            .get(i)
+            .map(|m| transpose_4x4(m));
         nodes.push(gltf_json::Node {
             camera: None,
             children: None,
@@ -359,14 +363,27 @@ fn emit_skin(
 }
 
 fn pack_ibms(skel: &Skeleton, bone_count: usize) -> Vec<u8> {
+    let mut world: Vec<[f32; 16]> = vec![IDENTITY_MAT4; bone_count];
+    for i in 0..bone_count {
+        let local = skel.bind_local.get(i).copied().unwrap_or(IDENTITY_MAT4);
+        let parent = skel
+            .bones
+            .get(i)
+            .map(|b| b.parent_index)
+            .unwrap_or(-1);
+        let parent_w = if parent >= 0 && (parent as usize) < bone_count {
+            world[parent as usize]
+        } else {
+            IDENTITY_MAT4
+        };
+        world[i] = mat4_mul_row_major(&parent_w, &local);
+    }
+
     let mut out = Vec::with_capacity(bone_count * 64);
     for i in 0..bone_count {
-        let m = skel
-            .bind_world_inverse
-            .get(i)
-            .copied()
-            .unwrap_or(IDENTITY_MAT4);
-        for v in m {
+        let inv_row = mat4_inverse_row_major(&world[i]).unwrap_or(IDENTITY_MAT4);
+        let inv_col = transpose_4x4(&inv_row);
+        for v in inv_col {
             out.write_f32::<LittleEndian>(v).expect("vec write");
         }
     }
