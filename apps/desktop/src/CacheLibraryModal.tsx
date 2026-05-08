@@ -1,9 +1,7 @@
 import { Channel } from "@tauri-apps/api/core";
-import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Database, Download, RefreshCw, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
-  exportCachedMobyGlb,
   loadCachedTextures,
   readCachedAsset,
   readCachedManifest,
@@ -17,6 +15,7 @@ import {
   type TextureBlobMap,
 } from "./api";
 import { AssetPreview } from "./AssetPreview";
+import { ExportOptionsModal } from "./ExportOptionsModal";
 import { Modal } from "./Modal";
 import { Button } from "./ui";
 
@@ -87,7 +86,7 @@ export function CacheLibraryModal({
     () => new Map(),
   );
   const [loadingAsset, setLoadingAsset] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  const [exporting, _setExporting] = useState(false);
   const [reextractStatus, setReextractStatus] = useState<string | null>(null);
 
   
@@ -261,66 +260,11 @@ export function CacheLibraryModal({
     : null;
 
   const [exportStatus, setExportStatus] = useState<string | null>(null);
-  const handleExport = async () => {
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const handleExport = () => {
     if (!selectedAsset || exporting || !folder) return;
-    console.group("[export:cache-modal] click");
-    console.log("asset_tuid:", selectedAsset.asset_tuid);
-    console.log("name:", selectedAsset.name);
-    console.log("kind:", filter);
-    console.log("submeshes:", selectedAsset.submeshes.length);
-    console.log("hasSkeleton:", selectedAsset.skeleton != null);
-    console.log("textures available:", selectedTextures.size);
-    console.log("folder:", folder);
-
-    const filenameStem =
-      selectedAsset.name && selectedAsset.name.length > 0
-        ? selectedAsset.name.replace(/[\\/:"*?<>|]/g, "_")
-        : selectedAsset.asset_tuid.replace(/^0x/, "");
-
-    let path: string | null = null;
-    try {
-      console.log("step 1: opening save dialog…");
-      path = await saveDialog({
-        defaultPath: `${filenameStem}.glb`,
-        filters: [{ name: "Binary glTF", extensions: ["glb"] }],
-        title: "Export .glb",
-      });
-    } catch (e) {
-      console.error("[export:cache-modal] save dialog failed", e);
-      setExportStatus(`Save dialog failed: ${e}`);
-      console.groupEnd();
-      return;
-    }
-    if (!path) {
-      console.log("[export:cache-modal] cancelled — no path picked");
-      console.groupEnd();
-      return;
-    }
-    console.log("step 1 ok: target path =", path);
-
-    setExporting(true);
-    setExportStatus("Copying cached GLB…");
-    try {
-      console.log(
-        "step 2: invoking exportCachedMobyGlb (Rust copies pre-baked GLB from _rechimera_cache/mobys/)…",
-      );
-      const bytes = await exportCachedMobyGlb(
-        folder,
-        selectedAsset.asset_tuid,
-        path,
-      );
-      console.log("step 2 ok: wrote", bytes, "bytes →", path);
-      console.log(
-        "[export:cache-modal] success — single Rust copy, NO double-export anymore",
-      );
-      setExportStatus(`Exported ${bytes.toLocaleString()} bytes → ${path}`);
-    } catch (e) {
-      console.error("[export:cache-modal] failed", e);
-      setExportStatus(`Export failed: ${e}`);
-    } finally {
-      setExporting(false);
-      console.groupEnd();
-    }
+    setExportStatus(null);
+    setExportModalOpen(true);
   };
 
   
@@ -591,6 +535,20 @@ export function CacheLibraryModal({
           )}
         </div>
       </div>
+      {selectedAsset && folder && (
+        <ExportOptionsModal
+          open={exportModalOpen}
+          folder={folder}
+          assetTuidHex={selectedAsset.asset_tuid}
+          assetName={selectedAsset.name}
+          hasSkeleton={selectedAsset.skeleton != null}
+          primaryAnimsetHash={selectedAsset.animset_hash ?? null}
+          onClose={() => setExportModalOpen(false)}
+          onExported={(path, bytes) => {
+            setExportStatus(`Exported ${bytes.toLocaleString()} bytes → ${path}`);
+          }}
+        />
+      )}
     </Modal>
   );
 }

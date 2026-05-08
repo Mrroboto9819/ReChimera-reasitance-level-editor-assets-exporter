@@ -183,6 +183,46 @@ export const exportCachedMobyGlb = (
     outPath,
   });
 
+export interface AnimsetClipMeta {
+  name: string;
+  num_frames: number;
+  frame_rate: number;
+  looping: boolean;
+}
+
+export interface AnimsetSummary {
+  hash: string;
+  clips: AnimsetClipMeta[];
+}
+
+export const listAnimsets = (folder: string) =>
+  invoke<AnimsetSummary[]>("list_animsets", { folder });
+
+export interface ClipPick {
+  animset_hash: string;
+  clip_indices: number[];
+}
+
+export interface GlbExportOptions {
+  include_mesh: boolean;
+  include_materials: boolean;
+  include_armature: boolean;
+  extra_clips: ClipPick[];
+}
+
+export const exportMobyGlbWithOptions = (
+  levelFolder: string,
+  assetTuidHex: string,
+  outPath: string,
+  options: GlbExportOptions,
+) =>
+  invoke<number>("export_moby_glb_with_options", {
+    levelFolder,
+    assetTuidHex,
+    outPath,
+    options,
+  });
+
 
 
 

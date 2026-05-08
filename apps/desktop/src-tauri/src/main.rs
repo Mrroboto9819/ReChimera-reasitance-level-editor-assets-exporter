@@ -2131,6 +2131,8 @@ fn main() {
             cache::read_cached_asset,
             cache::read_cached_bytes,
             cache::export_cached_moby_glb,
+            cache::export_moby_glb_with_options,
+            cache::list_animsets,
             level_layout,
             level_meshes_stream,
             level_character_library_stream,

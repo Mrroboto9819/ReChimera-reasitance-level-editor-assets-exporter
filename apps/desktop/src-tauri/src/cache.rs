@@ -853,6 +853,206 @@ pub fn read_cached_manifest(folder: String) -> Result<CacheManifest, String> {
     serde_json::from_slice(&bytes).map_err(|e| format!("parse manifest: {e}"))
 }
 
+#[derive(Deserialize)]
+pub struct GlbExportOptions {
+    pub include_mesh: bool,
+    pub include_materials: bool,
+    pub include_armature: bool,
+    pub extra_clips: Vec<ClipPick>,
+}
+
+#[derive(Deserialize)]
+pub struct ClipPick {
+    pub animset_hash: String,
+    pub clip_indices: Vec<u32>,
+}
+
+#[tauri::command]
+pub fn export_moby_glb_with_options(
+    level_folder: String,
+    asset_tuid_hex: String,
+    out_path: String,
+    options: GlbExportOptions,
+) -> Result<u64, String> {
+    use lunalib::{read_moby_assets_with_total, read_tie_assets_with_total};
+
+    let level_path = std::path::Path::new(&level_folder);
+    let target_tuid = u64::from_str_radix(
+        asset_tuid_hex
+            .trim_start_matches("0x")
+            .trim_start_matches("0X"),
+        16,
+    )
+    .map_err(|e| format!("parse asset tuid {asset_tuid_hex}: {e}"))?;
+
+    let mut moby_asset: Option<lunalib::MobyAsset> = None;
+    read_moby_assets_with_total(
+        level_path,
+        Some(&[target_tuid]),
+        |_| {},
+        |a| {
+            if a.tuid == target_tuid {
+                moby_asset = Some(a);
+            }
+        },
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut synthetic_from_tie = false;
+    let asset = match moby_asset {
+        Some(a) => a,
+        None => {
+            let mut tie_asset: Option<lunalib::TieAsset> = None;
+            read_tie_assets_with_total(
+                level_path,
+                Some(&[target_tuid]),
+                |_| {},
+                |a| {
+                    if a.tuid == target_tuid {
+                        tie_asset = Some(a);
+                    }
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            let tie =
+                tie_asset.ok_or_else(|| format!("asset {asset_tuid_hex} not found in level"))?;
+            synthetic_from_tie = true;
+            tie_as_moby(&tie)
+        }
+    };
+
+    let asset = if options.include_armature {
+        asset
+    } else {
+        let mut a = asset;
+        a.skeleton = None;
+        a
+    };
+
+    if !options.include_mesh {
+        return Err("include_mesh=false is not yet supported (would produce empty GLB)".into());
+    }
+
+    let shaders = if options.include_materials {
+        read_shaders(level_path).map_err(|e| e.to_string())?
+    } else {
+        HashMap::new()
+    };
+
+    let texture_pngs = if options.include_materials {
+        let cache_root = cache_root(&level_folder);
+        let tex_dir = cache_root.join("textures");
+        let mut needed: HashSet<u32> = HashSet::new();
+        for bangle in &asset.bangles {
+            for m in &bangle.meshes {
+                let (a, n, e) = resolve_shader_textures(
+                    &shaders,
+                    &asset.shader_tuids,
+                    m.shader_index as usize,
+                );
+                for id in [a, n, e].into_iter().flatten() {
+                    needed.insert(id);
+                }
+            }
+        }
+        let mut out = HashMap::with_capacity(needed.len());
+        for id in needed {
+            let path = tex_dir.join(format!("{id}.png"));
+            if let Ok(bytes) = fs::read(&path) {
+                out.insert(id, bytes);
+            }
+        }
+        out
+    } else {
+        HashMap::new()
+    };
+
+    let mut clips: Vec<DecodedClip> = Vec::new();
+    let animset_index = AnimsetIndex::build(level_path).ok();
+    let animsets_path = level_path.join("animsets.dat");
+    let mut animsets_file = std::fs::File::open(&animsets_path).ok();
+
+    if options.include_armature && !synthetic_from_tie {
+        if let (Some(hash), Some(idx), Some(file)) = (
+            asset.animset_hash,
+            animset_index.as_ref(),
+            animsets_file.as_mut(),
+        ) {
+            let trans_shift = asset
+                .skeleton
+                .as_ref()
+                .map(|s| s.translation_shift)
+                .unwrap_or(0);
+            let scale_shift_v = asset
+                .skeleton
+                .as_ref()
+                .map(|s| s.scale_shift)
+                .unwrap_or(0);
+            let pos_scale = if (trans_shift as u32) < 15 {
+                1.0 / (0x8000u32 >> trans_shift) as f32
+            } else {
+                1.0 / 32768.0
+            };
+            let scale_scale = if (scale_shift_v as u32) < 15 {
+                1.0 / (0x8000u32 >> scale_shift_v) as f32
+            } else {
+                1.0 / 32768.0
+            };
+            clips
+                .extend(decode_clips_for_moby(level_path, idx, file, hash, pos_scale, scale_scale));
+        }
+
+        if let (Some(idx), Some(file)) = (animset_index.as_ref(), animsets_file.as_mut()) {
+            for pick in &options.extra_clips {
+                let hex = pick.animset_hash.trim_start_matches("0x").trim_start_matches("0X");
+                let Ok(hash) = u64::from_str_radix(hex, 16) else { continue };
+                if Some(hash) == asset.animset_hash {
+                    continue;
+                }
+                let trans_shift = asset
+                    .skeleton
+                    .as_ref()
+                    .map(|s| s.translation_shift)
+                    .unwrap_or(0);
+                let scale_shift_v = asset
+                    .skeleton
+                    .as_ref()
+                    .map(|s| s.scale_shift)
+                    .unwrap_or(0);
+                let pos_scale = if (trans_shift as u32) < 15 {
+                    1.0 / (0x8000u32 >> trans_shift) as f32
+                } else {
+                    1.0 / 32768.0
+                };
+                let scale_scale = if (scale_shift_v as u32) < 15 {
+                    1.0 / (0x8000u32 >> scale_shift_v) as f32
+                } else {
+                    1.0 / 32768.0
+                };
+                let extras =
+                    decode_clips_for_moby(level_path, idx, file, hash, pos_scale, scale_scale);
+                if pick.clip_indices.is_empty() {
+                    clips.extend(extras);
+                } else {
+                    let want: HashSet<u32> = pick.clip_indices.iter().copied().collect();
+                    for (i, clip) in extras.into_iter().enumerate() {
+                        if want.contains(&(i as u32)) {
+                            clips.push(clip);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let glb_bytes = lunalib::write_moby_glb_full(&asset, &clips, &shaders, &texture_pngs)
+        .map_err(|e| format!("GLB build failed: {e}"))?;
+
+    fs::write(&out_path, &glb_bytes)
+        .map_err(|e| format!("write {out_path}: {e}"))?;
+    Ok(glb_bytes.len() as u64)
+}
+
 #[tauri::command]
 pub fn export_cached_moby_glb(
     level_folder: String,
@@ -891,6 +1091,74 @@ pub fn read_cached_bytes(
     let path = sanitized_cache_path(&folder, &file)?;
     let bytes = fs::read(&path).map_err(|e| format!("read {path:?}: {e}"))?;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[derive(Serialize)]
+pub struct AnimsetClipMeta {
+    pub name: String,
+    pub num_frames: u16,
+    pub frame_rate: f32,
+    pub looping: bool,
+}
+
+#[derive(Serialize)]
+pub struct AnimsetSummary {
+    pub hash: String,
+    pub clips: Vec<AnimsetClipMeta>,
+}
+
+#[tauri::command]
+pub fn list_animsets(folder: String) -> Result<Vec<AnimsetSummary>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let level_path = std::path::Path::new(&folder);
+    let lookup_path = level_path.join("assetlookup.dat");
+    let lookup_file =
+        std::fs::File::open(&lookup_path).map_err(|e| format!("open {lookup_path:?}: {e}"))?;
+    let mut lookup = AssetLookup::open(std::io::BufReader::new(lookup_file))
+        .map_err(|e| e.to_string())?;
+    let ptrs = lookup
+        .pointers(AssetKind::Animset)
+        .map_err(|e| format!("read animset table: {e}"))?;
+
+    let animsets_path = level_path.join("animsets.dat");
+    let mut animsets_file =
+        std::fs::File::open(&animsets_path).map_err(|e| format!("open {animsets_path:?}: {e}"))?;
+
+    let mut out = Vec::with_capacity(ptrs.len());
+    for ptr in ptrs {
+        if animsets_file
+            .seek(SeekFrom::Start(u64::from(ptr.offset)))
+            .is_err()
+        {
+            continue;
+        }
+        let mut buf = vec![0u8; ptr.length as usize];
+        if animsets_file.read_exact(&mut buf).is_err() {
+            continue;
+        }
+        let mut ig = match IgFile::open(std::io::Cursor::new(buf)) {
+            Ok(ig) => ig,
+            Err(_) => continue,
+        };
+        let offsets = animation_section_offsets(&ig);
+        let mut clips = Vec::with_capacity(offsets.len());
+        for off in offsets {
+            if let Ok(h) = read_animation_header_at(&mut ig, off) {
+                let looping = h.is_looping();
+                clips.push(AnimsetClipMeta {
+                    name: h.name,
+                    num_frames: h.num_frames,
+                    frame_rate: h.frame_rate,
+                    looping,
+                });
+            }
+        }
+        out.push(AnimsetSummary {
+            hash: format!("0x{:016X}", ptr.tuid),
+            clips,
+        });
+    }
+    Ok(out)
 }
 
 #[tauri::command]

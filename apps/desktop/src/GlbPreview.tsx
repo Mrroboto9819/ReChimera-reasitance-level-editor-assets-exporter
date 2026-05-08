@@ -4,6 +4,7 @@ import { Bounds, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { readCachedBytes } from "./api";
+import { Select, type SelectOption } from "./Select";
 
 interface GlbPreviewProps {
   folder: string;
@@ -106,17 +107,20 @@ export function GlbPreview({ folder, assetTuidHex, kind }: GlbPreviewProps) {
       {loaded.animations.length > 0 && (
         <div className="glb-preview-controls">
           <label className="dim small">Animation</label>
-          <select
+          <Select
             value={selectedClip}
-            onChange={(e) => setSelectedClip(e.target.value)}
-          >
-            <option value="">— rest pose —</option>
-            {loaded.animations.map((clip) => (
-              <option key={clip.name} value={clip.name}>
-                {clip.name} ({clip.duration.toFixed(2)}s)
-              </option>
-            ))}
-          </select>
+            onChange={setSelectedClip}
+            ariaLabel="Animation"
+            className="glb-preview-select"
+            options={[
+              { value: "", label: "— rest pose —" },
+              ...loaded.animations.map<SelectOption>((clip) => ({
+                value: clip.name,
+                label: clip.name,
+                hint: `${clip.duration.toFixed(2)}s`,
+              })),
+            ]}
+          />
         </div>
       )}
       <Canvas
