@@ -100,11 +100,16 @@ pub fn read_animation_header<R: Read + Seek>(
 }
 
 pub fn animation_section_offsets<R: Read + Seek>(ig: &IgFile<R>) -> Vec<u64> {
-    ig.sections
-        .iter()
-        .filter(|s| s.id == SECT_ANIMATION)
-        .map(|s| u64::from(s.offset))
-        .collect()
+    let mut out = Vec::new();
+    for s in ig.sections.iter().filter(|s| s.id == SECT_ANIMATION) {
+        let count = s.count.max(1);
+        let stride = u64::from(s.length);
+        let base = u64::from(s.offset);
+        for i in 0..count {
+            out.push(base + (i as u64) * stride);
+        }
+    }
+    out
 }
 
 pub fn read_animation_header_at<R: Read + Seek>(

@@ -60,7 +60,7 @@ pub fn write_moby_glb_full(
         extensions: Default::default(),
         extras: Default::default(),
         matrix: None,
-        mesh: Some(Index::new(0)),
+        mesh: None,
         name: Some(asset_display_name(asset)),
         rotation: None,
         scale: None,
@@ -92,10 +92,16 @@ pub fn write_moby_glb_full(
         _ => (0u32, 0usize),
     };
 
-    let mut primitives: Vec<Primitive> = Vec::new();
-    for bangle in &asset.bangles {
-        for mesh in &bangle.meshes {
+    let mut meshes: Vec<gltf_json::Mesh> = Vec::new();
+    let mut bangle_node_indices: Vec<u32> = Vec::new();
+    let mut total_primitives = 0usize;
 
+    for (bi, bangle) in asset.bangles.iter().enumerate() {
+        if bangle.meshes.is_empty() {
+            continue;
+        }
+        let mut primitives: Vec<Primitive> = Vec::with_capacity(bangle.meshes.len());
+        for mesh in &bangle.meshes {
             let material_idx = build_material(
                 &mut bin,
                 &mut buffer_views,
@@ -117,8 +123,39 @@ pub fn write_moby_glb_full(
                 material_idx,
             )?);
         }
+        if primitives.is_empty() {
+            continue;
+        }
+        total_primitives += primitives.len();
+
+        let mesh_idx = meshes.len() as u32;
+        meshes.push(gltf_json::Mesh {
+            extensions: Default::default(),
+            extras: Default::default(),
+            name: Some(format!("Mesh_{bi}")),
+            primitives,
+            weights: None,
+        });
+
+        let node_idx = nodes.len() as u32;
+        nodes.push(gltf_json::Node {
+            camera: None,
+            children: None,
+            extensions: Default::default(),
+            extras: Default::default(),
+            matrix: None,
+            mesh: Some(Index::new(mesh_idx)),
+            name: Some(format!("Mesh_{bi}")),
+            rotation: None,
+            scale: None,
+            translation: None,
+            skin: skin_idx.map(|_| Index::new(0)),
+            weights: None,
+        });
+        bangle_node_indices.push(node_idx);
     }
-    if primitives.is_empty() {
+
+    if total_primitives == 0 {
         return Err(Error::SectionLengthMismatch {
             id: 0xD100,
             length: 0,
@@ -126,8 +163,12 @@ pub fn write_moby_glb_full(
         });
     }
 
-    if let Some(_skin) = skin_idx {
-        nodes[asset_root_idx as usize].skin = Some(Index::new(0));
+    {
+        let root = &mut nodes[asset_root_idx as usize];
+        let kids = root.children.get_or_insert_with(Vec::new);
+        for n in &bangle_node_indices {
+            kids.push(Index::new(*n));
+        }
     }
 
     if skin_idx.is_some() && !clips.is_empty() && bone_count > 0 {
@@ -154,14 +195,6 @@ pub fn write_moby_glb_full(
         uri: None,
     };
 
-    let mesh = gltf_json::Mesh {
-        extensions: Default::default(),
-        extras: Default::default(),
-        name: Some(asset_display_name(asset)),
-        primitives,
-        weights: None,
-    };
-
     let scene_root_nodes: Vec<Index<gltf_json::Node>> = vec![Index::new(asset_root_idx)];
 
     let scene = gltf_json::Scene {
@@ -178,7 +211,7 @@ pub fn write_moby_glb_full(
         buffer_views,
         images,
         materials,
-        meshes: vec![mesh],
+        meshes,
         nodes,
         scene: Some(Index::new(0)),
         scenes: vec![scene],
@@ -505,7 +538,7 @@ fn build_material(
         }
     };
 
-    let texture_idx = (gltf_textures.len() - 1) as u32;
+    let texture_idx = image_idx;
 
     let mut pbr = gltf_json::material::PbrMetallicRoughness {
         base_color_factor: gltf_json::material::PbrBaseColorFactor([1.0, 1.0, 1.0, 1.0]),

@@ -49,7 +49,8 @@ pub use sound::{
 };
 pub use stream::{Endian, StreamHelper};
 pub use texture::{
-    bulk_extract_pngs, downsample_rgba, encode_png, read_textures, read_textures_streaming,
+    bulk_extract_pngs, downsample_png_to, downsample_rgba, encode_png, read_textures,
+    read_textures_streaming,
     read_textures_with_total, TexFormat, Texture,
 };
 pub use tie::{

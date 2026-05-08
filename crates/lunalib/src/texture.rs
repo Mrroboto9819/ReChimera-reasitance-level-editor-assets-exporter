@@ -297,6 +297,44 @@ pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     out.into_inner()
 }
 
+pub fn downsample_png_to(png_bytes: &[u8], max_dim: u32) -> Option<Vec<u8>> {
+    if max_dim == 0 || max_dim == u32::MAX {
+        return None;
+    }
+    use image::{codecs::png::PngEncoder, ColorType, ImageEncoder, ImageReader};
+    use std::io::Cursor;
+    let img = ImageReader::with_format(Cursor::new(png_bytes), image::ImageFormat::Png)
+        .decode()
+        .ok()?;
+    let (w, h) = (img.width(), img.height());
+    if w <= max_dim && h <= max_dim {
+        return None;
+    }
+    let rgba = img.to_rgba8();
+    let new_w = if w >= h {
+        max_dim.max(1)
+    } else {
+        ((w as u64 * max_dim as u64) / h as u64).max(1) as u32
+    };
+    let new_h = if w >= h {
+        ((h as u64 * max_dim as u64) / w as u64).max(1) as u32
+    } else {
+        max_dim.max(1)
+    };
+    let resized = image::imageops::resize(
+        &rgba,
+        new_w,
+        new_h,
+        image::imageops::FilterType::Triangle,
+    );
+    let (rw, rh) = (resized.width(), resized.height());
+    let mut out = Vec::new();
+    PngEncoder::new(&mut out)
+        .write_image(resized.as_raw(), rw, rh, ColorType::Rgba8.into())
+        .ok()?;
+    Some(out)
+}
+
 pub fn downsample_rgba(
     rgba: Vec<u8>,
     width: u32,
