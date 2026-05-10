@@ -40,8 +40,7 @@ files you legally own.**
 ## How this app was built
 
 Built with **[Claude Code](https://claude.com/claude-code)** paired with
-the developer experience of [Pablo Cabrera
-Castrejón](https://github.com/Mrroboto9819), on top of the format work
+the developer experience of [Mrroboto9819](https://github.com/Mrroboto9819), on top of the format work
 done by **[Lunacy](https://github.com/NefariousTechSupport) /
 [ReLunacy](https://github.com/RatchetModding/ReLunacy)** (originally by
 [@NefariousTechSupport](https://github.com/NefariousTechSupport),
