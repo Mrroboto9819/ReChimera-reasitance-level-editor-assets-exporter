@@ -1,21 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ArrowLeft, File, Folder, Package, Lock, X } from "lucide-react";
+import { ArrowLeft, Archive, File, Folder, Package, Lock, X } from "lucide-react";
 import gsap from "gsap";
 import { Modal } from "./Modal";
 import { Button } from "../ui";
 import { useFileDrop } from "../useFileDrop";
+import { psarcExtractStream } from "../api";
 
 interface OpenLevelModalProps {
   open: boolean;
   busy: boolean;
   onClose: () => void;
   onOpen: (folderPath: string) => void;
-  onPickPsarc?: () => void;
 }
 
 type GameId = "r1" | "r2" | "r3" | "rc_tod" | "rc_ffa" | "rc_a4o";
-type Step = "game" | "source" | "folder";
+type Step = "game" | "source" | "psarc" | "folder";
+
+interface PsarcExtractStatus {
+  total: number;
+  current: number;
+  lastFile: string;
+}
 
 type Franchise = "resistance" | "ratchet_clank";
 
@@ -249,7 +255,6 @@ export function OpenLevelModal({
   busy,
   onClose,
   onOpen,
-  onPickPsarc,
 }: OpenLevelModalProps) {
   const [step, setStep] = useState<Step>("game");
   const [game, setGame] = useState<GameId | null>(null);
@@ -257,18 +262,39 @@ export function OpenLevelModal({
   const [warning, setWarning] = useState<string | null>(null);
   const [recent, setRecent] = useState<string[]>([]);
 
+  const [psarcInput, setPsarcInput] = useState("");
+  const [psarcOutput, setPsarcOutput] = useState("");
+  const [psarcBusy, setPsarcBusy] = useState(false);
+  const [psarcError, setPsarcError] = useState<string | null>(null);
+  const [psarcProgress, setPsarcProgress] = useState<PsarcExtractStatus | null>(null);
+  const [psarcDone, setPsarcDone] = useState(false);
+  const psarcTotalRef = useRef(0);
+
   useEffect(() => {
     if (open) {
       setWarning(null);
       setGame(null);
       setRecent([]);
       setStep("game");
+      setPsarcInput("");
+      setPsarcOutput("");
+      setPsarcBusy(false);
+      setPsarcError(null);
+      setPsarcProgress(null);
+      setPsarcDone(false);
     }
   }, [open]);
 
   const pickGame = useCallback((id: GameId) => {
     setGame(id);
     setRecent(loadRecent(id));
+    setPath("");
+    setWarning(null);
+    setPsarcInput("");
+    setPsarcOutput("");
+    setPsarcError(null);
+    setPsarcProgress(null);
+    setPsarcDone(false);
     setStep("source");
   }, []);
 
@@ -362,7 +388,17 @@ export function OpenLevelModal({
     [game],
   );
 
-  const stepIndex = step === "game" ? 1 : step === "source" ? 2 : 3;
+  const showPsarcStep = step === "psarc" || (step === "folder" && psarcDone);
+  const stepIndex =
+    step === "game"
+      ? 1
+      : step === "source"
+        ? 2
+        : step === "psarc"
+          ? 3
+          : showPsarcStep
+            ? 4
+            : 3;
 
   const stepRefs = useRef<Array<HTMLLIElement | null>>([null, null, null]);
   const prevStepIndexRef = useRef<number>(stepIndex);
@@ -430,24 +466,115 @@ export function OpenLevelModal({
 
     prevStepIndexRef.current = stepIndex;
   }, [stepIndex, open]);
+  const totalSteps = showPsarcStep ? 4 : 3;
   const subtitle =
     step === "game" ? (
-      <span className="dim small">Step 1 / 3 · pick the game these files come from</span>
+      <span className="dim small">Step 1 / {totalSteps} · pick the game these files come from</span>
     ) : step === "source" ? (
       <span className="dim small">
-        Step 2 / 3 ·{" "}
+        Step 2 / {totalSteps} ·{" "}
         <strong>{selectedGameSpec?.short}</strong> · choose where the data is
+      </span>
+    ) : step === "psarc" ? (
+      <span className="dim small">
+        Step 3 / 4 · <strong>{selectedGameSpec?.short}</strong> · extract a PSARC archive
       </span>
     ) : (
       <span className="dim small">
-        Step 3 / 3 · <strong>{selectedGameSpec?.short}</strong> · point to the level folder
+        Step {showPsarcStep ? 4 : 3} / {totalSteps} ·{" "}
+        <strong>{selectedGameSpec?.short}</strong> · point to the level folder
       </span>
     );
 
   const handlePickPsarc = useCallback(() => {
-    onClose();
-    onPickPsarc?.();
-  }, [onClose, onPickPsarc]);
+    setPath("");
+    setWarning(null);
+    setPsarcInput("");
+    setPsarcOutput("");
+    setPsarcError(null);
+    setPsarcProgress(null);
+    setPsarcDone(false);
+    setStep("psarc");
+  }, []);
+
+  const handleBrowsePsarcInput = useCallback(async () => {
+    setPsarcError(null);
+    try {
+      const picked = await openDialog({
+        directory: false,
+        multiple: false,
+        title: "Pick a .psarc archive",
+        filters: [
+          { name: "PlayStation Archive", extensions: ["psarc", "PSARC"] },
+          { name: "All files", extensions: ["*"] },
+        ],
+      });
+      if (typeof picked === "string") setPsarcInput(picked);
+    } catch (e) {
+      setPsarcError(`File picker failed: ${e}`);
+    }
+  }, []);
+
+  const handleBrowsePsarcOutput = useCallback(async () => {
+    setPsarcError(null);
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Pick an output folder",
+      });
+      if (typeof picked === "string") setPsarcOutput(picked);
+    } catch (e) {
+      setPsarcError(`Folder picker failed: ${e}`);
+    }
+  }, []);
+
+  const handleExtractPsarc = useCallback(async () => {
+    if (!psarcInput.trim() || !psarcOutput.trim()) return;
+    setPsarcBusy(true);
+    setPsarcError(null);
+    setPsarcDone(false);
+    psarcTotalRef.current = 0;
+    setPsarcProgress({ total: 0, current: 0, lastFile: "" });
+    try {
+      await psarcExtractStream(psarcInput.trim(), psarcOutput.trim(), (e) => {
+        switch (e.type) {
+          case "total":
+            psarcTotalRef.current = e.total;
+            setPsarcProgress({ total: e.total, current: 0, lastFile: "" });
+            break;
+          case "file":
+            setPsarcProgress({
+              total: psarcTotalRef.current,
+              current: e.index,
+              lastFile: e.name,
+            });
+            break;
+          case "done":
+            setPsarcProgress((p) =>
+              p ? { ...p, current: p.total, lastFile: "Done." } : p,
+            );
+            setPsarcDone(true);
+            setPsarcInput("");
+            break;
+          case "error":
+            setPsarcError(e.message);
+            break;
+        }
+      });
+    } catch (e) {
+      setPsarcError(String(e));
+    } finally {
+      setPsarcBusy(false);
+    }
+  }, [psarcInput, psarcOutput]);
+
+  const handleContinueAfterExtract = useCallback(() => {
+    if (psarcOutput.trim()) {
+      setPath(psarcOutput.trim());
+    }
+    setStep("folder");
+  }, [psarcOutput]);
 
   return (
     <Modal
@@ -458,7 +585,9 @@ export function OpenLevelModal({
           ? "Pick a game"
           : step === "source"
             ? "Choose source"
-            : "Open level"
+            : step === "psarc"
+              ? "Extract PSARC"
+              : "Open level"
       }
       subtitle={subtitle}
       size="lg"
@@ -482,13 +611,24 @@ export function OpenLevelModal({
             <span className="wizard-step-num">2</span>
             <span className="wizard-step-label">Source</span>
           </li>
+          {showPsarcStep && (
+            <li
+              ref={(el) => {
+                stepRefs.current[2] = el;
+              }}
+              className={`wizard-step${stepIndex >= 3 ? " is-active" : ""}${stepIndex > 3 ? " is-done" : ""}`}
+            >
+              <span className="wizard-step-num">3</span>
+              <span className="wizard-step-label">Extract</span>
+            </li>
+          )}
           <li
             ref={(el) => {
-              stepRefs.current[2] = el;
+              stepRefs.current[showPsarcStep ? 3 : 2] = el;
             }}
-            className={`wizard-step${stepIndex >= 3 ? " is-active" : ""}`}
+            className={`wizard-step${stepIndex >= (showPsarcStep ? 4 : 3) ? " is-active" : ""}`}
           >
-            <span className="wizard-step-num">3</span>
+            <span className="wizard-step-num">{showPsarcStep ? 4 : 3}</span>
             <span className="wizard-step-label">Open</span>
           </li>
         </ol>
@@ -496,7 +636,10 @@ export function OpenLevelModal({
       footer={
         step === "folder" ? (
           <>
-            <Button onClick={() => setStep("source")} disabled={busy}>
+            <Button
+              onClick={() => setStep(psarcDone ? "psarc" : "source")}
+              disabled={busy}
+            >
               <ArrowLeft size={12} strokeWidth={2} /> Back
             </Button>
             <Button onClick={onClose} disabled={busy}>
@@ -517,6 +660,34 @@ export function OpenLevelModal({
               <ArrowLeft size={12} strokeWidth={2} /> Back
             </Button>
             <Button onClick={onClose}>Cancel</Button>
+          </>
+        ) : step === "psarc" ? (
+          <>
+            <Button onClick={() => setStep("source")} disabled={psarcBusy}>
+              <ArrowLeft size={12} strokeWidth={2} /> Back
+            </Button>
+            <Button onClick={onClose} disabled={psarcBusy}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleExtractPsarc}
+              disabled={!psarcInput.trim() || !psarcOutput.trim() || psarcBusy}
+              loading={psarcBusy}
+            >
+              {psarcBusy ? "Extracting…" : psarcDone ? "Extract another" : "Extract"}
+            </Button>
+            <Button
+              variant="primary"
+              onClick={handleContinueAfterExtract}
+              disabled={!psarcDone || psarcBusy}
+              title={
+                psarcDone
+                  ? "Move on to picking the level folder"
+                  : "Extract at least one archive first"
+              }
+            >
+              Continue →
+            </Button>
           </>
         ) : (
           <Button onClick={onClose}>Cancel</Button>
@@ -623,7 +794,12 @@ export function OpenLevelModal({
             <button
               type="button"
               className="source-card"
-              onClick={() => setStep("folder")}
+              onClick={() => {
+                setPath("");
+                setWarning(null);
+                setPsarcDone(false);
+                setStep("folder");
+              }}
             >
               <div className="source-card-icon">
                 <Folder size={36} strokeWidth={1.4} />
@@ -639,8 +815,7 @@ export function OpenLevelModal({
               type="button"
               className="source-card"
               onClick={handlePickPsarc}
-              disabled={!onPickPsarc}
-              title={onPickPsarc ? "Extract a .psarc archive" : "PSARC extraction not wired"}
+              title="Extract a .psarc archive"
             >
               <div className="source-card-icon">
                 <Package size={36} strokeWidth={1.4} />
@@ -653,6 +828,169 @@ export function OpenLevelModal({
                 back here and pick "Open a level folder".
               </div>
             </button>
+          </div>
+        </div>
+      )}
+
+      {step === "psarc" && (
+        <div className="open-level">
+          {selectedGameSpec && (
+            <div className="open-level-game-row">
+              <span className="game-card-tag mono">{selectedGameSpec.short}</span>
+              <span className="small dim">{selectedGameSpec.label}</span>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setStep("source")}
+                title="Back to source choice"
+                disabled={psarcBusy}
+              >
+                <ArrowLeft size={12} strokeWidth={2} /> Change
+              </button>
+            </div>
+          )}
+          <div className="source-info">
+            <strong className="small">📦 Extract one or more .psarc archives</strong>
+            <p className="small dim">
+              Different games need different file sets:
+            </p>
+            <ul className="small dim" style={{ margin: "4px 0 6px 18px", padding: 0 }}>
+              <li>
+                <strong>R2 / R3 / R&C: FFA / R&C: A4O</strong> — extract both
+                <code> level_cached.psarc</code> and <code>level_uncached.psarc</code>{" "}
+                into the same folder.
+              </li>
+              <li>
+                <strong>RFOM</strong> — extract <code>game.psarc</code> first, then
+                each per-level cache archive.
+              </li>
+              <li>
+                <strong>R&C: ToD</strong> — varies per level; extract whatever
+                <code> .psarc</code> files ship with that level.
+              </li>
+            </ul>
+            <p className="small dim">
+              Pick a <code>.psarc</code> and an output folder, hit{" "}
+              <strong>Extract</strong>, then either pick another archive (the
+              output folder stays so files merge in place) or click{" "}
+              <strong>Continue →</strong> when you've extracted everything you
+              need.
+            </p>
+          </div>
+
+          <div className="open-level-pickers">
+            <button
+              type="button"
+              className="open-level-card"
+              onClick={handleBrowsePsarcInput}
+              disabled={psarcBusy}
+            >
+              <div className="open-level-card-icon" aria-hidden>
+                <Archive size={28} strokeWidth={1.5} />
+              </div>
+              <div className="open-level-card-text">
+                <div className="open-level-card-title">
+                  Pick <code>.psarc</code>
+                </div>
+                <div className="open-level-card-sub small dim">
+                  ZLIB-compressed PSAR v1.3 / v1.4
+                </div>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              className="open-level-card"
+              onClick={handleBrowsePsarcOutput}
+              disabled={psarcBusy}
+            >
+              <div className="open-level-card-icon" aria-hidden>
+                <Folder size={28} strokeWidth={1.5} />
+              </div>
+              <div className="open-level-card-text">
+                <div className="open-level-card-title">Pick output folder</div>
+                <div className="open-level-card-sub small dim">
+                  Destination for extracted files
+                </div>
+              </div>
+            </button>
+          </div>
+
+          <label className="open-level-field">
+            <span className="open-level-field-label small dim">
+              Or paste paths
+            </span>
+            <input
+              type="text"
+              value={psarcInput}
+              onChange={(e) => setPsarcInput(e.target.value)}
+              placeholder="C:\\path\\to\\archive.psarc"
+              spellCheck={false}
+              disabled={psarcBusy}
+            />
+          </label>
+          <label className="open-level-field">
+            <input
+              type="text"
+              value={psarcOutput}
+              onChange={(e) => setPsarcOutput(e.target.value)}
+              placeholder="C:\\path\\to\\output"
+              spellCheck={false}
+              disabled={psarcBusy}
+            />
+          </label>
+
+          {psarcError && <div className="error-banner">{psarcError}</div>}
+
+          {psarcProgress && psarcProgress.total > 0 && (
+            <div className="psarc-progress" style={{ marginTop: 4 }}>
+              <div className="load-progress-bar">
+                <div
+                  className="load-progress-fill"
+                  style={{
+                    width: `${
+                      Math.min(
+                        100,
+                        (psarcProgress.current / psarcProgress.total) * 100,
+                      )
+                    }%`,
+                  }}
+                />
+              </div>
+              <div className="psarc-progress-meta">
+                <span className="mono small">
+                  {psarcProgress.current.toLocaleString()} /{" "}
+                  {psarcProgress.total.toLocaleString()}
+                </span>
+                <span
+                  className="mono small dim"
+                  style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    maxWidth: "60%",
+                  }}
+                >
+                  {psarcProgress.lastFile}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {psarcDone && (
+            <div className="open-level-hint small" style={{ borderColor: "rgba(74, 222, 128, 0.4)", background: "rgba(74, 222, 128, 0.06)" }}>
+              ✓ Extraction complete. If this game needs more archives (e.g.
+              <code> level_uncached.psarc</code> after <code>level_cached.psarc</code>
+              for R2 / R3 / V2 games), pick the next <code>.psarc</code> and
+              hit <strong>Extract another</strong>. When you've extracted
+              everything, click <strong>Continue →</strong>.
+            </div>
+          )}
+
+          <div className="open-level-hint small dim">
+            Supports any ZLIB-compressed PSARC v1.3 or v1.4 archive (most
+            PS3-era games). LZMA and OODLE compressions are recognized but
+            not yet decoded.
           </div>
         </div>
       )}

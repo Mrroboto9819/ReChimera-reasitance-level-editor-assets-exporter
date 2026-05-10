@@ -30,20 +30,24 @@ type TabKey = "general" | "colors" | "about";
 
 interface Credit {
   handle: string;
+  githubUrl?: string;
   role: string;
 }
 
 const CREDITS: Credit[] = [
   {
     handle: "VELD-Dev",
+    githubUrl: "https://github.com/VELD-Dev",
     role: "Author of ReLunacy. Lead maintainer of this project.",
   },
   {
     handle: "NefariousTechSupport",
+    githubUrl: "https://github.com/NefariousTechSupport",
     role: "Original Lunacy + IGHW reverse-engineering work.",
   },
   {
     handle: "PredatorCZ",
+    githubUrl: "https://github.com/PredatorCZ",
     role: "InsomniaToolset author. SCREAM / pointer-resolution rules.",
   },
   {
@@ -260,16 +264,20 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             <ul className="settings-credits">
               {CREDITS.map((c) => (
                 <li key={c.handle} className="settings-credit-row">
-                  <a
-                    className="settings-credit-handle"
-                    href={`https://github.com/${c.handle}`}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      void openExternal(`https://github.com/${c.handle}`);
-                    }}
-                  >
-                    @{c.handle}
-                  </a>
+                  {c.githubUrl ? (
+                    <a
+                      className="settings-credit-handle"
+                      href={c.githubUrl}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        void openExternal(c.githubUrl!);
+                      }}
+                    >
+                      @{c.handle}
+                    </a>
+                  ) : (
+                    <span className="settings-credit-handle">@{c.handle}</span>
+                  )}
                   <span className="small dim">{c.role}</span>
                 </li>
               ))}

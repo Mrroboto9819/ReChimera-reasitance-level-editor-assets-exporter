@@ -1390,7 +1390,6 @@ export function App() {
         busy={busy}
         onClose={() => setOpenLevelModalOpen(false)}
         onOpen={(folder) => handleOpen(folder)}
-        onPickPsarc={() => setPsarcModalOpen(true)}
       />
 
       <PsarcModal

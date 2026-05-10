@@ -1,7 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type AnchorHTMLAttributes,
+  type MouseEvent,
+} from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Modal } from "./Modal";
+import { openExternal } from "../version";
 
 const docsRaw = import.meta.glob("../../../docs/**/*.md", {
   query: "?raw",
@@ -31,7 +38,7 @@ const GROUP_META: Record<string, { label: string; description: string; order: nu
     description: "Top-level index for the documentation.",
     order: 0,
   },
-  "internal/lunarlib-and-IT": {
+  "internal/lunalib-and-IT": {
     label: "Lunalib & IT",
     description: "Parser internals, IGHW format, with InsomniaToolset cross-references.",
     order: 1,
@@ -67,6 +74,29 @@ function titleFromMarkdown(content: string, fallback: string): string {
 function groupOf(rel: string): string {
   const slash = rel.lastIndexOf("/");
   return slash < 0 ? "." : rel.slice(0, slash);
+}
+
+function resolveDocPath(currentRel: string, href: string): string | null {
+  if (!href) return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return null;
+  if (href.startsWith("#")) return null;
+  if (href.startsWith("//")) return null;
+  const [pathPart] = href.split("#");
+  if (!pathPart) return null;
+  const slash = currentRel.lastIndexOf("/");
+  const baseDir = slash < 0 ? "" : currentRel.slice(0, slash);
+  const baseSegments = baseDir ? baseDir.split("/") : [];
+  const hrefSegments = pathPart.split("/");
+  const stack: string[] = pathPart.startsWith("/") ? [] : [...baseSegments];
+  for (const seg of hrefSegments) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      if (stack.length > 0) stack.pop();
+      continue;
+    }
+    stack.push(seg);
+  }
+  return stack.join("/");
 }
 
 function buildEntries(): DocGroup[] {
@@ -153,6 +183,52 @@ export function DocsModal({ open, onClose }: DocsModalProps) {
     ? allEntries.find((e) => e.key === activeKey)
     : null;
 
+  const entriesByRelPath = useMemo(() => {
+    const map = new Map<string, DocEntry>();
+    for (const e of allEntries) map.set(e.relPath, e);
+    return map;
+  }, [allEntries]);
+
+  const markdownComponents = useMemo<Components>(
+    () => ({
+      a: ({ href, children, ...rest }: AnchorHTMLAttributes<HTMLAnchorElement>) => {
+        const target = href ?? "";
+        const isExternal = /^[a-z][a-z0-9+.-]*:/i.test(target);
+        const isAnchor = target.startsWith("#");
+        const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+          if (isAnchor) return;
+          event.preventDefault();
+          if (isExternal) {
+            void openExternal(target);
+            return;
+          }
+          if (!active) return;
+          const resolved = resolveDocPath(active.relPath, target);
+          if (!resolved) return;
+          const candidates = [
+            resolved,
+            resolved.endsWith("/") ? `${resolved}README.md` : null,
+            !resolved.endsWith(".md") ? `${resolved}.md` : null,
+            !resolved.endsWith(".md") ? `${resolved}/README.md` : null,
+          ].filter((s): s is string => Boolean(s));
+          for (const c of candidates) {
+            const hit = entriesByRelPath.get(c);
+            if (hit) {
+              setActiveKey(hit.key);
+              return;
+            }
+          }
+        };
+        return (
+          <a href={target} onClick={handleClick} {...rest}>
+            {children}
+          </a>
+        );
+      },
+    }),
+    [active, entriesByRelPath],
+  );
+
   return (
     <Modal
       open={open}
@@ -214,7 +290,10 @@ export function DocsModal({ open, onClose }: DocsModalProps) {
                 docs / {active.relPath}
               </div>
               <div className="docs-modal-markdown">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={markdownComponents}
+                >
                   {active.content}
                 </ReactMarkdown>
               </div>

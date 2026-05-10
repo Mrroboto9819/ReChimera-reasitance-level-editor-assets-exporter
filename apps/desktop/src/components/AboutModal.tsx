@@ -26,27 +26,27 @@ interface AboutModalProps {
 }
 
 interface CreditEntry {
-  
   handle: string;
-  
-
-
+  githubUrl?: string;
   contribution: string;
 }
 
 const PEOPLE: CreditEntry[] = [
   {
     handle: "VELD-Dev",
+    githubUrl: "https://github.com/VELD-Dev",
     contribution:
       "Author of ReLunacy — the C# / Unity predecessor that ReChimera ports its parser and rendering approach from. Lead maintainer of this project.",
   },
   {
     handle: "NefariousTechSupport",
+    githubUrl: "https://github.com/NefariousTechSupport",
     contribution:
-      "Original developer of Lunacy and key reverse engineer for the PS3-era Insomniac titles. ReChimera's renderer is directly inspired by their 7th igRewrite (Skylanders level editor).",
+      "Original developer of Lunacy and key reverse engineer for the PS3-era Insomniac titles.",
   },
   {
     handle: "PredatorCZ",
+    githubUrl: "https://github.com/PredatorCZ",
     contribution:
       "Pioneer of Ratchet & Clank: Future-series reverse engineering and author of InsomniaToolset + the Spike framework. Most of our SCREAM / IGHW / pointer-resolution rules come from cross-referencing their headers.",
   },
@@ -121,14 +121,18 @@ export function AboutModal({ open, onClose }: AboutModalProps) {
           <ul className="about-people">
             {PEOPLE.map((p) => (
               <li key={p.handle} className="about-person">
-                <a
-                  href={`https://github.com/${p.handle}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="about-handle"
-                >
-                  @{p.handle}
-                </a>
+                {p.githubUrl ? (
+                  <a
+                    href={p.githubUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="about-handle"
+                  >
+                    @{p.handle}
+                  </a>
+                ) : (
+                  <span className="about-handle">@{p.handle}</span>
+                )}
                 <span className="about-contribution small">
                   {p.contribution}
                 </span>
@@ -142,7 +146,7 @@ export function AboutModal({ open, onClose }: AboutModalProps) {
           <ul className="about-refs small">
             <li>
               <a
-                href="https://github.com/RatchetModding/ReLunacy"
+                href="https://github.com/VELD-Dev/ReLunacy"
                 target="_blank"
                 rel="noreferrer"
               >
@@ -169,16 +173,6 @@ export function AboutModal({ open, onClose }: AboutModalProps) {
                 Spike framework
               </a>{" "}
               <span className="dim">— BSD-3-Clause</span>
-            </li>
-            <li>
-              <a
-                href="https://github.com/NefariousTechSupport/7thigRewrite"
-                target="_blank"
-                rel="noreferrer"
-              >
-                7th igRewrite
-              </a>{" "}
-              <span className="dim">— renderer inspiration</span>
             </li>
           </ul>
         </section>
