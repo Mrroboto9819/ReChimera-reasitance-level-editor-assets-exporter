@@ -1,16 +1,4 @@
-//! Smoke-test CLI: dump animation-set metadata for a level.
-//!
-//! Walks `<level>/assetlookup.dat`'s 0x1D700 table, reads each animset
-//! IGHW chunk from `<level>/animsets.dat`, and dumps animation header
-//! info. Use this to validate the Phase 2a parser BEFORE wiring the
-//! frontend / animation playback.
-//!
-//! Example:
-//!   cargo run -p lunalib --release --example dump_animsets -- \
-//!     "C:/.../packed/levels/bayou/built/levels/bayou"
-//!
-//! Pass `--full` to also dump per-clip control buffer stats (track masks,
-//! ref pose). Default just shows the header.
+
 
 use std::env;
 use std::fs::File;
@@ -93,7 +81,6 @@ fn main() -> ExitCode {
     println!("Scanning animsets in {}", level_path.display());
     println!("{}", "─".repeat(80));
 
-    // 1. Get the animset pointer table.
     let lookup_file = match File::open(&lookup_path) {
         Ok(f) => BufReader::new(f),
         Err(e) => {
@@ -121,7 +108,6 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // 2. For each animset, slice it out of animsets.dat and parse.
     let mut animsets_file = match File::open(&animsets_path) {
         Ok(f) => f,
         Err(e) => {
@@ -154,10 +140,6 @@ fn main() -> ExitCode {
             }
         };
 
-        // Each animset IGHW chunk MAY contain multiple Animation sections —
-        // but per IT's struct, the canonical layout is one Animation per
-        // chunk at section 0xF000. Some animsets are pure metadata containers
-        // with no clip section.
         let has_anim_section = ig.section(SECT_ANIMATION).is_some();
         if !has_anim_section {
             totals.no_clip_section += 1;
@@ -197,12 +179,7 @@ fn main() -> ExitCode {
                                 ctrl.ref_pose_masks.len(),
                                 ctrl.blend_masks.len(),
                             );
-                            // Sanity-check first few track masks — bone
-                            // indices should fit within the 10-bit field
-                            // (already enforced by unpack), and shouldn't
-                            // run past this clip's numBones. Counts how
-                            // many tracks reference an out-of-range bone
-                            // — if non-zero, parser is mis-aligned.
+
                             let mut oob = 0;
                             for m in ctrl.track16_masks.iter().chain(ctrl.track8_masks.iter()) {
                                 if m.bone_index >= h.num_bones {
@@ -221,10 +198,6 @@ fn main() -> ExitCode {
                     }
                 }
 
-                // --decode N — fully decode this animset, dump per-bone
-                // keyframe stats. Run with `1.0`/`1.0` scale so we see
-                // raw i16-derived floats; the frontend applies moby
-                // scale separately at draw time.
                 if decode_idx == Some(i) {
                     match read_animation_control(&mut ig, &h) {
                         Ok(ctrl) => match decode_animation(&mut ig, &h, &ctrl, 1.0, 1.0) {
@@ -293,9 +266,6 @@ fn truncate(s: &str, max: usize) -> &str {
     }
 }
 
-/// Spot-check decoded clip output: how many bones got animated, are the
-/// quaternions unit-length, do the first few frames look like real
-/// numbers? Catches scale/byte-order regressions early.
 fn dump_decoded_clip(clip: &lunalib::DecodedClip) {
     let mut animated_rot = 0usize;
     let mut animated_pos = 0usize;
@@ -306,7 +276,7 @@ fn dump_decoded_clip(clip: &lunalib::DecodedClip) {
         if b.rotation_animated { animated_rot += 1; }
         if b.translation_animated { animated_pos += 1; }
         if b.scale_animated { animated_scl += 1; }
-        // Each rotation keyframe should be very close to unit length.
+
         let kc = b.rotations.len() / 4;
         for k in 0..kc {
             let i = k * 4;
@@ -325,7 +295,6 @@ fn dump_decoded_clip(clip: &lunalib::DecodedClip) {
         clip.bones.len(), animated_rot, animated_pos, animated_scl, bad_quat,
     );
 
-    // Print first animated bone's first 3 frames so we can eyeball it.
     if let Some((bi, b)) = clip
         .bones
         .iter()

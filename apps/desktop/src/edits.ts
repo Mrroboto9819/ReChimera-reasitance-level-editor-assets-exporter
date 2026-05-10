@@ -1,12 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
 import type { Instance } from "./api";
 
-/**
- * Per-instance transform override. When present in the edits map, the
- * viewport + inspector use these values instead of the original ones from
- * `level_layout`. Saving back to disk (Phase B) will diff this map against
- * the originals and write the delta to gp_prius.dat / zone files.
- */
+
+
+
+
+
+
 export interface InstanceEdit {
   position: [number, number, number];
   quaternion: [number, number, number, number];
@@ -15,11 +15,11 @@ export interface InstanceEdit {
 
 export type EditMode = "translate" | "rotate" | "scale";
 
-/**
- * Central edits store. Held in App-level state so the Viewport (gizmo +
- * mesh placement) and Inspector (editable fields + Modified badge) see the
- * same data. Reseting on level close is the parent's responsibility.
- */
+
+
+
+
+
 export function useEdits() {
   const [edits, setEdits] = useState<Map<string, InstanceEdit>>(new Map());
   const [mode, setMode] = useState<EditMode>("translate");
@@ -71,11 +71,11 @@ export function useEdits() {
   );
 }
 
-/**
- * Resolve the effective transform for an instance — edit if present, else
- * the original. Cheap pure function so the viewport can call it inside
- * its render loop.
- */
+
+
+
+
+
 export function resolvedTransform(
   inst: Instance,
   edits: Map<string, InstanceEdit>,
@@ -89,10 +89,10 @@ export function resolvedTransform(
   };
 }
 
-/**
- * Convenience: produce a new Instance object with the edit applied. Used
- * by the Inspector so `selected.position` reflects the live values.
- */
+
+
+
+
 export function applyEdit(
   inst: Instance,
   edits: Map<string, InstanceEdit>,

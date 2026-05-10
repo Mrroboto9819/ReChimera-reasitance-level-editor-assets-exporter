@@ -1,0 +1,208 @@
+//! TOD-era tie reader (R&C: Tools of Destruction).
+//!
+//! Ported from ReLunacy `LibLunacy/Tie.cs::CTie` `isOld` branch +
+//! `LibLunacy/AssetLoader.cs::LoadTiesOld`. Produces the same
+//! [`TieAsset`] struct as the V2 reader (`tie.rs`) so downstream code
+//! does not branch.
+//!
+//! ## Layout
+//! - `main.dat` section `0x3400` — array of `count` × `0x80` bytes,
+//!   one `OldTie` header per entry. Tie ID for TOD is the entry's
+//!   byte offset inside `main.dat` (`section.offset + i * 0x80`).
+//! - Vertex stream lives in `vertices.dat` section `0x9000`, indexed
+//!   by `vertexBufferStart` + per-mesh `vertexIndex * 0x14`.
+//! - Index stream lives in `vertices.dat` section `0x9100`, indexed
+//!   by per-mesh `indexIndex` (in u16 units, * 2 for bytes).
+//! - Per-mesh `oldShaderIndex` is a u16 at +0x28 — direct lookup into
+//!   the global shader DB read from `main.dat` 0x5000.
+//!
+//! Vertex layout is the static `Vertex0` form (stride 0x14):
+//! `i16 x, i16 y, i16 z, i16 purpose, f16 u, f16 v, ...`.
+
+use std::fs::File;
+use std::io::{BufReader, Read, Seek};
+use std::path::Path;
+
+use crate::error::{Error, Result};
+use crate::igfile::IgFile;
+use crate::moby::half_to_f32;
+use crate::tie::{TieAsset, TieMeshGeom};
+
+const SECT_OLD_TIE: u32 = 0x3400;
+const OLD_TIE_HEADER_SIZE: u64 = 0x80;
+const OLD_TIE_MESH_SIZE: u64 = 0x40;
+const OLD_TIE_VERTEX_STRIDE: usize = 0x14;
+
+const SECT_LEVEL_VERTEX_BUFFER: u32 = 0x9000;
+const SECT_LEVEL_INDEX_BUFFER: u32 = 0x9100;
+
+/// Read every TOD tie from `main.dat` + `vertices.dat`.
+pub fn read_tie_assets_old<F>(level_folder: &Path, mut on_each: F) -> Result<()>
+where
+    F: FnMut(TieAsset),
+{
+    let main_path = level_folder.join("main.dat");
+    let mut main_ig = IgFile::open(BufReader::new(File::open(&main_path)?))?;
+
+    let tie_section = match main_ig.section(SECT_OLD_TIE) {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+
+    let vertices_path = level_folder.join("vertices.dat");
+    let mut vertices_ig =
+        IgFile::open(BufReader::new(File::open(&vertices_path).map_err(|e| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("vertices.dat is required for TOD ties: {e}"),
+            ))
+        })?))?;
+    let vertex_section = vertices_ig
+        .section(SECT_LEVEL_VERTEX_BUFFER)
+        .ok_or(Error::SectionNotFound(SECT_LEVEL_VERTEX_BUFFER))?;
+    let index_section = vertices_ig
+        .section(SECT_LEVEL_INDEX_BUFFER)
+        .ok_or(Error::SectionNotFound(SECT_LEVEL_INDEX_BUFFER))?;
+
+    let count = tie_section.count as usize;
+    for i in 0..count {
+        let header_off = u64::from(tie_section.offset) + (i as u64) * OLD_TIE_HEADER_SIZE;
+        match parse_one(
+            &mut main_ig,
+            &mut vertices_ig,
+            header_off,
+            u64::from(vertex_section.offset),
+            u64::from(index_section.offset),
+        ) {
+            Ok(asset) => on_each(asset),
+            Err(e) => {
+                eprintln!("warn: TOD tie[{i}] skipped — parse failed: {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_one<R1: Read + Seek, R2: Read + Seek>(
+    main_ig: &mut IgFile<R1>,
+    vertices_ig: &mut IgFile<R2>,
+    header_off: u64,
+    vertex_section_offset: u64,
+    index_section_offset: u64,
+) -> Result<TieAsset> {
+    main_ig.stream.seek_to(header_off + 0x00)?;
+    let meshes_ptr = u64::from(main_ig.stream.read_u32()?);
+    main_ig.stream.seek_to(header_off + 0x0F)?;
+    let mesh_count = main_ig.stream.read_u8()? as usize;
+
+    main_ig.stream.seek_to(header_off + 0x14)?;
+    let vertex_buffer_start = main_ig.stream.read_u32()? as u64;
+    let vertex_buffer_size = main_ig.stream.read_u32()? as usize;
+
+    main_ig.stream.seek_to(header_off + 0x20)?;
+    let scale_x = main_ig.stream.read_f32()?;
+    let scale_y = main_ig.stream.read_f32()?;
+    let scale_z = main_ig.stream.read_f32()?;
+
+    // Slurp this tie's local vertex buffer (a slice of vertices.dat 0x9000).
+    let vertex_block = read_section_slice(
+        vertices_ig,
+        vertex_section_offset + vertex_buffer_start,
+        vertex_buffer_size,
+    )?;
+
+    // Walk per-mesh structs; each mesh references a slice of the
+    // vertex buffer above and a slice of the global index buffer.
+    let mut meshes: Vec<TieMeshGeom> = Vec::with_capacity(mesh_count);
+    let mut shader_tuids: Vec<u64> = Vec::with_capacity(mesh_count);
+    for m in 0..mesh_count {
+        let mesh_base = meshes_ptr + (m as u64) * OLD_TIE_MESH_SIZE;
+
+        main_ig.stream.seek_to(mesh_base + 0x00)?;
+        let index_index = main_ig.stream.read_u32()?;
+
+        main_ig.stream.seek_to(mesh_base + 0x04)?;
+        let vertex_index = main_ig.stream.read_u16()? as usize;
+
+        main_ig.stream.seek_to(mesh_base + 0x08)?;
+        let vertex_count = main_ig.stream.read_u16()?;
+
+        main_ig.stream.seek_to(mesh_base + 0x12)?;
+        let index_count = main_ig.stream.read_u16()?;
+
+        main_ig.stream.seek_to(mesh_base + 0x28)?;
+        let old_shader_index = main_ig.stream.read_u16()?;
+
+        // Indices live in vertices.dat 0x9100 — read directly there.
+        let index_byte_offset = index_section_offset + (index_index as u64) * 2;
+        let mut indices = Vec::with_capacity(index_count as usize);
+        vertices_ig.stream.seek_to(index_byte_offset)?;
+        for _ in 0..index_count {
+            indices.push(u32::from(vertices_ig.stream.read_u16()?));
+        }
+
+        // Vertices come from the local block, stride 0x14, scaled per-axis.
+        let mut positions: Vec<f32> = Vec::with_capacity(vertex_count as usize * 3);
+        let mut uvs: Vec<f32> = Vec::with_capacity(vertex_count as usize * 2);
+        for k in 0..(vertex_count as usize) {
+            let v_off = (vertex_index + k) * OLD_TIE_VERTEX_STRIDE;
+            if v_off + OLD_TIE_VERTEX_STRIDE > vertex_block.len() {
+                return Err(Error::SectionLengthMismatch {
+                    id: SECT_OLD_TIE,
+                    length: vertex_block.len() as u32,
+                    entry: OLD_TIE_VERTEX_STRIDE as u32,
+                });
+            }
+            let raw_x = i16::from_be_bytes([vertex_block[v_off], vertex_block[v_off + 1]]) as f32;
+            let raw_y =
+                i16::from_be_bytes([vertex_block[v_off + 2], vertex_block[v_off + 3]]) as f32;
+            let raw_z =
+                i16::from_be_bytes([vertex_block[v_off + 4], vertex_block[v_off + 5]]) as f32;
+            positions.push(raw_x);
+            positions.push(raw_y);
+            positions.push(raw_z);
+
+            let uv_base = v_off + 0x08;
+            let u = half_to_f32(u16::from_be_bytes([
+                vertex_block[uv_base],
+                vertex_block[uv_base + 1],
+            ]));
+            let v = half_to_f32(u16::from_be_bytes([
+                vertex_block[uv_base + 2],
+                vertex_block[uv_base + 3],
+            ]));
+            uvs.push(u);
+            uvs.push(v);
+        }
+
+        meshes.push(TieMeshGeom {
+            shader_index: m as u16,
+            vertex_count,
+            index_count,
+            positions,
+            uvs,
+            indices,
+        });
+        shader_tuids.push(old_shader_index as u64);
+    }
+
+    Ok(TieAsset {
+        tuid: header_off,
+        scale: [scale_x, scale_y, scale_z],
+        meshes,
+        shader_tuids,
+    })
+}
+
+fn read_section_slice<R: Read + Seek>(
+    ig: &mut IgFile<R>,
+    abs_offset: u64,
+    length: usize,
+) -> Result<Vec<u8>> {
+    if length == 0 {
+        return Ok(Vec::new());
+    }
+    ig.stream.seek_to(abs_offset)?;
+    ig.stream.read_bytes(length)
+}

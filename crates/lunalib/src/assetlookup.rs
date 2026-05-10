@@ -3,8 +3,6 @@ use std::io::{Read, Seek};
 use crate::error::{Error, Result};
 use crate::igfile::IgFile;
 
-/// 0x10-byte entry in an `assetlookup.dat` section: a TUID-keyed pointer into
-/// the matching `<kind>.dat` blob file (e.g. `mobys.dat`, `ties.dat`).
 #[derive(Debug, Clone, Copy)]
 pub struct AssetPointer {
     pub tuid: u64,
@@ -14,57 +12,84 @@ pub struct AssetPointer {
 
 const ASSET_POINTER_SIZE: u32 = 0x10;
 
-/// Section IDs used by the new (Future / Resistance 2+) engine generation.
-///
-/// Confirmed against R&C Future via LibLunacy + cross-checked against
-/// InsomniaToolset's [resource.hpp](../../../../InsomniaToolset/common/include/insomnia/classes/resource.hpp)
-/// `ResourceLookup<>` aliases for the IDs we hadn't yet mapped (Animset).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssetKind {
     Shader,
+    Texture,
     HighMip,
+    Cubemap,
     Tie,
+    Foliage,
+    Shrub,
     Moby,
-    Zone,
-    /// Animation sets — pointers into `animsets.dat`. One animset typically
-    /// corresponds to one character/weapon's full clip library (idle, walk,
-    /// run, fire, …). Section ID confirmed against IT's
-    /// `ResourceAnimsets = ResourceLookup<0x1d700>`.
     Animset,
+    Cinematic,
+    Zone,
+    Lighting,
 }
 
 impl AssetKind {
     pub const fn section_id(self) -> u32 {
         match self {
             AssetKind::Shader => 0x1D100,
+            AssetKind::Texture => 0x1D180,
             AssetKind::HighMip => 0x1D1C0,
+            AssetKind::Cubemap => 0x1D200,
             AssetKind::Tie => 0x1D300,
+            AssetKind::Foliage => 0x1D400,
+            AssetKind::Shrub => 0x1D500,
             AssetKind::Moby => 0x1D600,
             AssetKind::Animset => 0x1D700,
+            AssetKind::Cinematic => 0x1D800,
             AssetKind::Zone => 0x1DA00,
+            AssetKind::Lighting => 0x1DB00,
         }
     }
 
     pub const fn all() -> &'static [AssetKind] {
         &[
             AssetKind::Shader,
+            AssetKind::Texture,
             AssetKind::HighMip,
+            AssetKind::Cubemap,
             AssetKind::Tie,
+            AssetKind::Foliage,
+            AssetKind::Shrub,
             AssetKind::Moby,
             AssetKind::Animset,
+            AssetKind::Cinematic,
             AssetKind::Zone,
+            AssetKind::Lighting,
         ]
     }
 
     pub const fn name(self) -> &'static str {
         match self {
             AssetKind::Shader => "shader",
+            AssetKind::Texture => "texture",
             AssetKind::HighMip => "highmip",
+            AssetKind::Cubemap => "cubemap",
             AssetKind::Tie => "tie",
+            AssetKind::Foliage => "foliage",
+            AssetKind::Shrub => "shrub",
             AssetKind::Moby => "moby",
             AssetKind::Animset => "animset",
+            AssetKind::Cinematic => "cinematic",
             AssetKind::Zone => "zone",
+            AssetKind::Lighting => "lighting",
         }
+    }
+
+    pub const fn has_decoder(self) -> bool {
+        matches!(
+            self,
+            AssetKind::Shader
+                | AssetKind::HighMip
+                | AssetKind::Tie
+                | AssetKind::Moby
+                | AssetKind::Animset
+                | AssetKind::Zone
+        )
     }
 }
 
@@ -77,8 +102,6 @@ impl<R: Read + Seek> AssetLookup<R> {
         Ok(Self { file: IgFile::open(reader)? })
     }
 
-    /// Return the asset pointer table for the given asset kind, or an empty
-    /// vector if the section is absent in this file.
     pub fn pointers(&mut self, kind: AssetKind) -> Result<Vec<AssetPointer>> {
         let Some(section) = self.file.section(kind.section_id()) else {
             return Ok(Vec::new());
@@ -93,6 +116,12 @@ impl<R: Read + Seek> AssetLookup<R> {
         }
 
         let count = (section.length / ASSET_POINTER_SIZE) as usize;
+        if count > crate::MAX_SECTION_ENTRIES {
+            return Err(Error::AllocLimitExceeded {
+                size: count as u64,
+                limit: crate::MAX_SECTION_ENTRIES as u64,
+            });
+        }
         self.file.stream.seek_to(u64::from(section.offset))?;
 
         let mut out = Vec::with_capacity(count);

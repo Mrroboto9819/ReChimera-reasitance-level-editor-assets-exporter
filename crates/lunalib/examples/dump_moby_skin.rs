@@ -1,15 +1,4 @@
-//! Smoke-test CLI: dump skeleton + skin-weight stats for every moby in a
-//! level. Use this to validate the Phase 1b parser BEFORE wiring the GPU
-//! side — if the numbers here look wrong (zero bone-maps, all-zero
-//! weights, weights that don't sum to 255 per vertex) we know the parser
-//! is at fault and not the renderer.
-//!
-//! Example:
-//!   cargo run -p lunalib --example dump_moby_skin -- \
-//!     "C:/.../packed/levels/bayou/built/levels/bayou"
-//!
-//! Pass `--first <N>` to limit how many mobys are printed (handy on big
-//! levels — bayou has hundreds). Without it, every moby is dumped.
+
 
 use std::env;
 use std::fs::File;
@@ -73,9 +62,6 @@ fn main() -> ExitCode {
     println!("Scanning mobys in {}", level_path.display());
     println!("{}", "─".repeat(80));
 
-    // Pre-load animset TUIDs so we can cross-check moby.animset_hash
-    // against the actual table — proves our offset 0x50 read lines up
-    // with assetlookup.dat's 0x1D700 entries.
     let animset_tuids: HashSet<u64> = match File::open(level_path.join("assetlookup.dat")) {
         Ok(f) => match AssetLookup::open(BufReader::new(f)) {
             Ok(mut l) => l
@@ -166,16 +152,13 @@ impl SummaryStats {
             for m in &b.meshes {
                 if !m.bone_indices.is_empty() {
                     any_skin = true;
-                    any_bone_map = true; // implied — skin needs a bone_map
+                    any_bone_map = true;
                     self.skinned_vertex_total += m.vertex_count as usize;
-                    // Per-vertex sanity checks. weights should sum to 255
-                    // (UNORM full weight). Out-of-range bone indices mean
-                    // either bone_map is wrong or the skeleton is missing
-                    // bones we expected.
+
                     for k in 0..(m.vertex_count as usize) {
                         let wsum: u32 = (0..4).map(|i| m.bone_weights[k * 4 + i] as u32).sum();
                         if wsum < 240 || wsum > 270 {
-                            // Allow a small tolerance for quantization round-off.
+
                             self.weight_sum_off += 1;
                         }
                         if bone_count > 0 {
@@ -243,10 +226,6 @@ fn print_moby(asset: &MobyAsset, animset_tuids: &HashSet<u64>) {
         animset_str,
     );
 
-    // First skinned mesh's first 3 vertices — useful spot-check that
-    // weights look like a normalized 4-bone influence rather than random
-    // noise. Real characters typically show a single dominant weight near
-    // 255 with one or two smaller satellites.
     for b in &asset.bangles {
         for m in &b.meshes {
             if m.bone_indices.is_empty() {
@@ -272,7 +251,7 @@ fn print_moby(asset: &MobyAsset, animset_tuids: &HashSet<u64>) {
                     k, i[0], i[1], i[2], i[3], w[0], w[1], w[2], w[3], wsum,
                 );
             }
-            return; // one preview per moby is enough
+            return;
         }
     }
 }

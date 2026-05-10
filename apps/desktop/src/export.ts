@@ -16,7 +16,7 @@ import {
   isSkinnedAsset,
 } from "./skinning";
 
-/** Phase the export pipeline is currently in. */
+
 export type ExportPhase =
   | "preparing"
   | "decoding-textures"
@@ -26,26 +26,26 @@ export type ExportPhase =
 
 export interface ExportProgressState {
   phase: ExportPhase;
-  /** Human-readable label for the current phase. */
+  
   label: string;
-  /** 0..1 — best-effort estimate (some phases are atomic and stay at the same value). */
+  
   fraction: number;
-  /** Optional context such as the destination path. */
+  
   detail?: string;
-  /** Set when the operation aborted (currently only on internal errors —
-   *  the picker now happens BEFORE this function is called). */
+  
+
   cancelled?: boolean;
 }
 
 export interface ExportResult {
-  /** Where it ended up on disk. */
+  
   path: string;
   bytes: number;
 }
 
-/** Sanitize an asset name into a filesystem-safe filename stem. */
+
 function sanitizeFilename(s: string): string {
-  // Strip characters disallowed on Windows (the strictest of the three OSes).
+  
   return (
     s
       .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")
@@ -55,18 +55,18 @@ function sanitizeFilename(s: string): string {
   );
 }
 
-/**
- * Open the native save dialog for the .glb export. Returns the chosen
- * path or null if the user cancelled. Kept as a separate step (rather
- * than rolling it into `exportToGlb`) so the caller can run it BEFORE
- * showing any in-app modal — otherwise the OS dialog can end up behind
- * the modal and never get focus on Windows / Linux.
- *
- * Default filename uses the actual asset name(s):
- *   - single selection: `<sanitized_name>.glb`
- *   - multi: `<first_name>_+N.glb`
- *   - empty selection: legacy `rechimera-0-objects.glb`
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export async function pickGlbExportPath(
   selectedInstances: Instance[],
 ): Promise<string | null> {
@@ -91,34 +91,34 @@ export async function pickGlbExportPath(
   return typeof path === "string" ? path : null;
 }
 
-/**
- * Encode the current selection to `.glb` and write it to `path`.
- * Reports progress through `onProgress` callbacks so the UI can show a
- * phased modal.
- *
- * The phases:
- *   1. preparing         — assemble three.js scene from selection + cached meshes
- *   2. decoding-textures  — decode any textures the selection references
- *   3. encoding          — GLTFExporter serializes the scene to a binary glTF
- *   4. writing           — bytes flushed to disk via the `write_bytes` Tauri command
- *   5. done              — final state; modal can close
- */
+
+
+
+
+
+
+
+
+
+
+
+
 export async function exportToGlb(
   selectedIds: Set<string>,
   instances: Instance[],
   meshes: LevelMeshes | null,
-  /** Texture PNG bytes keyed by id. Required when the selection
-   *  references textures — null is allowed when the bulk fetch hasn't
-   *  resolved yet, but the export will skip texture maps in that case. */
+  
+
+
   textureBlobs: TextureBlobMap | null,
   path: string,
   onProgress?: (s: ExportProgressState) => void,
   levelFolder?: string | null,
-  /** Optional clip override (TUID hex) — when set, every skinned
-   *  character in the export gets THIS animset baked in instead of
-   *  the moby's own `animset_hash`. Drives the "selected animation
-   *  in the Hierarchy" → "Blender Action" path. Pass `null` to use
-   *  each moby's own animset. */
+  
+
+
+
+
   overrideAnimsetHash?: string | null,
 ): Promise<ExportResult> {
   const emit = (s: ExportProgressState) => onProgress?.(s);
@@ -131,7 +131,7 @@ export async function exportToGlb(
     throw new Error("No matching instances in selection");
   }
 
-  // ── Phase 1: build the three.js scene from the streamed payloads.
+  
   emit({
     phase: "preparing",
     label: "Building scene from selection",
@@ -147,15 +147,15 @@ export async function exportToGlb(
   const root = new THREE.Group();
   root.name = `ReChimera-export-${selectedInstances.length}`;
 
-  // Track which texture ids we'll need.
+  
   const neededAlbedos = new Set<number>();
-  // Animation clips collected across the whole export. Blender's glTF
-  // importer reads each as a separate Action (NLA strip), so a character
-  // with one animset → one Action; a multi-character export ends up
-  // with one Action per character.
+  
+  
+  
+  
   const animationClips: THREE.AnimationClip[] = [];
-  // Track skinned-asset rigs we've already built so we can dispose them
-  // after the GLTFExporter has serialized everything.
+  
+  
   const skinnedRigsToDispose: Array<{ dispose: () => void }> = [];
 
   for (let idx = 0; idx < selectedInstances.length; idx++) {
@@ -180,10 +180,10 @@ export async function exportToGlb(
     };
 
     if (isSkinnedAsset(asset)) {
-      // Skinned path — build a real SkinnedMesh + Skeleton and (when an
-      // animset is linked + we know the level folder) fetch + bake the
-      // animation clip into the export. Blender opens the resulting .glb
-      // with the rig + Action populated.
+      
+      
+      
+      
       const built = buildSkinnedAsset(asset);
       if (built) {
         skinnedRigsToDispose.push(built);
@@ -194,9 +194,9 @@ export async function exportToGlb(
           if (s.emissive_id != null) neededAlbedos.add(s.emissive_id);
         }
 
-        // Pick which animset to bake. Override wins (user picked a
-        // specific clip in the Hierarchy); else fall back to the moby's
-        // own animset_hash; else skip animations entirely.
+        
+        
+        
         const targetHash = overrideAnimsetHash ?? asset.animset_hash;
         if (targetHash && levelFolder) {
           try {
@@ -211,24 +211,24 @@ export async function exportToGlb(
               built.bones.length,
             );
             if (aclip.tracks.length > 0) {
-              // Name the clip after the moby + animset clip name so
-              // Blender's Action list shows something legible.
+              
+              
               aclip.name = `${inst.name || inst.tuid}_${decoded.name || "clip"}`;
               animationClips.push(aclip);
-              // Attach to first SkinnedMesh so GLTFExporter's animation
-              // walker picks it up (it scans `.animations` arrays on
-              // every mesh).
+              
+              
+              
               const sm = built.skinnedMeshes[0];
               if (sm) sm.animations = [aclip];
             }
           } catch (err) {
-            // Don't fail the whole export over one clip — log and move on.
+            
             console.warn(`Animset fetch failed for ${targetHash}:`, err);
           }
         }
       }
     } else {
-      // Static path — original behavior. One plain Mesh per submesh.
+      
       for (let i = 0; i < asset.submeshes.length; i++) {
         const s = asset.submeshes[i]!;
         const decoded = decodeMeshGeom(s);
@@ -258,7 +258,7 @@ export async function exportToGlb(
     }
     root.add(node);
 
-    // Yield every 32 instances so we don't block the event loop on huge selections.
+    
     if (idx % 32 === 0) {
       const frac = 0.05 + (idx / selectedInstances.length) * 0.25;
       emit({
@@ -271,7 +271,7 @@ export async function exportToGlb(
     }
   }
 
-  // ── Phase 3: decode textures (PNG bytes → THREE.Texture).
+  
   emit({
     phase: "decoding-textures",
     label: `Decoding ${neededAlbedos.size} texture(s)`,
@@ -297,14 +297,14 @@ export async function exportToGlb(
     });
   }
 
-  // Attach albedo / normal / emissive textures to materials. The material
-  // name has format `slots_a<aId|_>_n<nId|_>_e<eId|_>`; we parse each slot
-  // and look it up in the texture cache.
-  // `[^_]+|_` so the null marker (single `_`) matches its own group instead
-  // of failing the whole regex. Without this, any moby with even one missing
-  // slot (most non-character mobys) exported with NO textures at all — the
-  // available albedo never got attached because the regex bailed on the
-  // null normal/emissive slots.
+  
+  
+  
+  
+  
+  
+  
+  
   const slotRe = /^slots_a([^_]+|_)_n([^_]+|_)_e([^_]+|_)$/;
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return;
@@ -325,7 +325,7 @@ export async function exportToGlb(
     if (a || n || e) mat.needsUpdate = true;
   });
 
-  // ── Phase 4: GLTFExporter — synchronous and the slowest single step.
+  
   emit({
     phase: "encoding",
     label: "Encoding binary glTF",
@@ -335,10 +335,10 @@ export async function exportToGlb(
   await yieldToBrowser();
 
   const exporter = new GLTFExporter();
-  // Silence GLTFExporter's per-mesh "Creating normalized normal attribute…"
-  // warning. It fires whether or not we precompute normals — the exporter
-  // re-derives them as packed Int8 for the GLB and warns each time. The
-  // output is fine; the warning is just noise that floods DevTools.
+  
+  
+  
+  
   const origWarn = console.warn;
   console.warn = (...args: unknown[]) => {
     if (
@@ -364,23 +364,23 @@ export async function exportToGlb(
           binary: true,
           includeCustomExtensions: false,
           embedImages: true,
-          // Pass each AnimationClip explicitly. The exporter also walks
-          // `.animations` arrays on meshes, but giving it the array up
-          // front guarantees nothing is missed even if a SkinnedMesh
-          // got reparented mid-build.
+          
+          
+          
+          
           animations: animationClips,
         },
       );
     });
   } finally {
     console.warn = origWarn;
-    // Now that GLTFExporter has serialized everything, free the GPU
-    // resources held by the SkinnedMesh rigs we built. This runs in the
-    // success AND failure paths so a partial export still cleans up.
+    
+    
+    
     for (const rig of skinnedRigsToDispose) rig.dispose();
   }
 
-  // ── Phase 5: write to disk via the Tauri command.
+  
   emit({
     phase: "writing",
     label: `Writing ${formatBytes(bytes.byteLength)} to disk`,
@@ -404,7 +404,7 @@ export async function exportToGlb(
   return { path, bytes: bytes.byteLength };
 }
 
-/** Yield to the browser between heavy synchronous chunks. */
+
 function yieldToBrowser(): Promise<void> {
   return new Promise((resolve) => {
     if (typeof requestAnimationFrame === "function") {

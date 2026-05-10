@@ -22,6 +22,9 @@ pub enum Error {
 
     #[error("file not found in archive: {0}")]
     NotFound(String),
+
+    #[error("malformed header: {0}")]
+    MalformedHeader(&'static str),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
