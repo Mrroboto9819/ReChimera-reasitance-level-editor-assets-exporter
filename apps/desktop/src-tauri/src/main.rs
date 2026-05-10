@@ -12,13 +12,13 @@ use std::collections::{HashMap, HashSet};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use lunalib::math::zyx_euler_to_quat;
 use lunalib::{
-    bulk_extract_pngs, decode_animation, downsample_rgba, encode_png, extract_bank_sounds,
+    bulk_extract_pngs, decode_animation, downsample_rgba, encode_png, extract_bank_sounds_for_file, extract_stream_sounds,
     list_sounds as list_sounds_in, read_animation_control, read_animation_header, read_gameplay,
     read_moby_assets_with_total, read_shaders, read_textures_with_total,
     read_tie_assets_with_total, read_zones, read_zones_streaming, AssetKind, AssetLookup,
     AssetPointer, IgFile, ShaderInfo, SoundKind,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -56,18 +56,14 @@ struct AssetPointerDto {
 }
 
 #[derive(Serialize)]
-struct InstanceDto {
-
-    tuid: String,
-
-    asset_tuid: String,
-    kind: &'static str,
-    name: String,
-    position: [f32; 3],
-
-    quaternion: [f32; 4],
-
-    scale: [f32; 3],
+pub(crate) struct InstanceDto {
+    pub(crate) tuid: String,
+    pub(crate) asset_tuid: String,
+    pub(crate) kind: &'static str,
+    pub(crate) name: String,
+    pub(crate) position: [f32; 3],
+    pub(crate) quaternion: [f32; 4],
+    pub(crate) scale: [f32; 3],
 }
 
 #[derive(Serialize)]
@@ -87,7 +83,7 @@ struct LevelLayoutDto {
 }
 
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct MeshDto {
     pub positions_b64: String,
     pub uvs_b64: String,
@@ -108,44 +104,30 @@ struct TextureDto {
 }
 
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct SkeletonDto {
-
     bone_count: usize,
-
     root_bone: u16,
-
     parents: Vec<i16>,
-
     bind_local: Vec<[f32; 16]>,
-
     bind_world_inverse: Vec<[f32; 16]>,
-
     tms0_col: Vec<[f32; 16]>,
-
     tms1_col: Vec<[f32; 16]>,
-
     scale_shift: u16,
-
     translation_shift: u16,
 }
 
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct AssetMeshesDto {
-    asset_tuid: String,
-
-    name: String,
-    submeshes: Vec<MeshDto>,
-
-    skeleton: Option<SkeletonDto>,
-
-    animset_hash: Option<String>,
-
-    bind_pose_inverse_offset: i16,
-
+    pub(crate) asset_tuid: String,
+    pub(crate) name: String,
+    pub(crate) submeshes: Vec<MeshDto>,
+    pub(crate) skeleton: Option<SkeletonDto>,
+    pub(crate) animset_hash: Option<String>,
+    pub(crate) bind_pose_inverse_offset: i16,
     #[serde(default)]
-    embedded_animation_count: u32,
+    pub(crate) embedded_animation_count: u32,
 }
 
 #[derive(Serialize)]
@@ -486,7 +468,7 @@ fn level_layout(folder: String) -> Result<LevelLayoutDto, String> {
     Ok(LevelLayoutDto { instances, ufrags })
 }
 
-fn real_moby_layout(folder: &str) -> Option<Vec<InstanceDto>> {
+pub(crate) fn real_moby_layout(folder: &str) -> Option<Vec<InstanceDto>> {
     let path = Path::new(folder);
     let layout = match lunalib::detect_layout(path) {
         Ok(lunalib::LevelLayout::Tod) => lunalib::read_gameplay_old(path).ok()?,
@@ -510,7 +492,7 @@ fn real_moby_layout(folder: &str) -> Option<Vec<InstanceDto>> {
     (!out.is_empty()).then_some(out)
 }
 
-fn real_tie_layout(folder: &str) -> Option<Vec<InstanceDto>> {
+pub(crate) fn real_tie_layout(folder: &str) -> Option<Vec<InstanceDto>> {
     let path = Path::new(folder);
     let mut out = Vec::new();
     match lunalib::detect_layout(path) {
@@ -2029,11 +2011,14 @@ fn list_level_sounds(level_folder: String) -> Result<Vec<SoundEntryDto>, String>
     for entry in read_dir.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let lower = name.to_ascii_lowercase();
+        if !lower.ends_with(".dat") || lower.contains("stream") {
+            continue;
+        }
         let is_bank = lower == "resident_sound.dat"
             || lower == "ps3sound.dat"
             || lower.starts_with("resident_dialogue")
             || lower.starts_with("ps3dialogue");
-        if is_bank && lower.ends_with(".dat") {
+        if is_bank {
             candidates.push(name);
         }
     }
@@ -2144,41 +2129,371 @@ struct ExtractedSoundDto {
     wav_b64: String,
 }
 
+fn list_sound_banks_in(folder: &Path) -> std::io::Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(folder)?.flatten() {
+        let n = entry.file_name().to_string_lossy().into_owned();
+        let lower = n.to_ascii_lowercase();
+        if !lower.ends_with(".dat") {
+            continue;
+        }
+        if lower.contains("stream") {
+            continue;
+        }
+        let is_bank = lower == "resident_sound.dat"
+            || lower == "ps3sound.dat"
+            || lower.starts_with("resident_dialogue")
+            || (lower.starts_with("ps3dialogue") && !lower.starts_with("ps3dialoguestream"));
+        if is_bank {
+            out.push(n);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn cached_wav_path(level_folder: &Path, name: &str) -> std::path::PathBuf {
+    let safe: String = name
+        .chars()
+        .map(|c| match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '.' => c,
+            _ => '_',
+        })
+        .collect();
+    level_folder
+        .join("_rechimera_cache")
+        .join("sounds")
+        .join(format!("{}.wav", safe))
+}
+
+fn parse_wav_meta(wav: &[u8]) -> Option<(u32, u16, u32)> {
+    if wav.len() < 44 || &wav[0..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut i = 12usize;
+    let mut sample_rate: u32 = 0;
+    let mut channels: u16 = 0;
+    let mut data_len: u32 = 0;
+    while i + 8 <= wav.len() {
+        let id = &wav[i..i + 4];
+        let len = u32::from_le_bytes([wav[i + 4], wav[i + 5], wav[i + 6], wav[i + 7]]) as usize;
+        i += 8;
+        if id == b"fmt " && len >= 16 && i + 16 <= wav.len() {
+            channels = u16::from_le_bytes([wav[i + 2], wav[i + 3]]);
+            sample_rate = u32::from_le_bytes([wav[i + 4], wav[i + 5], wav[i + 6], wav[i + 7]]);
+        } else if id == b"data" {
+            data_len = len as u32;
+        }
+        i += len + (len & 1);
+    }
+    if sample_rate == 0 || channels == 0 {
+        return None;
+    }
+    let bytes_per_sample_per_channel = 2u32;
+    let total_samples =
+        data_len / (channels as u32 * bytes_per_sample_per_channel);
+    Some((sample_rate, channels, total_samples))
+}
+
+#[tauri::command]
+fn extract_one_stream_sound(
+    level_folder: String,
+    name: String,
+    source: String,
+) -> Result<ExtractedSoundDto, String> {
+    lunalib::reset_scream_diag();
+    let folder = Path::new(&level_folder);
+    let target = name.trim();
+    eprintln!(
+        "[scream-stream] target='{}' bank='{}'",
+        target, source
+    );
+
+    let cached_path = cached_wav_path(folder, &name);
+    if cached_path.is_file() {
+        if let Ok(bytes) = std::fs::read(&cached_path) {
+            if let Some((sample_rate, channels, sample_count)) = parse_wav_meta(&bytes) {
+                eprintln!("[scream-stream] cache hit → {}", cached_path.display());
+                return Ok(ExtractedSoundDto {
+                    name,
+                    sample_rate,
+                    channels,
+                    sample_count,
+                    wav_b64: BASE64.encode(&bytes),
+                });
+            }
+        }
+    }
+
+    let bank_path = folder.join(&source);
+    if !bank_path.is_file() {
+        return Err(format!("missing bank {}", bank_path.display()));
+    }
+    let stream_filename = lunalib::streaming_sibling_for(&source)
+        .ok_or_else(|| format!("no streaming sibling for {}", source))?;
+    let stream_path = folder.join(stream_filename);
+    if !stream_path.is_file() {
+        return Err(format!(
+            "missing stream sibling {} (this entry isn't playable in this build)",
+            stream_path.display()
+        ));
+    }
+
+    let file = File::open(&bank_path)
+        .map_err(|e| format!("open {}: {e}", bank_path.display()))?;
+    let mut ig = IgFile::open(BufReader::new(file)).map_err(|e| e.to_string())?;
+    let mut errors: Vec<String> = Vec::new();
+    let extracted = extract_stream_sounds(&mut ig, &stream_path, &mut errors)
+        .map_err(|e| format!("extract_stream_sounds: {e}"))?;
+    eprintln!(
+        "[scream-stream] decoded {} stream entries from {} (errors={})",
+        extracted.len(),
+        source,
+        errors.len()
+    );
+
+    let suffix_pattern = format!("{}_", target);
+    let mut found_match: Option<lunalib::ExtractedSound> = None;
+    for s in extracted {
+        if s.name == target {
+            found_match = Some(s);
+            break;
+        }
+        if found_match.is_none() && s.name.starts_with(&suffix_pattern) {
+            let tail = &s.name[suffix_pattern.len()..];
+            if tail.chars().all(|c| c.is_ascii_digit()) {
+                found_match = Some(s);
+            }
+        }
+    }
+    if let Some(found) = found_match {
+        eprintln!(
+            "[scream-stream] matched '{}' in {} ({} bytes)",
+            found.name,
+            source,
+            found.wav.len()
+        );
+        if let Some(parent) = cached_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&cached_path, &found.wav);
+        return Ok(ExtractedSoundDto {
+            name: found.name,
+            sample_rate: found.sample_rate,
+            channels: found.channels,
+            sample_count: found.sample_count,
+            wav_b64: BASE64.encode(&found.wav),
+        });
+    }
+    Err(format!(
+        "stream sound '{}' not found in {} (decoded {} entries)",
+        target, source, errors.len()
+    ))
+}
+
+#[tauri::command]
+fn extract_one_sound(
+    level_folder: String,
+    name: String,
+    source: Option<String>,
+) -> Result<ExtractedSoundDto, String> {
+    lunalib::reset_scream_diag();
+    let folder = Path::new(&level_folder);
+
+    let cached_path = cached_wav_path(folder, &name);
+    if cached_path.is_file() {
+        if let Ok(bytes) = std::fs::read(&cached_path) {
+            if let Some((sample_rate, channels, sample_count)) = parse_wav_meta(&bytes) {
+                eprintln!("[scream-loop] cache hit for '{}' → {}", name, cached_path.display());
+                return Ok(ExtractedSoundDto {
+                    name,
+                    sample_rate,
+                    channels,
+                    sample_count,
+                    wav_b64: BASE64.encode(&bytes),
+                });
+            }
+        }
+    }
+
+    let mut bank_candidates =
+        list_sound_banks_in(folder).map_err(|e| format!("read_dir {}: {e}", folder.display()))?;
+    if let Some(s) = &source {
+        bank_candidates.sort_by_key(|n| if n == s { 0 } else { 1 });
+    }
+    if bank_candidates.is_empty() {
+        return Err(format!("no sound bank found in {}", folder.display()));
+    }
+
+    let target = name.trim();
+    eprintln!(
+        "[scream-loop] extract_one_sound target='{}' source_hint={:?} candidates=[{}]",
+        target,
+        source,
+        bank_candidates.join(", ")
+    );
+    let mut decode_diagnostics: Vec<String> = Vec::new();
+    for filename in &bank_candidates {
+        eprintln!("[scream-loop] trying {} …", filename);
+        let path = folder.join(filename);
+        let file = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("[scream-loop]   open failed: {e}");
+                decode_diagnostics.push(format!("open {}: {e}", filename));
+                continue;
+            }
+        };
+        let mut ig = match IgFile::open(BufReader::new(file)) {
+            Ok(ig) => ig,
+            Err(e) => {
+                eprintln!("[scream-loop]   igfile failed: {e}");
+                decode_diagnostics.push(format!("igfile {}: {e}", filename));
+                continue;
+            }
+        };
+        let extracted = match extract_bank_sounds_for_file(&mut ig, filename) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[scream-loop]   decode failed: {e}");
+                decode_diagnostics.push(format!("decode {}: {e}", filename));
+                continue;
+            }
+        };
+        eprintln!(
+            "[scream-loop]   {} returned {} ExtractedSound items",
+            filename,
+            extracted.len()
+        );
+        if extracted.is_empty() {
+            decode_diagnostics.push(format!("decode {}: 0 sounds (V1 layout?)", filename));
+        }
+        let suffix_pattern = format!("{}_", target);
+        let mut found_match: Option<lunalib::ExtractedSound> = None;
+        for s in extracted {
+            if s.name == target {
+                found_match = Some(s);
+                break;
+            }
+            if found_match.is_none() && s.name.starts_with(&suffix_pattern) {
+                let tail = &s.name[suffix_pattern.len()..];
+                if tail.chars().all(|c| c.is_ascii_digit()) {
+                    found_match = Some(s);
+                }
+            }
+        }
+        if let Some(found) = found_match {
+            eprintln!(
+                "[scream-loop]   matched '{}' in {} (gain_index={}, wav={} bytes)",
+                found.name,
+                filename,
+                found.gain_index,
+                found.wav.len()
+            );
+            if let Some(parent) = cached_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&cached_path, &found.wav);
+            return Ok(ExtractedSoundDto {
+                name: found.name,
+                sample_rate: found.sample_rate,
+                channels: found.channels,
+                sample_count: found.sample_count,
+                wav_b64: BASE64.encode(&found.wav),
+            });
+        }
+        eprintln!(
+            "[scream-loop]   '{}' not in {}",
+            target, filename
+        );
+    }
+    let diag = if decode_diagnostics.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", decode_diagnostics.join(" · "))
+    };
+    Err(format!(
+        "sound '{}' not found in any bank (tried {}){}",
+        target,
+        bank_candidates.join(", "),
+        diag
+    ))
+}
+
 
 #[tauri::command]
 fn extract_level_sounds(level_folder: String) -> Result<Vec<ExtractedSoundDto>, String> {
-    let path = Path::new(&level_folder).join("resident_sound.dat");
-    if !path.is_file() {
-        return Err(format!("missing {}", path.display()));
+    let folder = Path::new(&level_folder);
+    let read_dir = std::fs::read_dir(folder)
+        .map_err(|e| format!("read_dir {}: {e}", folder.display()))?;
+    let mut bank_candidates: Vec<String> = Vec::new();
+    for entry in read_dir.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let lower = name.to_ascii_lowercase();
+        let is_bank = lower == "resident_sound.dat"
+            || lower == "ps3sound.dat"
+            || lower.starts_with("resident_dialogue")
+            || lower.starts_with("ps3dialogue");
+        if is_bank && lower.ends_with(".dat") {
+            bank_candidates.push(name);
+        }
     }
-    let file = File::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
-    let mut ig = IgFile::open(BufReader::new(file)).map_err(|e| e.to_string())?;
-    let extracted = extract_bank_sounds(&mut ig).map_err(|e| {
-
-        let dump = lunalib::dump_sound_bank_info(&mut ig)
-            .unwrap_or_else(|de| format!("(dump itself failed: {de})"));
-        eprintln!("[extract_level_sounds] {} failed: {e}\n{dump}", path.display());
-        e.to_string()
-    })?;
-    if extracted.is_empty() {
-
-        let dump = lunalib::dump_sound_bank_info(&mut ig)
-            .unwrap_or_else(|e| format!("(dump failed: {e})"));
-        eprintln!(
-            "[extract_level_sounds] {} returned 0 sounds — dumping structure:\n{dump}",
-            path.display()
-        );
+    bank_candidates.sort();
+    if bank_candidates.is_empty() {
+        return Err(format!(
+            "no sound bank found in {} (expected resident_sound.dat or ps3sound.dat)",
+            folder.display()
+        ));
     }
-    Ok(extracted
-        .into_iter()
-        .map(|s| ExtractedSoundDto {
-            name: s.name,
-            sample_rate: s.sample_rate,
-            channels: s.channels,
-            sample_count: s.sample_count,
-            wav_b64: BASE64.encode(&s.wav),
-        })
-        .collect())
+
+    let mut out: Vec<ExtractedSoundDto> = Vec::new();
+    for filename in &bank_candidates {
+        let path = folder.join(filename);
+        let file = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("[extract_level_sounds] open {}: {e}", path.display());
+                continue;
+            }
+        };
+        let mut ig = match IgFile::open(BufReader::new(file)) {
+            Ok(ig) => ig,
+            Err(e) => {
+                eprintln!("[extract_level_sounds] IgFile {}: {e}", path.display());
+                continue;
+            }
+        };
+        let extracted = match extract_bank_sounds_for_file(&mut ig, filename) {
+            Ok(s) => s,
+            Err(e) => {
+                let dump = lunalib::dump_sound_bank_info(&mut ig)
+                    .unwrap_or_else(|de| format!("(dump itself failed: {de})"));
+                eprintln!(
+                    "[extract_level_sounds] {} failed: {e}\n{dump}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        if extracted.is_empty() {
+            let dump = lunalib::dump_sound_bank_info(&mut ig)
+                .unwrap_or_else(|e| format!("(dump failed: {e})"));
+            eprintln!(
+                "[extract_level_sounds] {} returned 0 sounds — dumping structure:\n{dump}",
+                path.display()
+            );
+        }
+        for s in extracted {
+            out.push(ExtractedSoundDto {
+                name: s.name,
+                sample_rate: s.sample_rate,
+                channels: s.channels,
+                sample_count: s.sample_count,
+                wav_b64: BASE64.encode(&s.wav),
+            });
+        }
+    }
+    Ok(out)
 }
 
 
@@ -2464,6 +2779,9 @@ fn main() {
             cache::export_moby_glb_with_options,
             cache::list_animsets,
             cache::decode_animset_clip,
+            cache::export_level_glb,
+            cache::export_texture_png,
+            cache::export_texture_dds,
             level_layout,
             level_meshes_stream,
             level_character_library_stream,
@@ -2477,6 +2795,8 @@ fn main() {
             list_level_sounds,
             dump_sound_bank,
             extract_level_sounds,
+            extract_one_sound,
+            extract_one_stream_sound,
             extract_level_stream_sounds,
             extract_raw_streaming_sounds,
             get_level_texture_png,

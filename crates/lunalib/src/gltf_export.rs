@@ -707,7 +707,7 @@ fn position_bounds(positions: &[f32]) -> ([f32; 3], [f32; 3]) {
     }
 }
 
-fn serialize_glb(root: &gltf_json::Root, bin: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn serialize_glb(root: &gltf_json::Root, bin: &[u8]) -> Result<Vec<u8>> {
     let json_string =
         serde_json::to_vec(root).map_err(|e| Error::GltfWrite(e.to_string()))?;
     let mut json_chunk = json_string;

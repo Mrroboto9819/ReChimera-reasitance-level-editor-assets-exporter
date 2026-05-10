@@ -254,6 +254,53 @@ export const exportMobyGlbWithOptions = (
     options,
   });
 
+export const writeBytes = (path: string, bytes: number[]) =>
+  invoke<void>("write_bytes", { path, bytes });
+
+export const exportTexturePng = (
+  levelFolder: string,
+  texId: number,
+  outPath: string,
+) =>
+  invoke<number>("export_texture_png", {
+    levelFolder,
+    texId,
+    outPath,
+  });
+
+export const exportTextureDds = (
+  levelFolder: string,
+  texId: number,
+  outPath: string,
+) =>
+  invoke<number>("export_texture_dds", {
+    levelFolder,
+    texId,
+    outPath,
+  });
+
+export type LevelGlbExportEvent =
+  | { type: "phase"; label: string; total: number }
+  | { type: "progress"; current: number }
+  | {
+      type: "done";
+      bytes_written: number;
+      instance_count: number;
+      asset_count: number;
+    }
+  | { type: "error"; message: string };
+
+export const exportLevelGlb = (
+  levelFolder: string,
+  outPath: string,
+  onEvent: Channel<LevelGlbExportEvent>,
+) =>
+  invoke<void>("export_level_glb", {
+    levelFolder,
+    outPath,
+    onEvent,
+  });
+
 
 
 
@@ -777,6 +824,28 @@ export const listLevelSounds = (level_folder: string) =>
 export const extractLevelSounds = (level_folder: string) =>
   invoke<ExtractedSound[]>("extract_level_sounds", {
     levelFolder: level_folder,
+  });
+
+export const extractOneSound = (
+  level_folder: string,
+  name: string,
+  source?: string,
+) =>
+  invoke<ExtractedSound>("extract_one_sound", {
+    levelFolder: level_folder,
+    name,
+    source,
+  });
+
+export const extractOneStreamSound = (
+  level_folder: string,
+  name: string,
+  source: string,
+) =>
+  invoke<ExtractedSound>("extract_one_stream_sound", {
+    levelFolder: level_folder,
+    name,
+    source,
   });
 
 

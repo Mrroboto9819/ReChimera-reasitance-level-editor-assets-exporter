@@ -23,6 +23,7 @@ export type EditMode = "translate" | "rotate" | "scale";
 export function useEdits() {
   const [edits, setEdits] = useState<Map<string, InstanceEdit>>(new Map());
   const [mode, setMode] = useState<EditMode>("translate");
+  const [deletedTuids, setDeletedTuids] = useState<Set<string>>(new Set());
 
   const setEdit = useCallback(
     (tuid: string, patch: Partial<InstanceEdit>, baseline: Instance) => {
@@ -56,6 +57,34 @@ export function useEdits() {
     [edits],
   );
 
+  const deleteInstances = useCallback((tuids: string[]) => {
+    if (tuids.length === 0) return;
+    setDeletedTuids((prev) => {
+      const next = new Set(prev);
+      for (const t of tuids) next.add(t);
+      return next;
+    });
+  }, []);
+
+  const restoreInstances = useCallback((tuids: string[]) => {
+    if (tuids.length === 0) return;
+    setDeletedTuids((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const t of tuids) {
+        if (next.delete(t)) changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, []);
+
+  const restoreAll = useCallback(() => setDeletedTuids(new Set()), []);
+
+  const isDeleted = useCallback(
+    (tuid: string) => deletedTuids.has(tuid),
+    [deletedTuids],
+  );
+
   return useMemo(
     () => ({
       edits,
@@ -66,8 +95,26 @@ export function useEdits() {
       resetAll,
       isModified,
       count: edits.size,
+      deletedTuids,
+      deleteInstances,
+      restoreInstances,
+      restoreAll,
+      isDeleted,
+      deletedCount: deletedTuids.size,
     }),
-    [edits, mode, setEdit, resetEdit, resetAll, isModified],
+    [
+      edits,
+      mode,
+      setEdit,
+      resetEdit,
+      resetAll,
+      isModified,
+      deletedTuids,
+      deleteInstances,
+      restoreInstances,
+      restoreAll,
+      isDeleted,
+    ],
   );
 }
 

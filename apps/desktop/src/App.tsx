@@ -298,6 +298,12 @@ export function App() {
     total: number;
   } | null>(null);
   const [cacheLibraryOpen, setCacheLibraryOpen] = useState(false);
+  const [cacheModalInitialPanel, setCacheModalInitialPanel] =
+    useState<import("./components/CacheLibraryModal").LibraryFilter | null>(null);
+  const [cacheModalInitialTextureId, setCacheModalInitialTextureId] =
+    useState<string | null>(null);
+  const [cacheModalInitialSoundKey, setCacheModalInitialSoundKey] =
+    useState<string | null>(null);
   
   
   
@@ -986,10 +992,19 @@ export function App() {
       <Hierarchy
         instances={instances}
         selection={selection}
-        mobyAssets={meshes?.moby_assets}
-        tieAssets={meshes?.tie_assets}
         cacheManifest={cacheManifest}
+        sounds={levelSounds}
         onPreviewRawAsset={(tuid) => setPreviewAssetTuid(tuid)}
+        onSelectCacheSound={(key) => {
+          setCacheModalInitialPanel("sound");
+          setCacheModalInitialSoundKey(key);
+          setCacheLibraryOpen(true);
+        }}
+        onSelectCacheTexture={(texId) => {
+          setCacheModalInitialPanel("texture");
+          setCacheModalInitialTextureId(texId);
+          setCacheLibraryOpen(true);
+        }}
       />
     ),
     inspector: (
@@ -1413,9 +1428,16 @@ export function App() {
         onClose={() => {
           setCacheLibraryOpen(false);
           setPreviewAssetTuid(null);
+          setCacheModalInitialPanel(null);
+          setCacheModalInitialTextureId(null);
+          setCacheModalInitialSoundKey(null);
         }}
         folder={summary?.folder ?? null}
         initialAssetTuid={previewAssetTuid}
+        initialPanel={cacheModalInitialPanel}
+        initialTextureId={cacheModalInitialTextureId}
+        initialSoundKey={cacheModalInitialSoundKey}
+        sounds={levelSounds}
         onRequestExtract={() => {
           if (!summary) return;
           console.log("[cache-modal] user requested extract", summary.folder);

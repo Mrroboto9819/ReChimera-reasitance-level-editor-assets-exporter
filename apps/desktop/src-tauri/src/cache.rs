@@ -1752,6 +1752,231 @@ pub fn export_cached_moby_glb(
     })
 }
 
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LevelGlbExportEvent {
+    Phase { label: &'static str, total: usize },
+    Progress { current: usize },
+    Done { bytes_written: usize, instance_count: usize, asset_count: usize },
+    Error { message: String },
+}
+
+#[tauri::command]
+pub fn export_level_glb(
+    level_folder: String,
+    out_path: String,
+    on_event: Channel<LevelGlbExportEvent>,
+) -> Result<(), String> {
+    if let Err(message) = run_export_level_glb(&level_folder, &out_path, &on_event) {
+        let _ = on_event.send(LevelGlbExportEvent::Error { message: message.clone() });
+        return Err(message);
+    }
+    Ok(())
+}
+
+fn run_export_level_glb(
+    level_folder: &str,
+    out_path: &str,
+    on_event: &Channel<LevelGlbExportEvent>,
+) -> Result<(), String> {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+
+    let _ = on_event.send(LevelGlbExportEvent::Phase {
+        label: "Reading placements",
+        total: 1,
+    });
+
+    let mobys = crate::real_moby_layout(level_folder).unwrap_or_default();
+    let ties = crate::real_tie_layout(level_folder).unwrap_or_default();
+
+    if mobys.is_empty() && ties.is_empty() {
+        return Err("No placements found in this level. Open and extract the level cache first.".into());
+    }
+
+    let _ = on_event.send(LevelGlbExportEvent::Phase {
+        label: "Loading assets",
+        total: mobys.len() + ties.len(),
+    });
+
+    let cache_root = cache_root(level_folder);
+    let mut asset_idx_by_tuid: HashMap<(String, &'static str), usize> = HashMap::new();
+    let mut assets: Vec<lunalib::level_glb::LevelGlbAsset> = Vec::new();
+    let mut needed_textures: HashSet<u32> = HashSet::new();
+
+    let mut load_one = |kind_name: &'static str, asset_tuid: &str| -> Result<Option<usize>, String> {
+        let key = (asset_tuid.to_string(), kind_name);
+        if let Some(idx) = asset_idx_by_tuid.get(&key) {
+            return Ok(Some(*idx));
+        }
+        let folder = if kind_name == "moby" { "mobys" } else { "ties" };
+        let json_path = cache_root.join(folder).join(format!("{}.json", asset_tuid));
+        let bytes = match fs::read(&json_path) {
+            Ok(b) => b,
+            Err(_) => return Ok(None),
+        };
+        let dto: AssetMeshesDto = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("parse {}: {e}", json_path.display()))?;
+        let mut submeshes: Vec<lunalib::level_glb::LevelGlbSubmesh> =
+            Vec::with_capacity(dto.submeshes.len());
+        for m in &dto.submeshes {
+            let positions = decode_f32_b64(&m.positions_b64, &BASE64)?;
+            let uvs = decode_f32_b64(&m.uvs_b64, &BASE64)?;
+            let indices = decode_u32_b64(&m.indices_b64, &BASE64)?;
+            if let Some(id) = m.albedo_id {
+                needed_textures.insert(id);
+            }
+            submeshes.push(lunalib::level_glb::LevelGlbSubmesh {
+                positions,
+                uvs,
+                indices,
+                albedo_id: m.albedo_id,
+            });
+        }
+        let idx = assets.len();
+        assets.push(lunalib::level_glb::LevelGlbAsset {
+            name: if dto.name.is_empty() { asset_tuid.to_string() } else { dto.name.clone() },
+            submeshes,
+        });
+        asset_idx_by_tuid.insert(key, idx);
+        Ok(Some(idx))
+    };
+
+    let mut instances: Vec<lunalib::level_glb::LevelGlbInstance> = Vec::new();
+    let mut progress: usize = 0;
+
+    for inst in &mobys {
+        progress += 1;
+        if progress % 16 == 0 {
+            let _ = on_event.send(LevelGlbExportEvent::Progress { current: progress });
+        }
+        if let Some(idx) = load_one("moby", &inst.asset_tuid)? {
+            instances.push(lunalib::level_glb::LevelGlbInstance {
+                asset_idx: idx,
+                name: format!("moby:{}:{}", inst.name, inst.tuid),
+                translation: inst.position,
+                rotation: inst.quaternion,
+                scale: inst.scale,
+            });
+        }
+    }
+    for inst in &ties {
+        progress += 1;
+        if progress % 16 == 0 {
+            let _ = on_event.send(LevelGlbExportEvent::Progress { current: progress });
+        }
+        if let Some(idx) = load_one("tie", &inst.asset_tuid)? {
+            instances.push(lunalib::level_glb::LevelGlbInstance {
+                asset_idx: idx,
+                name: format!("tie:{}:{}", inst.name, inst.tuid),
+                translation: inst.position,
+                rotation: inst.quaternion,
+                scale: inst.scale,
+            });
+        }
+    }
+
+    let _ = on_event.send(LevelGlbExportEvent::Progress { current: progress });
+
+    let _ = on_event.send(LevelGlbExportEvent::Phase {
+        label: "Loading textures",
+        total: needed_textures.len(),
+    });
+
+    let mut textures: HashMap<u32, Vec<u8>> = HashMap::new();
+    let textures_dir = cache_root.join("textures");
+    let mut tex_progress = 0usize;
+    for tex_id in &needed_textures {
+        tex_progress += 1;
+        if tex_progress % 16 == 0 {
+            let _ = on_event.send(LevelGlbExportEvent::Progress { current: tex_progress });
+        }
+        let path = textures_dir.join(format!("{}.png", tex_id));
+        if let Ok(b) = fs::read(&path) {
+            textures.insert(*tex_id, b);
+        }
+    }
+    let _ = on_event.send(LevelGlbExportEvent::Progress { current: tex_progress });
+
+    let _ = on_event.send(LevelGlbExportEvent::Phase {
+        label: "Writing GLB",
+        total: 1,
+    });
+
+    let glb_bytes = lunalib::level_glb::write_static_level_glb(&assets, &instances, &textures)
+        .map_err(|e| format!("write_static_level_glb: {e}"))?;
+
+    fs::write(out_path, &glb_bytes).map_err(|e| format!("write {out_path}: {e}"))?;
+
+    let _ = on_event.send(LevelGlbExportEvent::Done {
+        bytes_written: glb_bytes.len(),
+        instance_count: instances.len(),
+        asset_count: assets.len(),
+    });
+
+    Ok(())
+}
+
+fn decode_f32_b64(
+    s: &str,
+    engine: &base64::engine::general_purpose::GeneralPurpose,
+) -> Result<Vec<f32>, String> {
+    use base64::Engine as _;
+    let bytes = engine.decode(s).map_err(|e| format!("base64: {e}"))?;
+    if bytes.len() % 4 != 0 {
+        return Err(format!("f32 buffer length {} not /4", bytes.len()));
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4);
+    for chunk in bytes.chunks_exact(4) {
+        out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(out)
+}
+
+fn decode_u32_b64(
+    s: &str,
+    engine: &base64::engine::general_purpose::GeneralPurpose,
+) -> Result<Vec<u32>, String> {
+    use base64::Engine as _;
+    let bytes = engine.decode(s).map_err(|e| format!("base64: {e}"))?;
+    if bytes.len() % 4 != 0 {
+        return Err(format!("u32 buffer length {} not /4", bytes.len()));
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4);
+    for chunk in bytes.chunks_exact(4) {
+        out.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn export_texture_png(
+    level_folder: String,
+    tex_id: u32,
+    out_path: String,
+) -> Result<u64, String> {
+    let cache_root = cache_root(&level_folder);
+    let src = cache_root.join("textures").join(format!("{}.png", tex_id));
+    fs::copy(&src, &out_path)
+        .map_err(|e| format!("copy {} → {}: {e}", src.display(), out_path))
+}
+
+#[tauri::command]
+pub fn export_texture_dds(
+    level_folder: String,
+    tex_id: u32,
+    out_path: String,
+) -> Result<u64, String> {
+    let cache_root = cache_root(&level_folder);
+    let src = cache_root.join("textures").join(format!("{}.png", tex_id));
+    let png_bytes =
+        fs::read(&src).map_err(|e| format!("read {}: {e}", src.display()))?;
+    let dds_bytes = lunalib::dds::png_to_uncompressed_dds(&png_bytes)
+        .map_err(|e| format!("png→dds: {e}"))?;
+    fs::write(&out_path, &dds_bytes)
+        .map_err(|e| format!("write {}: {e}", out_path))?;
+    Ok(dds_bytes.len() as u64)
+}
+
 #[tauri::command]
 pub fn read_cached_asset(folder: String, file: String) -> Result<serde_json::Value, String> {
     let path = sanitized_cache_path(&folder, &file)?;

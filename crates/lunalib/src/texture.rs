@@ -64,6 +64,7 @@ impl TexFormat {
             0x08 => TexFormat::Dxt5,
             0x09 => TexFormat::R8,
             0x0A => TexFormat::Rg8,
+            0x0B => TexFormat::Bc1Linear,
 
             // ── High range — R&C Full Frontal Assault (NV4097, IT's enum) ──
             0x81 => TexFormat::R8,

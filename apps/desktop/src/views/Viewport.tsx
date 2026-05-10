@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Bone,
   Box,
   Compass,
+  Download,
   Grid3x3,
   type LucideIcon,
   Mountain,
@@ -11,6 +12,8 @@ import {
   Square,
   Users,
 } from "lucide-react";
+import { Channel } from "@tauri-apps/api/core";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { Canvas, type ThreeEvent, useFrame, useThree } from "@react-three/fiber";
 import {
@@ -35,7 +38,12 @@ import type {
   UFragBounds,
   UFragMesh,
 } from "../api";
-import { decodeMeshGeom, fetchAnimsetClip } from "../api";
+import {
+  decodeMeshGeom,
+  exportLevelGlb,
+  fetchAnimsetClip,
+  type LevelGlbExportEvent,
+} from "../api";
 import { buildAnimationClipFromDecoded, buildSkinnedAsset } from "../skinning";
 import { FpsOverlay, FpsSampler } from "../components/FpsOverlay";
 import type { LoadPhaseState } from "../components/LoadProgress";
@@ -1752,12 +1760,144 @@ export function Viewport({
   levelFolder,
   overrideAnimsetHash,
 }: ViewportProps) {
+  const [mapExportPhase, setMapExportPhase] = useState<{
+    label: string;
+    current: number;
+    total: number;
+  } | null>(null);
+  const [mapExportError, setMapExportError] = useState<string | null>(null);
+  const [mapExportStatus, setMapExportStatus] = useState<string | null>(null);
+
+  const headerRef = useRef<HTMLDivElement>(null);
+  const ghostRef = useRef<HTMLDivElement>(null);
+  const ghostBtnWidths = useRef<number[]>([]);
+  const ghostDividerWidth = useRef<number>(0);
+  const moreBtnWidth = useRef<number>(72);
+  const [visibleToggleCount, setVisibleToggleCount] = useState<number>(99);
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
+
+  const recomputeCollapse = useCallback(() => {
+    const headerEl = headerRef.current;
+    const ghostEl = ghostRef.current;
+    if (!headerEl || !ghostEl) return;
+    const buttons = Array.from(
+      ghostEl.querySelectorAll<HTMLElement>("[data-toggle-key]"),
+    );
+    const widths = buttons.map((b) => b.getBoundingClientRect().width + 2);
+    ghostBtnWidths.current = widths;
+    const dividerEl = ghostEl.querySelector<HTMLElement>(".viewport-header-divider");
+    if (dividerEl) {
+      ghostDividerWidth.current = dividerEl.getBoundingClientRect().width + 12;
+    }
+    if (widths.length === 0) return;
+
+    const exportSlot = 200;
+    const moreSlot = moreBtnWidth.current + 6;
+    const headerW = headerEl.clientWidth;
+
+    let total = ghostDividerWidth.current;
+    for (const w of widths) total += w;
+    if (total + exportSlot <= headerW) {
+      setVisibleToggleCount(widths.length);
+      return;
+    }
+
+    let used = exportSlot + moreSlot + ghostDividerWidth.current;
+    let count = 0;
+    for (let i = 0; i < widths.length; i++) {
+      const w = widths[i]!;
+      if (used + w > headerW) break;
+      used += w;
+      count = i + 1;
+    }
+    setVisibleToggleCount(count);
+  }, []);
+
+  useEffect(() => {
+    const headerEl = headerRef.current;
+    if (!headerEl) return;
+    const ro = new ResizeObserver(() => recomputeCollapse());
+    ro.observe(headerEl);
+    recomputeCollapse();
+    return () => ro.disconnect();
+  }, [recomputeCollapse]);
+
+  useEffect(() => {
+    if (!viewMenuOpen) return;
+    const close = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.(".viewport-view-menu") || target?.closest?.(".viewport-view-trigger")) {
+        return;
+      }
+      setViewMenuOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [viewMenuOpen]);
+
+  const handleExportMap = useCallback(async () => {
+    if (!levelFolder || mapExportPhase) return;
+    let outPath: string | null = null;
+    try {
+      outPath = (await saveDialog({
+        title: "Export full map to GLB",
+        defaultPath: "level.glb",
+        filters: [{ name: "glTF binary", extensions: ["glb"] }],
+      })) as string | null;
+    } catch (err) {
+      setMapExportError(String(err));
+      return;
+    }
+    if (!outPath) return;
+
+    setMapExportError(null);
+    setMapExportStatus(null);
+    setMapExportPhase({ label: "Starting…", current: 0, total: 1 });
+
+    const channel = new Channel<LevelGlbExportEvent>();
+    let phaseTotal = 1;
+    let phaseLabel = "Starting…";
+    channel.onmessage = (e) => {
+      switch (e.type) {
+        case "phase":
+          phaseLabel = e.label;
+          phaseTotal = Math.max(1, e.total);
+          setMapExportPhase({ label: phaseLabel, current: 0, total: phaseTotal });
+          break;
+        case "progress":
+          setMapExportPhase({
+            label: phaseLabel,
+            current: e.current,
+            total: phaseTotal,
+          });
+          break;
+        case "done":
+          setMapExportPhase(null);
+          setMapExportStatus(
+            `Exported ${e.instance_count} instances across ${e.asset_count} assets · ${(e.bytes_written / 1024 / 1024).toFixed(1)} MB`,
+          );
+          break;
+        case "error":
+          setMapExportPhase(null);
+          setMapExportError(e.message);
+          break;
+      }
+    };
+
+    try {
+      await exportLevelGlb(levelFolder, outPath, channel);
+    } catch (err) {
+      setMapExportPhase(null);
+      setMapExportError(String(err));
+    }
+  }, [levelFolder, mapExportPhase]);
+
   const onPick = (inst: InstanceData, e: ThreeEvent<MouseEvent>) =>
-    
-    
-    
-    
-    
+
+
+
+
+
     selection.select(inst, clickMods(e.nativeEvent));
   const { center, extent } = useMemo(() => {
     function* positions(): Generator<[number, number, number]> {
@@ -1845,47 +1985,217 @@ export function Viewport({
     { key: "playAnimation", label: tr("toolbar.play"), Icon: Play },
   ];
 
+  useLayoutEffect(() => {
+    recomputeCollapse();
+  });
+
   return (
     <div className="viewport">
-      <div className="viewport-header">
-        {renderLayerToggles.map((tg) => {
-          const Icon = tg.Icon;
+      <div className="viewport-header" ref={headerRef}>
+        <div className="viewport-header-ghost" ref={ghostRef} aria-hidden>
+          {renderLayerToggles.map((tg) => {
+            const Icon = tg.Icon;
+            return (
+              <span
+                key={`g-${tg.key}`}
+                className="viewport-header-btn"
+                data-toggle-key={tg.key}
+              >
+                <Icon size={13} aria-hidden />
+                <span>{tg.label}</span>
+              </span>
+            );
+          })}
+          <span className="viewport-header-divider" />
+          {overlayToggles.map((tg) => {
+            const Icon = tg.Icon;
+            return (
+              <span
+                key={`g-${tg.key}`}
+                className="viewport-header-btn"
+                data-toggle-key={tg.key}
+              >
+                <Icon size={13} aria-hidden />
+                <span>{tg.label}</span>
+              </span>
+            );
+          })}
+        </div>
+        {(() => {
+          const allToggles: HeaderToggle[] = [];
+          for (const tg of renderLayerToggles) allToggles.push(tg);
+          for (const tg of overlayToggles) allToggles.push(tg);
+          const layerCount = renderLayerToggles.length;
+          const visible = allToggles.slice(0, visibleToggleCount);
+          const overflow = allToggles.slice(visibleToggleCount);
+          const dividerStillInline =
+            visibleToggleCount > layerCount && visibleToggleCount <= allToggles.length;
           return (
-            <button
-              key={tg.key}
-              type="button"
-              className={`viewport-header-btn ${view[tg.key] ? "active" : ""}`}
-              onClick={() => onToggle(tg.key)}
-              title={tg.title ?? tg.label}
-              disabled={tg.disabled}
-            >
-              <Icon size={13} aria-hidden />
-              <span>{tg.label}</span>
-            </button>
+            <>
+              {visible.map((tg, i) => {
+                const Icon = tg.Icon;
+                const showDivider = dividerStillInline && i === layerCount;
+                return (
+                  <span key={tg.key} style={{ display: "inline-flex", alignItems: "center" }}>
+                    {showDivider && <span className="viewport-header-divider" />}
+                    <button
+                      type="button"
+                      className={`viewport-header-btn ${view[tg.key] ? "active" : ""}`}
+                      onClick={() => onToggle(tg.key)}
+                      title={tg.title ?? tg.label}
+                      disabled={tg.disabled}
+                    >
+                      <Icon size={13} aria-hidden />
+                      <span>{tg.label}</span>
+                    </button>
+                  </span>
+                );
+              })}
+              {overflow.length > 0 && (
+                <div className="viewport-view-trigger-wrap">
+                  <button
+                    type="button"
+                    className="viewport-header-btn viewport-view-trigger"
+                    onClick={() => setViewMenuOpen((p) => !p)}
+                    aria-expanded={viewMenuOpen}
+                    title="More view options"
+                  >
+                    <span>More</span>
+                    <span className="viewport-view-trigger-caret" aria-hidden>
+                      ▾
+                    </span>
+                    <span className="viewport-view-trigger-count">
+                      {overflow.length}
+                    </span>
+                  </button>
+                  {viewMenuOpen && (
+                    <div className="viewport-view-menu" role="menu">
+                      {(() => {
+                        const overflowLayerCount = Math.max(
+                          0,
+                          layerCount - visibleToggleCount,
+                        );
+                        const overflowLayers = overflow.slice(0, overflowLayerCount);
+                        const overflowOverlay = overflow.slice(overflowLayerCount);
+                        return (
+                          <>
+                            {overflowLayers.length > 0 && (
+                              <>
+                                <div className="viewport-view-menu-section-label">
+                                  Layers
+                                </div>
+                                {overflowLayers.map((tg) => {
+                                  const Icon = tg.Icon;
+                                  return (
+                                    <button
+                                      key={tg.key}
+                                      type="button"
+                                      className={`viewport-view-menu-item ${view[tg.key] ? "active" : ""}`}
+                                      onClick={() => onToggle(tg.key)}
+                                      disabled={tg.disabled}
+                                    >
+                                      <Icon size={13} aria-hidden />
+                                      <span>{tg.label}</span>
+                                      {view[tg.key] && (
+                                        <span className="viewport-view-menu-check">
+                                          ✓
+                                        </span>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </>
+                            )}
+                            {overflowOverlay.length > 0 && (
+                              <>
+                                <div className="viewport-view-menu-section-label">
+                                  Overlay
+                                </div>
+                                {overflowOverlay.map((tg) => {
+                                  const Icon = tg.Icon;
+                                  return (
+                                    <button
+                                      key={tg.key}
+                                      type="button"
+                                      className={`viewport-view-menu-item ${view[tg.key] ? "active" : ""}`}
+                                      onClick={() => onToggle(tg.key)}
+                                      disabled={tg.disabled}
+                                    >
+                                      <Icon size={13} aria-hidden />
+                                      <span>{tg.label}</span>
+                                      {view[tg.key] && (
+                                        <span className="viewport-view-menu-check">
+                                          ✓
+                                        </span>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
           );
-        })}
-        <div className="viewport-header-divider" />
-        {overlayToggles.map((tg) => {
-          const Icon = tg.Icon;
-          return (
-            <button
-              key={tg.key}
-              type="button"
-              className={`viewport-header-btn ${view[tg.key] ? "active" : ""}`}
-              onClick={() => onToggle(tg.key)}
-              title={tg.title ?? tg.label}
-              disabled={tg.disabled}
-            >
-              <Icon size={13} aria-hidden />
-              <span>{tg.label}</span>
-            </button>
-          );
-        })}
+        })()}
+        <div className="viewport-header-spacer" />
+        <button
+          type="button"
+          className="viewport-header-export-btn"
+          onClick={handleExportMap}
+          disabled={!levelFolder || mapExportPhase !== null}
+          title={
+            !levelFolder
+              ? "Open a level first"
+              : mapExportPhase
+                ? "Exporting…"
+                : "Export the full map (placed mobys + ties) to a single GLB"
+          }
+        >
+          <Download size={14} aria-hidden />
+          <span className="viewport-header-export-label">
+            {mapExportPhase
+              ? `${mapExportPhase.label} ${mapExportPhase.current}/${mapExportPhase.total}`
+              : "Export map"}
+          </span>
+          {mapExportPhase && (
+            <span
+              className="viewport-header-export-progress"
+              style={{
+                width: `${Math.min(100, (mapExportPhase.current / Math.max(1, mapExportPhase.total)) * 100)}%`,
+              }}
+              aria-hidden
+            />
+          )}
+        </button>
       </div>
       <div className="viewport-canvas-wrap">
       {contextLost && (
         <div className="viewport-overlay" style={{ top: 12, right: 12, color: "#ffbc33" }}>
           ⚠ WebGL context lost — reload to recover
+        </div>
+      )}
+      {mapExportError && (
+        <div
+          className="viewport-overlay viewport-export-map-toast error"
+          onClick={() => setMapExportError(null)}
+          title="Click to dismiss"
+        >
+          ❌ {mapExportError}
+        </div>
+      )}
+      {mapExportStatus && !mapExportPhase && (
+        <div
+          className="viewport-overlay viewport-export-map-toast success"
+          onClick={() => setMapExportStatus(null)}
+          title="Click to dismiss"
+        >
+          ✓ {mapExportStatus}
         </div>
       )}
       <Canvas

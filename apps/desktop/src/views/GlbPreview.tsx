@@ -59,6 +59,7 @@ export function GlbPreview({
   const [loadingClipKey, setLoadingClipKey] = useState<string | null>(null);
   const [clipLoadError, setClipLoadError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [query, setQuery] = useState("");
 
   const localPicks = exportPicks ?? { byAnimset: {} };
   const setLocalPicks = (next: ExportPicks) => {
@@ -76,6 +77,7 @@ export function GlbPreview({
     setMenuOpen(false);
     setClipLoadError(null);
     setExpanded({});
+    setQuery("");
 
     const file = `${kind === "moby" ? "mobys" : "ties"}/${assetTuidHex}.glb`;
     const probe9 = assetTuidHex === "0x000000000000079D";
@@ -360,6 +362,40 @@ export function GlbPreview({
     [localPicks],
   );
 
+  const trimmedQuery = query.trim().toLowerCase();
+  const visibleAnimsets = useMemo(() => {
+    if (!animsets) return null;
+    if (!trimmedQuery) {
+      return animsets.map((a) => ({
+        animset: a,
+        visibleClipIndices: a.clips.map((_, i) => i),
+        hashHit: false,
+      }));
+    }
+    const out: {
+      animset: AnimsetSummary;
+      visibleClipIndices: number[];
+      hashHit: boolean;
+    }[] = [];
+    for (const a of animsets) {
+      const hashHit = a.hash.toLowerCase().includes(trimmedQuery);
+      let visibleClipIndices: number[];
+      if (hashHit) {
+        visibleClipIndices = a.clips.map((_, i) => i);
+      } else {
+        visibleClipIndices = [];
+        a.clips.forEach((c, i) => {
+          if (c.name.toLowerCase().includes(trimmedQuery)) {
+            visibleClipIndices.push(i);
+          }
+        });
+      }
+      if (!hashHit && visibleClipIndices.length === 0) continue;
+      out.push({ animset: a, visibleClipIndices, hashHit });
+    }
+    return out;
+  }, [animsets, trimmedQuery]);
+
   if (error) {
     return (
       <div className="asset-preview-empty">
@@ -463,6 +499,29 @@ export function GlbPreview({
               Play any animation on this skeleton, or check the box to bake it
               into the export GLB as an Action.
             </p>
+            {animsets && animsets.length > 0 && (
+              <div className="glb-preview-menu-search">
+                <input
+                  type="search"
+                  className="glb-preview-menu-search-input"
+                  placeholder="Filter animations…"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  aria-label="Filter animations"
+                />
+                {query && (
+                  <button
+                    type="button"
+                    className="glb-preview-menu-search-clear"
+                    onClick={() => setQuery("")}
+                    aria-label="Clear filter"
+                    title="Clear filter"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            )}
             {clipLoadError && (
               <p className="warn-text small">{clipLoadError}</p>
             )}
@@ -474,7 +533,7 @@ export function GlbPreview({
             {!animsets && !animsetsError && (
               <p className="dim small">Loading animsets…</p>
             )}
-            {animsets && (
+            {animsets && visibleAnimsets && (
               <>
                 {(() => {
                   const totalAvailable = animsets.reduce(
@@ -487,6 +546,10 @@ export function GlbPreview({
                   const allExpanded =
                     animsets.length > 0 &&
                     animsets.every((a) => expanded[a.hash]);
+                  const visibleClipCount = visibleAnimsets.reduce(
+                    (acc, v) => acc + v.visibleClipIndices.length,
+                    0,
+                  );
                   return (
                     <div className="glb-preview-menu-allrow">
                       <TriStateCheckbox
@@ -499,6 +562,9 @@ export function GlbPreview({
                         <strong>All animsets</strong>
                         <span className="dim">
                           {" "}· {totalPicks} / {totalAvailable}
+                          {trimmedQuery && (
+                            <> · {visibleClipCount} match{visibleClipCount === 1 ? "" : "es"}</>
+                          )}
                         </span>
                       </span>
                       <button
@@ -519,14 +585,21 @@ export function GlbPreview({
                     </div>
                   );
                 })()}
+                {visibleAnimsets.length === 0 && trimmedQuery && (
+                  <p className="dim small glb-preview-menu-empty">
+                    No animations match "{query.trim()}".
+                  </p>
+                )}
                 <ul className="glb-preview-menu-list">
-                {animsets.map((a) => {
+                {visibleAnimsets.map(({ animset: a, visibleClipIndices }) => {
                   const picked = localPicks.byAnimset[a.hash] ?? [];
                   const allInPicked =
                     a.clips.length > 0 && picked.length === a.clips.length;
                   const partial =
                     picked.length > 0 && picked.length < a.clips.length;
-                  const isOpen = !!expanded[a.hash];
+                  const isOpen = trimmedQuery
+                    ? true
+                    : !!expanded[a.hash];
                   return (
                   <li key={a.hash} className="glb-preview-menu-animset">
                     <div className="glb-preview-menu-animset-header mono small">
@@ -538,6 +611,7 @@ export function GlbPreview({
                         }
                         aria-label={isOpen ? "Collapse" : "Expand"}
                         aria-expanded={isOpen}
+                        disabled={!!trimmedQuery}
                       >
                         {isOpen ? "▾" : "▸"}
                       </button>
@@ -553,15 +627,20 @@ export function GlbPreview({
                         {a.hash}
                         <span className="dim">
                           {" "}· {picked.length} / {a.clips.length}
+                          {trimmedQuery &&
+                            visibleClipIndices.length !== a.clips.length && (
+                              <> · {visibleClipIndices.length} shown</>
+                            )}
                         </span>
                       </span>
                     </div>
                     {isOpen && (
                     <ul className="glb-preview-menu-clips">
-                      {a.clips.length === 0 && (
+                      {visibleClipIndices.length === 0 && (
                         <li className="dim small">no clips</li>
                       )}
-                      {a.clips.map((c, i) => {
+                      {visibleClipIndices.map((i) => {
+                        const c = a.clips[i]!;
                         const key = `${a.hash}:${i}`;
                         const checked =
                           (localPicks.byAnimset[a.hash] ?? []).includes(i);

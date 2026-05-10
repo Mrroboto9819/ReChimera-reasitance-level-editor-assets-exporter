@@ -151,6 +151,7 @@ pub fn read_regions_rfom(level_folder: &Path) -> Result<Vec<Zone>> {
 
         let mut positions: Vec<f32> = Vec::with_capacity(num_verts as usize * 3);
         let mut uvs: Vec<f32> = Vec::with_capacity(num_verts as usize * 2);
+        let scale = YARD_TO_M / POS_NORM_DIV;
         for k in 0..(num_verts as usize) {
             let v_off = k * REGION_VERTEX_STRIDE;
             let raw_x =
@@ -160,12 +161,13 @@ pub fn read_regions_rfom(level_folder: &Path) -> Result<Vec<Zone>> {
             let raw_z =
                 i16::from_be_bytes([vertex_block[v_off + 4], vertex_block[v_off + 5]]) as f32;
 
-            let fx = (raw_x + region_pos_x) / POS_NORM_DIV * YARD_TO_M;
-            let fy = (raw_y + region_pos_y) / POS_NORM_DIV * YARD_TO_M;
-            let fz = (raw_z + region_pos_z) / POS_NORM_DIV * YARD_TO_M;
-            positions.push(fx);
-            positions.push(fy);
-            positions.push(fz);
+            // Local mesh coords only — the per-region world offset is
+            // carried by `UFrag.position` below and applied once by the
+            // viewport's `<mesh position={ufrag.position}>`. Don't bake
+            // it in here or the offset gets applied twice.
+            positions.push(raw_x * scale);
+            positions.push(raw_y * scale);
+            positions.push(raw_z * scale);
 
             let uv_base = v_off + 0x08;
             let u = half_to_f32(u16::from_be_bytes([

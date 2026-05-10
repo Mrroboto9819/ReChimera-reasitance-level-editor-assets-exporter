@@ -4,7 +4,9 @@
 pub mod animation;
 pub mod assetlookup;
 pub mod error;
+pub mod dds;
 pub mod gltf_export;
+pub mod level_glb;
 
 
 pub const MAX_ASSET_SIZE: u32 = 512 * 1024 * 1024;
@@ -73,8 +75,8 @@ pub use shader::{read_shaders, ShaderInfo};
 pub use skeleton::{read_skeleton, read_skeleton_at, Bone, Skeleton};
 pub use sound::{
     bank_pair_for, decode_adpcm_block, decode_adpcm_stream, dump_sound_bank_info,
-    extract_bank_sounds, extract_raw_streaming, extract_stream_sounds, list_raw_streaming,
-    list_sounds, scan_raw_audio_offsets, streaming_sibling_for, write_wav_pcm16,
+    extract_bank_sounds, extract_bank_sounds_for_file, extract_raw_streaming, extract_stream_sounds, list_raw_streaming,
+    list_sounds, reset_scream_diag, scan_raw_audio_offsets, streaming_sibling_for, write_wav_pcm16,
     write_wav_pcm16_mono, ExtractedSound, SoundKind, SoundSummary,
 };
 pub use stream::{Endian, StreamHelper};
