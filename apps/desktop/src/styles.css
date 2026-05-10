@@ -4982,61 +4982,86 @@ textarea {
   border-radius: 4px;
 }
 
-/* Wizard step bar */
+.modal-subheader {
+  flex: 0 0 auto;
+  padding: 12px 18px 4px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--hairline);
+}
+
+/* Wizard step bar — circles connected by lines */
 .wizard-stepbar {
   list-style: none;
-  margin: 0 0 16px;
-  padding: 0;
+  margin: 0;
+  padding: 4px 0 10px;
   display: flex;
-  gap: 8px;
+  justify-content: space-between;
+  align-items: flex-start;
+  position: relative;
 }
 .wizard-step {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border: 1px solid var(--hairline);
-  border-radius: 6px;
-  background: var(--surface);
+  gap: 6px;
+  font-size: 11px;
   color: var(--text-3);
-  font-size: 12px;
   position: relative;
+  min-width: 0;
 }
-.wizard-step.is-active {
-  border-color: var(--accent-blue);
-  background: rgba(85, 179, 255, 0.08);
-  color: var(--accent-blue);
+.wizard-step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 13px;
+  left: calc(50% + 16px);
+  right: calc(-50% + 16px);
+  height: 2px;
+  background: var(--hairline);
+  z-index: 0;
+  transition: background 0.2s ease;
 }
-.wizard-step.is-done {
-  color: var(--text-2);
-  border-color: var(--accent-blue);
-  background: rgba(85, 179, 255, 0.04);
+.wizard-step.is-done:not(:last-child)::after {
+  background: #ef4444;
 }
 .wizard-step-num {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   background: var(--surface-100);
-  border: 1px solid var(--hairline);
+  border: 2px solid var(--hairline);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  flex: 0 0 auto;
+  position: relative;
+  z-index: 1;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
-.wizard-step.is-active .wizard-step-num,
+.wizard-step.is-active .wizard-step-num {
+  background: var(--surface-100);
+  border-color: var(--text);
+  color: var(--text);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+}
 .wizard-step.is-done .wizard-step-num {
-  background: var(--accent-blue);
-  color: #0b0c0e;
-  border-color: var(--accent-blue);
+  background: #ef4444;
+  color: #ffffff;
+  border-color: #ef4444;
+}
+.wizard-step.is-active {
+  color: var(--text);
+}
+.wizard-step.is-done {
+  color: var(--text-2);
 }
 .wizard-step-label {
   text-transform: uppercase;
   letter-spacing: 0.6px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 /* Step 1 — game tiles */
@@ -5215,4 +5240,99 @@ textarea {
   margin-top: 6px;
   text-align: center;
   line-height: 1.4;
+}
+
+/* Game tile — capability pills */
+.game-tile-caps {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+.game-tile-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--hairline);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.game-tile-cap-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.game-tile-cap.is-ok .game-tile-cap-dot {
+  background: #4ade80;
+  box-shadow: 0 0 4px rgba(74, 222, 128, 0.5);
+}
+.game-tile-cap.is-ok {
+  color: var(--text);
+  border-color: rgba(74, 222, 128, 0.4);
+  background: rgba(74, 222, 128, 0.06);
+}
+.game-tile-cap.is-partial .game-tile-cap-dot {
+  background: #fbbf24;
+  box-shadow: 0 0 4px rgba(251, 191, 36, 0.5);
+}
+.game-tile-cap.is-partial {
+  color: var(--text);
+  border-color: rgba(251, 191, 36, 0.4);
+  background: rgba(251, 191, 36, 0.06);
+}
+.game-tile-cap.is-missing .game-tile-cap-dot {
+  background: #ef4444;
+  box-shadow: 0 0 4px rgba(239, 68, 68, 0.4);
+}
+.game-tile-cap.is-missing {
+  color: var(--text-3);
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.05);
+}
+.game-tile-cap.is-tpose .game-tile-cap-dot {
+  background: #60a5fa;
+  box-shadow: 0 0 4px rgba(96, 165, 250, 0.5);
+}
+.game-tile-cap.is-tpose {
+  color: var(--text);
+  border-color: rgba(96, 165, 250, 0.4);
+  background: rgba(96, 165, 250, 0.06);
+}
+.game-tile.is-disabled .game-tile-cap {
+  opacity: 0.5;
+}
+
+.game-franchises {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.game-franchise {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.game-franchise-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.game-franchise-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-2);
 }

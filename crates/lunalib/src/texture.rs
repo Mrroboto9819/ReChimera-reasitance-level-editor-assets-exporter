@@ -23,18 +23,60 @@ pub enum TexFormat {
     Dxt1,
     Dxt3,
     Dxt5,
+    R8,
+    Rg8,
+    Rgb5A1,
+    Rgba4,
+    Bc1Linear,
 
     Unknown(u8),
 }
 
 impl TexFormat {
+    /// Map the format byte to a known format.
+    ///
+    /// Insomniac stores TWO related-but-distinct format-byte spaces, and
+    /// **both must keep working** because different games use different ones:
+    ///
+    /// - **Low range `0x03..0x0A`** — the short enum stored in
+    ///   `assetlookup.dat`'s per-texture metadata table. Used by **Resistance 2**
+    ///   (verified end-to-end) and most likely R3 / R&C Tools of Destruction.
+    ///
+    /// - **High range `0x81..0x8B` + `0xA6`** — the PS3 NV4097 texture-format
+    ///   byte stored in the full `Texture` struct (`0x5200`) inside
+    ///   `textures.dat`. Used by **Ratchet & Clank: Full Frontal Assault**
+    ///   (and likely other later RCF-engine titles). Mirrored from IT's
+    ///   `classes/shader.hpp::TextureFormat`.
+    ///
+    /// **Do not collapse these into a single mapping.** The two ranges
+    /// don't overlap (low ≤ 0x0A, high ≥ 0x81), so a single `match` over
+    /// both is safe and keeps R2 + FFA functional simultaneously without a
+    /// runtime "which game is this" branch. Unknown bytes return
+    /// `Unknown(b)` so the caller can log them and we can map any
+    /// remaining variants on the next pass.
     fn from_byte(b: u8) -> Self {
         match b {
+            // ── Low range — Resistance 2 / older path via assetlookup.dat ──
             0x03 => TexFormat::R5G6B5,
             0x05 => TexFormat::A8R8G8B8,
             0x06 => TexFormat::Dxt1,
             0x07 => TexFormat::Dxt3,
             0x08 => TexFormat::Dxt5,
+            0x09 => TexFormat::R8,
+            0x0A => TexFormat::Rg8,
+
+            // ── High range — R&C Full Frontal Assault (NV4097, IT's enum) ──
+            0x81 => TexFormat::R8,
+            0x82 => TexFormat::Rgb5A1,
+            0x83 => TexFormat::Rgba4,
+            0x84 => TexFormat::R5G6B5,
+            0x85 => TexFormat::A8R8G8B8,
+            0x86 => TexFormat::Dxt1,
+            0x87 => TexFormat::Dxt3,
+            0x88 => TexFormat::Dxt5,
+            0x8B => TexFormat::Rg8,
+            0xA6 => TexFormat::Bc1Linear,
+
             other => TexFormat::Unknown(other),
         }
     }
@@ -46,7 +88,42 @@ impl TexFormat {
             TexFormat::Dxt1 => "DXT1",
             TexFormat::Dxt3 => "DXT3",
             TexFormat::Dxt5 => "DXT5",
+            TexFormat::R8 => "R8",
+            TexFormat::Rg8 => "RG8",
+            TexFormat::Rgb5A1 => "RGB5A1",
+            TexFormat::Rgba4 => "RGBA4",
+            TexFormat::Bc1Linear => "BC1_LN",
             TexFormat::Unknown(_) => "unknown",
+        }
+    }
+
+    /// Public mapping wrapper so call sites outside this module
+    /// (e.g. `texture_old.rs`) don't have to duplicate the byte table.
+    pub fn from_format_byte(b: u8) -> Self {
+        Self::from_byte(b)
+    }
+}
+
+/// Centralized format-to-decoder dispatch. Returns RGBA8 bytes.
+///
+/// Used by both the `assetlookup`-driven V2 path
+/// (`bulk_extract_pngs`) and the TOD path (`texture_old.rs`) so the
+/// same format → decoder routing lives in one place.
+pub fn decode_format(raw: &[u8], width: u32, height: u32, format: TexFormat) -> Vec<u8> {
+    match format {
+        TexFormat::Dxt1 => decode_dxt(raw, width, height, texpresso::Format::Bc1),
+        TexFormat::Dxt3 => decode_dxt(raw, width, height, texpresso::Format::Bc2),
+        TexFormat::Dxt5 => decode_dxt(raw, width, height, texpresso::Format::Bc3),
+        TexFormat::Bc1Linear => decode_dxt(raw, width, height, texpresso::Format::Bc1),
+        TexFormat::R5G6B5 => decode_r5g6b5_morton(raw, width, height),
+        TexFormat::A8R8G8B8 => decode_a8r8g8b8_morton(raw, width, height),
+        TexFormat::R8 => decode_r8_morton(raw, width, height),
+        TexFormat::Rg8 => decode_rg8_morton(raw, width, height),
+        TexFormat::Rgb5A1 => decode_rgb5a1_morton(raw, width, height),
+        TexFormat::Rgba4 => decode_rgba4_morton(raw, width, height),
+        TexFormat::Unknown(b) => {
+            eprintln!("warn: decode_format byte 0x{b:02X} not supported");
+            Vec::new()
         }
     }
 }
@@ -179,9 +256,20 @@ where
             TexFormat::Dxt1 => decode_dxt(&raw, width, height, texpresso::Format::Bc1),
             TexFormat::Dxt3 => decode_dxt(&raw, width, height, texpresso::Format::Bc2),
             TexFormat::Dxt5 => decode_dxt(&raw, width, height, texpresso::Format::Bc3),
+            TexFormat::Bc1Linear => decode_dxt(&raw, width, height, texpresso::Format::Bc1),
             TexFormat::R5G6B5 => decode_r5g6b5_morton(&raw, width, height),
             TexFormat::A8R8G8B8 => decode_a8r8g8b8_morton(&raw, width, height),
-            TexFormat::Unknown(_) => Vec::new(),
+            TexFormat::R8 => decode_r8_morton(&raw, width, height),
+            TexFormat::Rg8 => decode_rg8_morton(&raw, width, height),
+            TexFormat::Rgb5A1 => decode_rgb5a1_morton(&raw, width, height),
+            TexFormat::Rgba4 => decode_rgba4_morton(&raw, width, height),
+            TexFormat::Unknown(b) => {
+                eprintln!(
+                    "warn: texture id={id} (0x{tuid:016X}) format byte 0x{b:02X} not supported — emitting empty PNG. \
+                     If you see this please report the byte; it's likely an IT NV4097 format we haven't mapped yet."
+                );
+                Vec::new()
+            }
         };
 
         let (w, h) = if rgba.is_empty() { (0, 0) } else { (width, height) };
@@ -275,6 +363,85 @@ fn decode_r5g6b5_morton(raw: &[u8], width: u32, height: u32) -> Vec<u8> {
         rgba[dst + 1] = (g6 << 2) | (g6 >> 4);
         rgba[dst + 2] = (b5 << 3) | (b5 >> 2);
         rgba[dst + 3] = 0xFF;
+    }
+    rgba
+}
+
+fn decode_r8_morton(raw: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let pixels = (width as usize) * (height as usize);
+    if raw.len() < pixels {
+        return Vec::new();
+    }
+    let mut rgba = vec![0u8; pixels * 4];
+    for t in 0..(pixels as u32) {
+        let src = t as usize;
+        let dst = (morton_index(t, width, height) as usize) * 4;
+        let r = raw[src];
+        rgba[dst] = r;
+        rgba[dst + 1] = r;
+        rgba[dst + 2] = r;
+        rgba[dst + 3] = 0xFF;
+    }
+    rgba
+}
+
+fn decode_rg8_morton(raw: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let pixels = (width as usize) * (height as usize);
+    if raw.len() < pixels * 2 {
+        return Vec::new();
+    }
+    let mut rgba = vec![0u8; pixels * 4];
+    for t in 0..(pixels as u32) {
+        let src = (t as usize) * 2;
+        let dst = (morton_index(t, width, height) as usize) * 4;
+        rgba[dst] = raw[src];
+        rgba[dst + 1] = raw[src + 1];
+        rgba[dst + 2] = 0;
+        rgba[dst + 3] = 0xFF;
+    }
+    rgba
+}
+
+fn decode_rgb5a1_morton(raw: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let pixels = (width as usize) * (height as usize);
+    if raw.len() < pixels * 2 {
+        return Vec::new();
+    }
+    let mut rgba = vec![0u8; pixels * 4];
+    for t in 0..(pixels as u32) {
+        let src = (t as usize) * 2;
+        let dst = (morton_index(t, width, height) as usize) * 4;
+        let v = u16::from_be_bytes([raw[src], raw[src + 1]]);
+        let r5 = ((v >> 11) & 0x1F) as u8;
+        let g5 = ((v >> 6) & 0x1F) as u8;
+        let b5 = ((v >> 1) & 0x1F) as u8;
+        let a1 = (v & 0x01) as u8;
+        rgba[dst] = (r5 << 3) | (r5 >> 2);
+        rgba[dst + 1] = (g5 << 3) | (g5 >> 2);
+        rgba[dst + 2] = (b5 << 3) | (b5 >> 2);
+        rgba[dst + 3] = if a1 != 0 { 0xFF } else { 0x00 };
+    }
+    rgba
+}
+
+fn decode_rgba4_morton(raw: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let pixels = (width as usize) * (height as usize);
+    if raw.len() < pixels * 2 {
+        return Vec::new();
+    }
+    let mut rgba = vec![0u8; pixels * 4];
+    for t in 0..(pixels as u32) {
+        let src = (t as usize) * 2;
+        let dst = (morton_index(t, width, height) as usize) * 4;
+        let v = u16::from_be_bytes([raw[src], raw[src + 1]]);
+        let r4 = ((v >> 12) & 0xF) as u8;
+        let g4 = ((v >> 8) & 0xF) as u8;
+        let b4 = ((v >> 4) & 0xF) as u8;
+        let a4 = (v & 0xF) as u8;
+        rgba[dst] = (r4 << 4) | r4;
+        rgba[dst + 1] = (g4 << 4) | g4;
+        rgba[dst + 2] = (b4 << 4) | b4;
+        rgba[dst + 3] = (a4 << 4) | a4;
     }
     rgba
 }
@@ -461,11 +628,24 @@ pub fn bulk_extract_pngs(
                 TexFormat::Dxt5 => {
                     decode_dxt(&job.raw, job.width, job.height, texpresso::Format::Bc3)
                 }
+                TexFormat::Bc1Linear => {
+                    decode_dxt(&job.raw, job.width, job.height, texpresso::Format::Bc1)
+                }
                 TexFormat::R5G6B5 => decode_r5g6b5_morton(&job.raw, job.width, job.height),
                 TexFormat::A8R8G8B8 => {
                     decode_a8r8g8b8_morton(&job.raw, job.width, job.height)
                 }
-                TexFormat::Unknown(_) => Vec::new(),
+                TexFormat::R8 => decode_r8_morton(&job.raw, job.width, job.height),
+                TexFormat::Rg8 => decode_rg8_morton(&job.raw, job.width, job.height),
+                TexFormat::Rgb5A1 => decode_rgb5a1_morton(&job.raw, job.width, job.height),
+                TexFormat::Rgba4 => decode_rgba4_morton(&job.raw, job.width, job.height),
+                TexFormat::Unknown(b) => {
+                    eprintln!(
+                        "warn: texture id={} format byte 0x{b:02X} not supported — emitting empty PNG",
+                        job.id
+                    );
+                    Vec::new()
+                }
             };
             if rgba.is_empty() {
                 return None;

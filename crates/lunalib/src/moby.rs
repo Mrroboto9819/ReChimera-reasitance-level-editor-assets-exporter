@@ -35,6 +35,10 @@ pub struct MobyAsset {
     pub animset_hash: Option<u64>,
 
     pub bind_pose_inverse_offset: i16,
+
+    /// RFOM-only: per-moby list of file offsets into the global 0xF000 anim
+    /// header array. Populated by `moby_rfom.rs`; empty for V2 / TOD assets.
+    pub rfom_anim_offsets: Vec<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -266,6 +270,7 @@ fn parse_moby<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<Moby
         skeleton,
         animset_hash,
         bind_pose_inverse_offset,
+        rfom_anim_offsets: Vec::new(),
     })
 }
 
@@ -286,7 +291,7 @@ pub(crate) fn read_shader_table<R: Read + Seek>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn decode_moby_mesh(
+pub(crate) fn decode_moby_mesh(
     index_buf: &[u8],
     vertex_buf: &[u8],
     index_index: u32,

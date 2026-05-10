@@ -433,10 +433,12 @@ export interface AssetMeshes {
 
 
   animset_hash: string | null;
-  
+
 
 
   bind_pose_inverse_offset: number;
+
+  embedded_animation_count?: number;
 }
 
 export interface UFragMesh {

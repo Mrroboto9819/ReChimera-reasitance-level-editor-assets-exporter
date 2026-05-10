@@ -101,6 +101,7 @@ pub fn write_moby_glb_full(
             continue;
         }
         let mut primitives: Vec<Primitive> = Vec::with_capacity(bangle.meshes.len());
+        let mut bangle_has_skin = false;
         for mesh in &bangle.meshes {
             let material_idx = build_material(
                 &mut bin,
@@ -114,14 +115,22 @@ pub fn write_moby_glb_full(
                 textures,
                 mesh.shader_index as usize,
             );
-            primitives.push(push_submesh(
+            if let Some(prim) = push_submesh(
                 &mut bin,
                 &mut accessors,
                 &mut buffer_views,
                 mesh,
                 skin_idx.is_some(),
                 material_idx,
-            )?);
+            )? {
+                if prim
+                    .attributes
+                    .contains_key(&Checked::Valid(Semantic::Joints(0)))
+                {
+                    bangle_has_skin = true;
+                }
+                primitives.push(prim);
+            }
         }
         if primitives.is_empty() {
             continue;
@@ -149,7 +158,11 @@ pub fn write_moby_glb_full(
             rotation: None,
             scale: None,
             translation: None,
-            skin: skin_idx.map(|_| Index::new(0)),
+            skin: if bangle_has_skin && skin_idx.is_some() {
+                Some(Index::new(0))
+            } else {
+                None
+            },
             weights: None,
         });
         bangle_node_indices.push(node_idx);
@@ -270,17 +283,51 @@ fn emit_skin(
         });
     }
 
+    let resolved_parents: Vec<Option<usize>> = (0..bone_count)
+        .map(|i| {
+            let p = skel.bones[i].parent_index;
+            if p < 0 {
+                return None;
+            }
+            let pu = p as usize;
+            if pu == i || pu >= bone_count {
+                return None;
+            }
+            let mut cursor = pu;
+            for _ in 0..=bone_count {
+                let next = skel.bones[cursor].parent_index;
+                if next < 0 {
+                    return Some(pu);
+                }
+                let nu = next as usize;
+                if nu == cursor {
+                    return Some(pu);
+                }
+                if nu == i {
+                    return None;
+                }
+                if nu >= bone_count {
+                    return None;
+                }
+                cursor = nu;
+            }
+            None
+        })
+        .collect();
+
     let mut asset_root_children: Vec<Index<gltf_json::Node>> = Vec::new();
     for i in 0..bone_count {
-        let parent_idx = skel.bones[i].parent_index;
         let bone_node_idx = bone_node_base + i as u32;
-        if parent_idx < 0 {
-            asset_root_children.push(Index::new(bone_node_idx));
-        } else {
-            let parent_node_idx = bone_node_base + parent_idx as u32;
-            let parent = &mut nodes[parent_node_idx as usize];
-            let kids = parent.children.get_or_insert_with(Vec::new);
-            kids.push(Index::new(bone_node_idx));
+        match resolved_parents[i] {
+            None => {
+                asset_root_children.push(Index::new(bone_node_idx));
+            }
+            Some(parent) => {
+                let parent_node_idx = bone_node_base + parent as u32;
+                let pnode = &mut nodes[parent_node_idx as usize];
+                let kids = pnode.children.get_or_insert_with(Vec::new);
+                kids.push(Index::new(bone_node_idx));
+            }
         }
     }
     if !asset_root_children.is_empty() {
@@ -352,15 +399,15 @@ fn push_submesh(
     mesh: &MobyMesh,
     skinned: bool,
     material_idx: Option<u32>,
-) -> Result<Primitive> {
+) -> Result<Option<Primitive>> {
     use std::collections::BTreeMap;
 
     if mesh.positions.is_empty() || mesh.indices.is_empty() {
-        return Err(Error::SectionLengthMismatch {
-            id: 0xDD00,
-            length: mesh.positions.len() as u32,
-            entry: 12,
-        });
+        // Empty primitive — skip rather than fail the whole asset.
+        // TOD ties (and the occasional V2 moby) sometimes have stub
+        // meshes with zero vertices for LOD slots that don't apply.
+        // Returning Ok(None) lets the caller drop just this primitive.
+        return Ok(None);
     }
 
     let mut attributes: BTreeMap<Checked<Semantic>, Index<gltf_json::Accessor>> =
@@ -409,18 +456,17 @@ fn push_submesh(
         );
     }
 
-    if skinned
-        && !mesh.bone_indices.is_empty()
-        && mesh.bone_weights.len() == mesh.bone_indices.len()
-    {
+    if skinned {
         let vertex_count = mesh.positions.len() / 3;
-        debug_assert_eq!(
-            mesh.bone_indices.len(),
-            vertex_count * 4,
-            "bone_indices must be 4 per vertex"
-        );
+        let real_skin = !mesh.bone_indices.is_empty()
+            && mesh.bone_weights.len() == mesh.bone_indices.len()
+            && mesh.bone_indices.len() == vertex_count * 4;
 
-        let joints_bytes = joints_u8_bytes(&mesh.bone_indices, vertex_count);
+        let joints_bytes = if real_skin {
+            joints_u8_bytes(&mesh.bone_indices, vertex_count)
+        } else {
+            vec![0u8; vertex_count * 4]
+        };
         let j_view = push_buffer_view(bin, views, &joints_bytes);
         accessors.push(gltf_json::Accessor {
             buffer_view: Some(Index::new(j_view)),
@@ -441,7 +487,16 @@ fn push_submesh(
             Index::new((accessors.len() - 1) as u32),
         );
 
-        let w_view = push_buffer_view(bin, views, &mesh.bone_weights);
+        let weights_bytes = if real_skin {
+            mesh.bone_weights.clone()
+        } else {
+            let mut buf = vec![0u8; vertex_count * 4];
+            for v in 0..vertex_count {
+                buf[v * 4] = 255;
+            }
+            buf
+        };
+        let w_view = push_buffer_view(bin, views, &weights_bytes);
         accessors.push(gltf_json::Accessor {
             buffer_view: Some(Index::new(w_view)),
             byte_offset: Some(USize64(0)),
@@ -479,7 +534,7 @@ fn push_submesh(
     });
     let indices_accessor = Index::new((accessors.len() - 1) as u32);
 
-    Ok(Primitive {
+    Ok(Some(Primitive {
         attributes,
         extensions: Default::default(),
         extras: Default::default(),
@@ -487,7 +542,7 @@ fn push_submesh(
         material: material_idx.map(Index::new),
         mode: Checked::Valid(Mode::Triangles),
         targets: None,
-    })
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]

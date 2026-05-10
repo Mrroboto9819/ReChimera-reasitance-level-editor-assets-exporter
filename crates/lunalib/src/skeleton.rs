@@ -1,5 +1,3 @@
-
-
 use std::io::{Read, Seek};
 
 use crate::error::Result;
@@ -66,8 +64,13 @@ pub fn read_skeleton<R: Read + Seek>(ig: &mut IgFile<R>) -> Result<Option<Skelet
     let Some(section) = ig.section(SECT_MOBY_SKELETON) else {
         return Ok(None);
     };
-    let header_off = u64::from(section.offset);
+    read_skeleton_at(ig, u64::from(section.offset))
+}
 
+pub fn read_skeleton_at<R: Read + Seek>(
+    ig: &mut IgFile<R>,
+    header_off: u64,
+) -> Result<Option<Skeleton>> {
     ig.stream.seek_to(header_off + 0x00)?;
     let num_bones = ig.stream.read_u16()? as usize;
     let root_bone = ig.stream.read_u16()?;
@@ -111,7 +114,10 @@ pub fn read_skeleton<R: Read + Seek>(ig: &mut IgFile<R>) -> Result<Option<Skelet
     if tms0_raw.len() == num_bones && tms1_raw.len() == num_bones {
         for i in 0..num_bones {
             let parent = bones[i].parent_index;
-            let local_col = if parent < 0 || (parent as usize) >= num_bones {
+            let is_root = parent < 0
+                || (parent as usize) >= num_bones
+                || (parent as usize) == i;
+            let local_col = if is_root {
                 tms0_raw[i]
             } else {
                 mat4_mul_row_major(&tms0_raw[i], &tms1_raw[parent as usize])

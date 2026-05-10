@@ -4,6 +4,7 @@ use std::io::{Read, Seek};
 
 use crate::error::Result;
 use crate::igfile::IgFile;
+use crate::skeleton::Skeleton;
 
 pub const SECT_ANIMATION: u32 = 0xF000;
 
@@ -341,7 +342,28 @@ pub fn decode_animation<R: Read + Seek>(
     position_scale: f32,
     scale_scale: f32,
 ) -> Result<DecodedClip> {
-    let nb = h.num_bones as usize;
+    decode_animation_with_skel_bones(ig, h, ctrl, position_scale, scale_scale, None)
+}
+
+/// Same as `decode_animation` but lets the caller override the bone count when
+/// the header value is a per-anim subset count rather than the skeleton's full
+/// bone count. Per IT's `LoadAnimations` (`gltf_shared.cpp:542`), RFOM animations
+/// flagged Additive store an arbitrary `numBones` in their header and IT rewrites
+/// it to `skel->numBones` before decoding so track-mask bone indices (which are
+/// skeleton-space) clip against the right range. Non-additive anims always have
+/// `header.num_bones == skel.num_bones`, so passing `Some(skel_bones)` is safe
+/// for both cases.
+pub fn decode_animation_with_skel_bones<R: Read + Seek>(
+    ig: &mut IgFile<R>,
+    h: &AnimationHeader,
+    ctrl: &AnimationControl,
+    position_scale: f32,
+    scale_scale: f32,
+    override_num_bones: Option<u16>,
+) -> Result<DecodedClip> {
+    let nb = override_num_bones
+        .map(|n| n as usize)
+        .unwrap_or(h.num_bones as usize);
     let nf = h.num_frames as usize;
 
     let mut rot_values: Vec<[i16; 4]> = vec![[0; 4]; nb * nf];
@@ -592,6 +614,312 @@ pub fn decode_animation<R: Read + Seek>(
             rotation_animated: rot_animated[b],
             translation_animated: pos_animated[b],
             scale_animated: scl_animated[b],
+        });
+    }
+
+    Ok(DecodedClip {
+        name: h.name.clone(),
+        num_frames: h.num_frames,
+        frame_rate: h.frame_rate,
+        looping: h.is_looping(),
+        bones,
+    })
+}
+
+fn decompose_skeleton_ref_pose(skel: &Skeleton) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
+    let n = skel.bones.len();
+    let mut ref_trans = Vec::with_capacity(n);
+    let mut ref_scale = Vec::with_capacity(n);
+    for i in 0..n {
+        let bl = skel.bind_local.get(i).copied().unwrap_or([
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ]);
+        ref_trans.push([bl[12], bl[13], bl[14]]);
+        let sx = (bl[0] * bl[0] + bl[1] * bl[1] + bl[2] * bl[2]).sqrt();
+        let sy = (bl[4] * bl[4] + bl[5] * bl[5] + bl[6] * bl[6]).sqrt();
+        let sz = (bl[8] * bl[8] + bl[9] * bl[9] + bl[10] * bl[10]).sqrt();
+        ref_scale.push([
+            if sx > 0.0 { sx } else { 1.0 },
+            if sy > 0.0 { sy } else { 1.0 },
+            if sz > 0.0 { sz } else { 1.0 },
+        ]);
+    }
+    (ref_trans, ref_scale)
+}
+
+pub fn decode_animation_with_skeleton<R: Read + Seek>(
+    ig: &mut IgFile<R>,
+    h: &AnimationHeader,
+    ctrl: &AnimationControl,
+    position_scale: f32,
+    scale_scale: f32,
+    skel: &Skeleton,
+) -> Result<DecodedClip> {
+    let nb = skel.bones.len();
+    let nf = h.num_frames as usize;
+    let additive = h.is_additive();
+
+    let (ref_trans, ref_scale) = decompose_skeleton_ref_pose(skel);
+
+    let mut pos_static_value: Vec<[i16; 3]> = vec![[0; 3]; nb];
+    let mut pos_static_mask: Vec<u8> = vec![0u8; nb];
+    let mut scl_static_value: Vec<[i16; 3]> = vec![[0; 3]; nb];
+    let mut scl_static_mask: Vec<u8> = vec![0u8; nb];
+
+    for (i, m) in ctrl.ref_pose_masks.iter().enumerate() {
+        let v = match ctrl.ref_pose_values.get(i) {
+            Some(&v) => v,
+            None => continue,
+        };
+        let b = m.bone_index as usize;
+        if b >= nb {
+            continue;
+        }
+        let c = m.component as usize;
+        if c >= 3 {
+            continue;
+        }
+        match m.kind {
+            TrackKind::Position => {
+                pos_static_value[b][c] = v;
+                pos_static_mask[b] |= 1 << c;
+            }
+            TrackKind::Scale => {
+                scl_static_value[b][c] = v;
+                scl_static_mask[b] |= 1 << c;
+            }
+            _ => {}
+        }
+    }
+
+    let mut rot_frames: Vec<Option<Vec<[i16; 4]>>> = vec![None; nb];
+    let mut pos_frames: Vec<Option<Vec<[i16; 3]>>> = vec![None; nb];
+    let mut scl_frames: Vec<Option<Vec<[i16; 3]>>> = vec![None; nb];
+    let mut pos_set: Vec<Vec<u8>> = vec![Vec::new(); nb];
+    let mut scl_set: Vec<Vec<u8>> = vec![Vec::new(); nb];
+
+    let init_rot = |b: usize, rot_frames: &mut Vec<Option<Vec<[i16; 4]>>>| {
+        if rot_frames[b].is_none() {
+            let r = ctrl
+                .ref_pose_rotations
+                .get(b)
+                .copied()
+                .unwrap_or([0, 0, 0, 32767]);
+            rot_frames[b] = Some(vec![r; nf]);
+        }
+    };
+
+    for m in ctrl.track16_masks.iter().chain(ctrl.track8_masks.iter()) {
+        let b = m.bone_index as usize;
+        if b >= nb {
+            continue;
+        }
+        match m.kind {
+            TrackKind::Rotation => init_rot(b, &mut rot_frames),
+            TrackKind::Position => {
+                if pos_frames[b].is_none() {
+                    let seed = if pos_static_mask[b] != 0 {
+                        pos_static_value[b]
+                    } else {
+                        [0; 3]
+                    };
+                    pos_frames[b] = Some(vec![seed; nf]);
+                    let seed_mask = pos_static_mask[b];
+                    pos_set[b] = vec![seed_mask; nf];
+                }
+            }
+            TrackKind::Scale => {
+                if scl_frames[b].is_none() {
+                    let seed = if scl_static_mask[b] != 0 {
+                        scl_static_value[b]
+                    } else {
+                        [0; 3]
+                    };
+                    scl_frames[b] = Some(vec![seed; nf]);
+                    let seed_mask = scl_static_mask[b];
+                    scl_set[b] = vec![seed_mask; nf];
+                }
+            }
+            TrackKind::Unknown => {}
+        }
+    }
+
+    for f in 0..nf {
+        let (v16, v8) = read_animation_frame(ig, h, f as u16)?;
+
+        for (i, m) in ctrl.track16_masks.iter().enumerate() {
+            let v = match v16.get(i) {
+                Some(&v) => v,
+                None => continue,
+            };
+            let b = m.bone_index as usize;
+            if b >= nb {
+                continue;
+            }
+            let c = m.component as usize;
+            match m.kind {
+                TrackKind::Rotation => {
+                    if c < 4 {
+                        if let Some(buf) = rot_frames[b].as_mut() {
+                            buf[f][c] = v;
+                        }
+                    }
+                }
+                TrackKind::Position => {
+                    if c < 3 {
+                        if let Some(buf) = pos_frames[b].as_mut() {
+                            buf[f][c] = v;
+                            pos_set[b][f] |= 1 << c;
+                        }
+                    }
+                }
+                TrackKind::Scale => {
+                    if c < 3 {
+                        if let Some(buf) = scl_frames[b].as_mut() {
+                            buf[f][c] = v;
+                            scl_set[b][f] |= 1 << c;
+                        }
+                    }
+                }
+                TrackKind::Unknown => {}
+            }
+        }
+
+        for (i, m) in ctrl.track8_masks.iter().enumerate() {
+            let delta = match v8.get(i) {
+                Some(&v) => v as i32,
+                None => continue,
+            };
+            let base = ctrl.track8_base_values.get(i).copied().unwrap_or(0) as i32;
+            let value = (base + delta).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            let b = m.bone_index as usize;
+            if b >= nb {
+                continue;
+            }
+            let c = m.component as usize;
+            match m.kind {
+                TrackKind::Rotation => {
+                    if c < 4 {
+                        if let Some(buf) = rot_frames[b].as_mut() {
+                            buf[f][c] = value;
+                        }
+                    }
+                }
+                TrackKind::Position => {
+                    if c < 3 {
+                        if let Some(buf) = pos_frames[b].as_mut() {
+                            buf[f][c] = value;
+                            pos_set[b][f] |= 1 << c;
+                        }
+                    }
+                }
+                TrackKind::Scale => {
+                    if c < 3 {
+                        if let Some(buf) = scl_frames[b].as_mut() {
+                            buf[f][c] = value;
+                            scl_set[b][f] |= 1 << c;
+                        }
+                    }
+                }
+                TrackKind::Unknown => {}
+            }
+        }
+    }
+
+    let mut bones = Vec::with_capacity(nb);
+    for b in 0..nb {
+        let blend_mask = ctrl.blend_masks.get(b).copied().unwrap_or(0xFF);
+
+        let rotations = if let Some(frames) = rot_frames[b].as_ref() {
+            let mut out = Vec::with_capacity(nf * 4);
+            for q in frames {
+                let dq = dequantize_quaternion(*q);
+                out.extend_from_slice(&dq);
+            }
+            out
+        } else if additive && blend_mask == 0 {
+            Vec::new()
+        } else {
+            let q = dequantize_quaternion(
+                ctrl.ref_pose_rotations
+                    .get(b)
+                    .copied()
+                    .unwrap_or([0, 0, 0, 32767]),
+            );
+            q.to_vec()
+        };
+
+        let translations = if let Some(frames) = pos_frames[b].as_ref() {
+            let mut out = Vec::with_capacity(nf * 3);
+            for f in 0..nf {
+                let raw = frames[f];
+                let mask = pos_set[b][f];
+                let rt = ref_trans[b];
+                for c in 0..3 {
+                    if mask & (1 << c) != 0 {
+                        out.push(raw[c] as f32 * position_scale);
+                    } else {
+                        out.push(rt[c]);
+                    }
+                }
+            }
+            out
+        } else if pos_static_mask[b] != 0 {
+            let raw = pos_static_value[b];
+            let mask = pos_static_mask[b];
+            let rt = ref_trans[b];
+            let mut out = Vec::with_capacity(3);
+            for c in 0..3 {
+                if mask & (1 << c) != 0 {
+                    out.push(raw[c] as f32 * position_scale);
+                } else {
+                    out.push(rt[c]);
+                }
+            }
+            out
+        } else {
+            Vec::new()
+        };
+
+        let scales = if let Some(frames) = scl_frames[b].as_ref() {
+            let mut out = Vec::with_capacity(nf * 3);
+            for f in 0..nf {
+                let raw = frames[f];
+                let mask = scl_set[b][f];
+                let rs = ref_scale[b];
+                for c in 0..3 {
+                    if mask & (1 << c) != 0 {
+                        out.push(raw[c] as f32 * scale_scale);
+                    } else {
+                        out.push(rs[c]);
+                    }
+                }
+            }
+            out
+        } else if scl_static_mask[b] != 0 {
+            let raw = scl_static_value[b];
+            let mask = scl_static_mask[b];
+            let rs = ref_scale[b];
+            let mut out = Vec::with_capacity(3);
+            for c in 0..3 {
+                if mask & (1 << c) != 0 {
+                    out.push(raw[c] as f32 * scale_scale);
+                } else {
+                    out.push(rs[c]);
+                }
+            }
+            out
+        } else {
+            Vec::new()
+        };
+
+        bones.push(DecodedBone {
+            rotation_animated: rot_frames[b].is_some(),
+            translation_animated: pos_frames[b].is_some(),
+            scale_animated: scl_frames[b].is_some(),
+            rotations,
+            translations,
+            scales,
         });
     }
 

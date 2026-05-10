@@ -143,6 +143,9 @@ pub(crate) struct AssetMeshesDto {
     animset_hash: Option<String>,
 
     bind_pose_inverse_offset: i16,
+
+    #[serde(default)]
+    embedded_animation_count: u32,
 }
 
 #[derive(Serialize)]
@@ -314,6 +317,42 @@ fn open_level(
     folder: String,
     cache: State<'_, Mutex<AssetCache>>,
 ) -> Result<LevelSummary, String> {
+    let layout = lunalib::detect_layout(Path::new(&folder)).map_err(|_| {
+        "Folder has none of main.dat (TOD), assetlookup.dat (V2), or ps3levelmain.dat (RFOM)"
+            .to_string()
+    })?;
+    let bundled_entry: Option<&'static str> = match layout {
+        lunalib::LevelLayout::Tod => Some("main.dat"),
+        lunalib::LevelLayout::Rfom => Some("ps3levelmain.dat"),
+        lunalib::LevelLayout::V2 => None,
+    };
+    if let Some(filename) = bundled_entry {
+        // TOD / RFOM — no assetlookup.dat to walk. Open the bundled
+        // entry file just to surface its IGHW version + section list
+        // to the toolbar; full extraction happens in
+        // `extract_level_to_cache`.
+        let entry_path = Path::new(&folder).join(filename);
+        let file = File::open(&entry_path)
+            .map_err(|e| format!("open {}: {e}", entry_path.display()))?;
+        let ig = lunalib::IgFile::open(BufReader::new(file)).map_err(|e| e.to_string())?;
+        let sections: Vec<SectionDto> = ig
+            .sections
+            .iter()
+            .map(|s| SectionDto {
+                id: s.id,
+                offset: s.offset,
+                count: s.count,
+                length: s.length,
+            })
+            .collect();
+        return Ok(LevelSummary {
+            folder: folder.clone(),
+            version_major: ig.version.major,
+            version_minor: ig.version.minor,
+            sections,
+            asset_counts: Vec::new(),
+        });
+    }
     let mut cache = cache.lock().map_err(|e| format!("cache lock: {e}"))?;
     let entry = cache.ensure(&folder)?;
     let asset_counts = AssetKind::all()
@@ -448,7 +487,12 @@ fn level_layout(folder: String) -> Result<LevelLayoutDto, String> {
 }
 
 fn real_moby_layout(folder: &str) -> Option<Vec<InstanceDto>> {
-    let layout = read_gameplay(Path::new(folder)).ok()?;
+    let path = Path::new(folder);
+    let layout = match lunalib::detect_layout(path) {
+        Ok(lunalib::LevelLayout::Tod) => lunalib::read_gameplay_old(path).ok()?,
+        Ok(lunalib::LevelLayout::Rfom) => lunalib::read_gameplay_rfom(path).ok()?,
+        _ => read_gameplay(path).ok()?,
+    };
     let mut out = Vec::new();
     for region in layout.regions {
         for inst in region.moby_instances {
@@ -467,26 +511,51 @@ fn real_moby_layout(folder: &str) -> Option<Vec<InstanceDto>> {
 }
 
 fn real_tie_layout(folder: &str) -> Option<Vec<InstanceDto>> {
-    let zones = read_zones(Path::new(folder)).ok()?;
+    let path = Path::new(folder);
     let mut out = Vec::new();
-    for zone in zones {
-        for inst in zone.tie_instances {
-            out.push(InstanceDto {
-                tuid: format!("0x{:016X}", inst.instance_tuid),
-                asset_tuid: format!("0x{:016X}", inst.tie_tuid),
-                kind: AssetKind::Tie.name(),
-                name: inst.name,
-                position: inst.position,
-                quaternion: inst.quaternion,
-                scale: inst.scale,
-            });
+    match lunalib::detect_layout(path) {
+        Ok(lunalib::LevelLayout::Tod) => {
+            for zone in lunalib::read_zones_old(path).ok()? {
+                for inst in zone.tie_instances {
+                    out.push(tie_instance_dto(&inst));
+                }
+            }
+        }
+        Ok(lunalib::LevelLayout::Rfom) => {
+            for inst in lunalib::read_tie_instances_rfom(path).ok()? {
+                out.push(tie_instance_dto(&inst));
+            }
+        }
+        _ => {
+            for zone in read_zones(path).ok()? {
+                for inst in zone.tie_instances {
+                    out.push(tie_instance_dto(&inst));
+                }
+            }
         }
     }
     (!out.is_empty()).then_some(out)
 }
 
+fn tie_instance_dto(inst: &lunalib::TieInstance) -> InstanceDto {
+    InstanceDto {
+        tuid: format!("0x{:016X}", inst.instance_tuid),
+        asset_tuid: format!("0x{:016X}", inst.tie_tuid),
+        kind: AssetKind::Tie.name(),
+        name: inst.name.clone(),
+        position: inst.position,
+        quaternion: inst.quaternion,
+        scale: inst.scale,
+    }
+}
+
 fn real_ufrag_bounds(folder: &str) -> Option<Vec<UFragDto>> {
-    let zones = read_zones(Path::new(folder)).ok()?;
+    let path = Path::new(folder);
+    let zones = match lunalib::detect_layout(path) {
+        Ok(lunalib::LevelLayout::Rfom) => lunalib::read_regions_rfom(path).ok()?,
+        Ok(lunalib::LevelLayout::Tod) => return None,
+        _ => read_zones(path).ok()?,
+    };
     let mut out = Vec::new();
     for zone in zones {
         let zone_tuid_hex = format!("0x{:016X}", zone.tuid);
@@ -556,6 +625,9 @@ fn level_meshes_stream(folder: String, on_event: Channel<LevelEvent>) -> Result<
 fn run_level_stream(folder: &str, on_event: &Channel<LevelEvent>) -> Result<(), String> {
     let path = Path::new(folder);
 
+    if matches!(lunalib::detect_layout(path), Ok(lunalib::LevelLayout::Rfom)) {
+        return run_level_stream_rfom(path, on_event);
+    }
 
     let _ = on_event.send(LevelEvent::Phase {
         phase: "layout",
@@ -567,7 +639,11 @@ fn run_level_stream(folder: &str, on_event: &Channel<LevelEvent>) -> Result<(), 
     let mut moby_tuids: HashSet<u64> = HashSet::new();
     let mut tie_tuids: HashSet<u64> = HashSet::new();
 
-    if let Ok(layout) = read_gameplay(path) {
+    let gameplay_layout = match lunalib::detect_layout(path) {
+        Ok(lunalib::LevelLayout::Tod) => lunalib::read_gameplay_old(path).ok(),
+        _ => read_gameplay(path).ok(),
+    };
+    if let Some(layout) = gameplay_layout {
         for region in layout.regions {
             for inst in region.moby_instances {
                 moby_tuids.insert(inst.moby_tuid);
@@ -577,13 +653,25 @@ fn run_level_stream(folder: &str, on_event: &Channel<LevelEvent>) -> Result<(), 
 
 
     let mut zones: Vec<lunalib::Zone> = Vec::new();
-    read_zones_streaming(path, |z| {
-        for inst in &z.tie_instances {
-            tie_tuids.insert(inst.tie_tuid);
+    match lunalib::detect_layout(path) {
+        Ok(lunalib::LevelLayout::Tod) => {
+            for z in lunalib::read_zones_old(path).unwrap_or_default() {
+                for inst in &z.tie_instances {
+                    tie_tuids.insert(inst.tie_tuid);
+                }
+                zones.push(z);
+            }
         }
-        zones.push(z);
-    })
-    .map_err(|e| e.to_string())?;
+        _ => {
+            read_zones_streaming(path, |z| {
+                for inst in &z.tie_instances {
+                    tie_tuids.insert(inst.tie_tuid);
+                }
+                zones.push(z);
+            })
+            .map_err(|e| e.to_string())?;
+        }
+    }
 
     let moby_tuids: Vec<u64> = moby_tuids.into_iter().collect();
     let tie_tuids: Vec<u64> = tie_tuids.into_iter().collect();
@@ -648,6 +736,7 @@ fn run_level_stream(folder: &str, on_event: &Channel<LevelEvent>) -> Result<(), 
                     skeleton,
                     animset_hash: asset.animset_hash.map(|h| format!("0x{:016X}", h)),
                     bind_pose_inverse_offset: asset.bind_pose_inverse_offset,
+                    embedded_animation_count: asset.rfom_anim_offsets.len() as u32,
                 };
                 let _ = on_event.send(LevelEvent::MobyAsset { asset: dto });
                 moby_done += 1;
@@ -706,6 +795,7 @@ fn run_level_stream(folder: &str, on_event: &Channel<LevelEvent>) -> Result<(), 
                     skeleton: None,
                     animset_hash: None,
                     bind_pose_inverse_offset: 0,
+                    embedded_animation_count: 0,
                 };
                 let _ = on_event.send(LevelEvent::TieAsset { asset: dto });
                 tie_done += 1;
@@ -813,6 +903,239 @@ fn run_level_stream(folder: &str, on_event: &Channel<LevelEvent>) -> Result<(), 
             },
         )
         .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn run_level_stream_rfom(path: &Path, on_event: &Channel<LevelEvent>) -> Result<(), String> {
+    let _ = on_event.send(LevelEvent::Phase {
+        phase: "layout",
+        label: "Reading placements",
+        total: 1,
+        chunk_size: CHUNK_SIZE,
+    });
+
+    let mut wanted_moby_ids: HashSet<u64> = HashSet::new();
+    if let Ok(gp) = lunalib::read_gameplay_rfom(path) {
+        for region in gp.regions {
+            for inst in region.moby_instances {
+                wanted_moby_ids.insert(inst.moby_tuid);
+            }
+        }
+    }
+    let mut wanted_tie_tuids: HashSet<u64> = HashSet::new();
+    if let Ok(insts) = lunalib::read_tie_instances_rfom(path) {
+        for i in insts {
+            wanted_tie_tuids.insert(i.tie_tuid);
+        }
+    }
+    let _ = on_event.send(LevelEvent::Progress { current: 1 });
+
+    let _ = on_event.send(LevelEvent::Phase {
+        phase: "shaders",
+        label: "Reading shaders",
+        total: 1,
+        chunk_size: CHUNK_SIZE,
+    });
+    let shaders: HashMap<u64, ShaderInfo> = lunalib::read_shaders_rfom(path)
+        .map_err(|e| e.to_string())?;
+    let _ = on_event.send(LevelEvent::Progress { current: 1 });
+
+    let mut needed_albedo: HashSet<u32> = HashSet::new();
+
+    let mut moby_assets: Vec<lunalib::MobyAsset> = Vec::new();
+    lunalib::read_moby_assets_rfom(path, |a| {
+        if wanted_moby_ids.is_empty() || wanted_moby_ids.contains(&a.tuid) {
+            moby_assets.push(a);
+        }
+    })
+        .map_err(|e| e.to_string())?;
+    let _ = on_event.send(LevelEvent::Phase {
+        phase: "mobys",
+        label: "Decoding mobys",
+        total: moby_assets.len(),
+        chunk_size: CHUNK_SIZE,
+    });
+    let mut moby_done = 0usize;
+    for asset in moby_assets {
+        let mut submeshes = Vec::new();
+        for bangle in asset.bangles {
+            for m in bangle.meshes {
+                let (albedo, normal, emissive) = resolve_shader_textures(
+                    &shaders,
+                    &asset.shader_tuids,
+                    m.shader_index as usize,
+                );
+                for id in [albedo, normal, emissive].into_iter().flatten() {
+                    needed_albedo.insert(id);
+                }
+                submeshes.push(mesh_dto(
+                    m.positions,
+                    m.uvs,
+                    m.indices,
+                    albedo,
+                    normal,
+                    emissive,
+                    m.bone_indices,
+                    m.bone_weights,
+                ));
+            }
+        }
+        let skeleton = build_skeleton_dto(&asset.skeleton);
+        let dto = AssetMeshesDto {
+            asset_tuid: format!("0x{:016X}", asset.tuid),
+            name: asset.name.clone(),
+            submeshes,
+            skeleton,
+            animset_hash: None,
+            bind_pose_inverse_offset: asset.bind_pose_inverse_offset,
+            embedded_animation_count: asset.rfom_anim_offsets.len() as u32,
+        };
+        let _ = on_event.send(LevelEvent::MobyAsset { asset: dto });
+        moby_done += 1;
+        let _ = on_event.send(LevelEvent::Progress { current: moby_done });
+        chunk_yield(moby_done);
+    }
+
+    let mut tie_assets: Vec<lunalib::TieAsset> = Vec::new();
+    lunalib::read_tie_assets_rfom(path, |a| {
+        if wanted_tie_tuids.is_empty() || wanted_tie_tuids.contains(&a.tuid) {
+            tie_assets.push(a);
+        }
+    })
+        .map_err(|e| e.to_string())?;
+    let _ = on_event.send(LevelEvent::Phase {
+        phase: "ties",
+        label: "Decoding ties",
+        total: tie_assets.len(),
+        chunk_size: CHUNK_SIZE,
+    });
+    let mut tie_done = 0usize;
+    for asset in tie_assets {
+        let submeshes: Vec<MeshDto> = asset
+            .meshes
+            .into_iter()
+            .map(|m| {
+                let (albedo, normal, emissive) = resolve_shader_textures(
+                    &shaders,
+                    &asset.shader_tuids,
+                    m.shader_index as usize,
+                );
+                for id in [albedo, normal, emissive].into_iter().flatten() {
+                    needed_albedo.insert(id);
+                }
+                mesh_dto(
+                    m.positions,
+                    m.uvs,
+                    m.indices,
+                    albedo,
+                    normal,
+                    emissive,
+                    Vec::new(),
+                    Vec::new(),
+                )
+            })
+            .collect();
+        let dto = AssetMeshesDto {
+            asset_tuid: format!("0x{:016X}", asset.tuid),
+            name: format!("tie_{:016X}", asset.tuid),
+            submeshes,
+            skeleton: None,
+            animset_hash: None,
+            bind_pose_inverse_offset: 0,
+            embedded_animation_count: 0,
+        };
+        let _ = on_event.send(LevelEvent::TieAsset { asset: dto });
+        tie_done += 1;
+        let _ = on_event.send(LevelEvent::Progress { current: tie_done });
+        chunk_yield(tie_done);
+    }
+
+    let zones = lunalib::read_regions_rfom(path).unwrap_or_default();
+    let total_ufrags: usize = zones.iter().map(|z| z.ufrags.len()).sum();
+    let _ = on_event.send(LevelEvent::Phase {
+        phase: "ufrags",
+        label: "Decoding terrain",
+        total: total_ufrags,
+        chunk_size: CHUNK_SIZE,
+    });
+    let mut ufrag_done = 0usize;
+    for zone in zones {
+        let zone_tuid_hex = format!("0x{:016X}", zone.tuid);
+        for u in zone.ufrags {
+            if u.positions.is_empty() || u.indices.is_empty() {
+                continue;
+            }
+            let shader_info = zone
+                .ufrag_shader_tuids
+                .get(u.shader_index as usize)
+                .and_then(|st| shaders.get(st));
+            let albedo = shader_info.and_then(|s| s.albedo_tex_id);
+            let normal = shader_info.and_then(|s| s.normal_tex_id);
+            let emissive = shader_info.and_then(|s| s.expensive_tex_id);
+            for id in [albedo, normal, emissive].into_iter().flatten() {
+                needed_albedo.insert(id);
+            }
+            let dto = UFragMeshDto {
+                tuid: format!("0x{:016X}", u.tuid),
+                zone_tuid: zone_tuid_hex.clone(),
+                position: u.position,
+                mesh: mesh_dto(
+                    u.positions,
+                    u.uvs,
+                    u.indices,
+                    albedo,
+                    normal,
+                    emissive,
+                    Vec::new(),
+                    Vec::new(),
+                ),
+            };
+            let _ = on_event.send(LevelEvent::UfragMesh { mesh: dto });
+            ufrag_done += 1;
+            let _ = on_event.send(LevelEvent::Progress { current: ufrag_done });
+            chunk_yield(ufrag_done);
+        }
+    }
+
+    if needed_albedo.is_empty() {
+        let _ = on_event.send(LevelEvent::Phase {
+            phase: "textures",
+            label: "Decoding textures",
+            total: 0,
+            chunk_size: CHUNK_SIZE,
+        });
+    } else {
+        let textures = lunalib::read_textures_rfom(path).unwrap_or_default();
+        let needed = needed_albedo.clone();
+        let filtered: Vec<&lunalib::Texture> = textures
+            .iter()
+            .filter(|t| needed.contains(&t.id))
+            .collect();
+        let _ = on_event.send(LevelEvent::Phase {
+            phase: "textures",
+            label: "Decoding textures",
+            total: filtered.len(),
+            chunk_size: CHUNK_SIZE,
+        });
+        let mut tex_done = 0usize;
+        for t in filtered {
+            if t.rgba.is_empty() {
+                continue;
+            }
+            let (w, h) = downsample_dims(t.width, t.height, 512);
+            let _ = on_event.send(LevelEvent::Texture {
+                texture: TextureDto {
+                    id: t.id,
+                    width: w,
+                    height: h,
+                },
+            });
+            tex_done += 1;
+            let _ = on_event.send(LevelEvent::Progress { current: tex_done });
+            chunk_yield(tex_done);
+        }
     }
 
     Ok(())
@@ -956,6 +1279,7 @@ fn run_library_stream(
                 skeleton,
                 animset_hash: asset.animset_hash.map(|h| format!("0x{:016X}", h)),
                 bind_pose_inverse_offset: asset.bind_pose_inverse_offset,
+                embedded_animation_count: asset.rfom_anim_offsets.len() as u32,
             };
             let _ = on_event.send(LibraryEvent::Asset { asset: dto });
             done += 1;
@@ -1494,6 +1818,12 @@ struct AnimsetSummaryDto {
 
 #[tauri::command]
 fn list_animset_clips(level_folder: String) -> Result<Vec<AnimsetSummaryDto>, String> {
+    match lunalib::detect_layout(Path::new(&level_folder)) {
+        Ok(lunalib::LevelLayout::Tod) | Ok(lunalib::LevelLayout::Rfom) => {
+            return Ok(Vec::new());
+        }
+        _ => {}
+    }
     let mut lookup = open_lookup(&level_folder)?;
     let ptrs = lookup
         .pointers(AssetKind::Animset)

@@ -47,37 +47,37 @@ import {
   type TextureBlobMap,
   type UFragBounds,
 } from "./api";
-import { AboutModal } from "./AboutModal";
-import { DocsModal } from "./DocsModal";
-import { BottomPanel, type ConsoleEntry } from "./BottomPanel";
-import { CacheLibraryModal } from "./CacheLibraryModal";
-import { GltfCharacterModal } from "./GltfCharacterModal";
-import { Hierarchy } from "./Hierarchy";
-import { Inspector } from "./Inspector";
-import { LoadProgress, type LoadPhaseState } from "./LoadProgress";
-import { Menu, MenuBar, MenuCheckItem, MenuItem, MenuSpacer } from "./MenuBar";
-import { Modal } from "./Modal";
-import { OpenLevelModal } from "./OpenLevelModal";
-import { PsarcModal } from "./PsarcModal";
-import { SettingsModal } from "./SettingsModal";
-import { TabContainer } from "./TabContainer";
+import { AboutModal } from "./components/AboutModal";
+import { DocsModal } from "./components/DocsModal";
+import { BottomPanel, type ConsoleEntry } from "./views/BottomPanel";
+import { CacheLibraryModal } from "./components/CacheLibraryModal";
+import { GltfCharacterModal } from "./components/GltfCharacterModal";
+import { Hierarchy } from "./views/Hierarchy";
+import { Inspector } from "./views/Inspector";
+import { LoadProgress, type LoadPhaseState } from "./components/LoadProgress";
+import { Menu, MenuBar, MenuCheckItem, MenuItem, MenuSpacer } from "./views/MenuBar";
+import { Modal } from "./components/Modal";
+import { OpenLevelModal } from "./components/OpenLevelModal";
+import { PsarcModal } from "./components/PsarcModal";
+import { SettingsModal } from "./components/SettingsModal";
+import { TabContainer } from "./views/TabContainer";
 import { useApplySettings } from "./useApplySettings";
 import type { ViewId } from "./store";
-import { SoundPlayer, type NowPlaying } from "./SoundPlayer";
-import { Splash } from "./Splash";
-import { UpdateChecker } from "./UpdateChecker";
+import { SoundPlayer, type NowPlaying } from "./components/SoundPlayer";
+import { Splash } from "./views/Splash";
+import { UpdateChecker } from "./components/UpdateChecker";
 import { useUpdater } from "./useUpdater";
-import { StatusBar } from "./StatusBar";
-import { TitleBar } from "./TitleBar";
-import { Toolbar } from "./Toolbar";
-import { Viewport } from "./Viewport";
+import { StatusBar } from "./views/StatusBar";
+import { TitleBar } from "./views/TitleBar";
+import { Toolbar } from "./views/Toolbar";
+import { Viewport } from "./views/Viewport";
 import { useEdits } from "./edits";
 import {
   exportToGlb,
   pickGlbExportPath,
   type ExportProgressState,
 } from "./export";
-import { ExportProgress } from "./ExportProgress";
+import { ExportProgress } from "./components/ExportProgress";
 import { useSelection } from "./selection";
 import { APP_VERSION, APP_REPO_URL, APP_ISSUES_URL, openExternal } from "./version";
 import {
@@ -358,6 +358,15 @@ export function App() {
     const id = setTimeout(() => setSplashVisible(false), 1200);
     return () => clearTimeout(id);
   }, []);
+
+  const autoOpenLevelRef = useRef(false);
+  useEffect(() => {
+    if (autoOpenLevelRef.current) return;
+    if (splashVisible) return;
+    if (summary) return;
+    autoOpenLevelRef.current = true;
+    setOpenLevelModalOpen(true);
+  }, [splashVisible, summary]);
 
   const log = useCallback(
     (level: ConsoleEntry["level"], msg: string) =>
@@ -660,7 +669,13 @@ export function App() {
       setBusy(true);
       setMeshes(null);
       setTextureBlobs(null);
-      setMeshLoadPhase(null);
+      setMeshLoadPhase({
+        phase: "layout",
+        label: "Preparing extraction",
+        current: 0,
+        total: 0,
+        chunkSize: 1,
+      });
       setCompletedPhases([]);
 
       try {
@@ -748,8 +763,8 @@ export function App() {
     setAnimsetClips([]);
     setOverrideAnimsetHash(null);
     setPreviewAssetTuid(null);
-    
-    
+
+
     if (nowPlayingMirror.current) {
       nowPlayingMirror.current.audio.pause();
       URL.revokeObjectURL(nowPlayingMirror.current.blobUrl);
@@ -759,8 +774,14 @@ export function App() {
     setExtractedSoundsCache(new Map());
     setLevelFiles([]);
     setLoadPhase(null);
-    setMeshLoadPhase(null);
     setCompletedPhases([]);
+    setMeshLoadPhase({
+      phase: "layout",
+      label: "Reading level header",
+      current: 0,
+      total: 0,
+      chunkSize: 1,
+    });
     log("info", `Opening level: ${folder}`);
     try {
       const sum = await openLevel(folder);
@@ -820,6 +841,7 @@ export function App() {
           "info",
           `Cache detected (${existing.mobys}M / ${existing.ties}T / ${existing.textures}tex) — awaiting user choice`,
         );
+        setMeshLoadPhase(null);
         setCachePrompt({ sum, status: existing });
       } else {
         log("info", "Auto-loading meshes (idle-paced; safe to interact while it runs)");
@@ -978,6 +1000,7 @@ export function App() {
         textureBlobs={textureBlobs}
         instances={instances}
         edits={edits}
+        cacheFolder={summary?.folder ?? null}
         onExportSelected={handleExportSelection}
         onLoadMeshes={() => {
           if (summary) void loadFullMeshes(summary);
@@ -1012,23 +1035,6 @@ export function App() {
           levelFolder={summary?.folder ?? null}
           overrideAnimsetHash={overrideAnimsetHash}
         />
-        {!summary && (
-          <div className="viewport-empty-toast">
-            <div className="viewport-empty-title">No level loaded</div>
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={() => setOpenLevelModalOpen(true)}
-            >
-              Open Level…
-            </button>
-            <div className="viewport-empty-sub small dim">
-              Pick any folder containing <code>assetlookup.dat</code> —
-              Resistance 2/3, Ratchet &amp; Clank Future, and other Insomniac
-              PS3 titles.
-            </div>
-          </div>
-        )}
       </div>
     ),
   };
