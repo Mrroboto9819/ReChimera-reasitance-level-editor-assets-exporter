@@ -3,7 +3,7 @@
 Two stacks of numbered chapters, organized by what part of the codebase
 they cover:
 
-## [`internal/lunarlib-and-IT/`](internal/lunarlib-and-IT/)
+## [`internal/lunalib-and-IT/`](internal/lunalib-and-IT/)
 Documentation of the **`lunalib` parser crate** with cross-references
 to **InsomniaToolset** (IT). Each chapter cites the corresponding IT
 header / `.cpp` so it's easy to confirm or extend our implementation
@@ -11,14 +11,14 @@ against the canonical reference.
 
 | # | File | Lunalib source | IT reference |
 |---|---|---|---|
-| 01 | [IGHW container](internal/lunarlib-and-IT/01-ighw-container.md) | `igfile.rs` | `common/include/insomnia/insomnia.hpp`, `common/src/serialize.cpp` |
-| 02 | [Asset lookup](internal/lunarlib-and-IT/02-asset-lookup.md) | `assetlookup.rs` | `common/include/insomnia/classes/resource.hpp` |
-| 03 | [Skeleton & bind](internal/lunarlib-and-IT/03-skeleton.md) | `skeleton.rs`, `math.rs` | `extract/extract_gltf.cpp` `GenerateSkeleton` |
-| 04 | [Moby & tie geometry](internal/lunarlib-and-IT/04-moby-tie-geometry.md) | `moby.rs`, `tie.rs` | `classes/moby.hpp`, `classes/tie.hpp`, `internal/vertex.hpp` |
-| 05 | [Textures](internal/lunarlib-and-IT/05-textures.md) | `texture.rs`, `shader.rs` | `extract/extract_textures.cpp`, `extract/extract_v2.cpp` |
-| 06 | [Animation](internal/lunarlib-and-IT/06-animation.md) | `animation.rs` | `classes/animation.hpp`, `common/src/gltf_shared.cpp` |
-| 07 | [Sound](internal/lunarlib-and-IT/07-sound.md) | `sound.rs` | `sound/extract_sound.cpp` |
-| 08 | [GLB writer](internal/lunarlib-and-IT/08-gltf-export.md) | `gltf_export.rs`, `math.rs` | `extract/extract_gltf.cpp`, `common/src/gltf_shared.cpp` |
+| 01 | [IGHW container](internal/lunalib-and-IT/01-ighw-container.md) | `igfile.rs` | `common/include/insomnia/insomnia.hpp`, `common/src/serialize.cpp` |
+| 02 | [Asset lookup](internal/lunalib-and-IT/02-asset-lookup.md) | `assetlookup.rs` | `common/include/insomnia/classes/resource.hpp` |
+| 03 | [Skeleton & bind](internal/lunalib-and-IT/03-skeleton.md) | `skeleton.rs`, `math.rs` | `extract/extract_gltf.cpp` `GenerateSkeleton` |
+| 04 | [Moby & tie geometry](internal/lunalib-and-IT/04-moby-tie-geometry.md) | `moby.rs`, `moby_rfom.rs`, `moby_old.rs`, `tie.rs`, `tie_rfom.rs`, `tie_old.rs` | `classes/moby.hpp`, `classes/tie.hpp`, `internal/vertex.hpp` |
+| 05 | [Textures](internal/lunalib-and-IT/05-textures.md) | `texture.rs`, `shader.rs` | `extract/extract_textures.cpp`, `extract/extract_v2.cpp` |
+| 06 | [Animation](internal/lunalib-and-IT/06-animation.md) | `animation.rs` | `classes/animation.hpp`, `common/src/gltf_shared.cpp` |
+| 07 | [Sound](internal/lunalib-and-IT/07-sound.md) | `sound.rs` | `sound/extract_sound.cpp` |
+| 08 | [GLB writer](internal/lunalib-and-IT/08-gltf-export.md) | `gltf_export.rs`, `math.rs` | `extract/extract_gltf.cpp`, `common/src/gltf_shared.cpp` |
 
 ## [`internal/app/`](internal/app/)
 Documentation of the **Tauri 2 + React + Three.js desktop app** that

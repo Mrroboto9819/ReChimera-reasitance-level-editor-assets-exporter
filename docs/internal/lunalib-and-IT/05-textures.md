@@ -1,6 +1,23 @@
 # 05 — Textures & materials
 
-Source: `crates/lunalib/src/texture.rs`, `crates/lunalib/src/shader.rs`.
+Per-engine sources:
+
+| Layout | Texture decoder | Shader / material reader |
+|---|---|---|
+| V2 (R2 / R3 / RCFFA / RCA4O) | `crates/lunalib/src/texture.rs` | `crates/lunalib/src/shader.rs` |
+| RFOM | `crates/lunalib/src/texture_rfom.rs` | `crates/lunalib/src/shader_rfom.rs` |
+| TOD | `crates/lunalib/src/texture_old.rs` | `crates/lunalib/src/shader_old.rs` |
+
+Each pair exposes `read_textures_*` and `read_shaders_*` returning the
+same `Vec<(u32, png_bytes)>` and `HashMap<u64, ShaderInfo>` shapes, so
+the cache pipeline can dispatch on `LevelLayout` once and feed every
+downstream consumer engine-agnostic data.
+
+Most of this chapter walks through the V2 path. RFOM and TOD reuse
+the same `TexFormat::from_byte` decoder (it covers both R2's
+`0x03..0x0A` and FFA's `0x81..0x8B`/`0xA6` ranges — see
+`project_texture_format_dual_range` in memory) but with per-engine
+metadata layouts and per-engine tile schemes (linear vs Morton).
 
 **IT references**:
 - Format enum + per-format byte counts: `classes/shader.hpp::TextureFormat`

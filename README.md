@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Offline level inspector and asset extractor for Insomniac Games' PS3 titles</strong><br/>
-  <sub>Resistance: Fall of Man · Resistance 2 · Resistance 3 · Ratchet &amp; Clank Future trilogy</sub>
+  <sub>Resistance: Fall of Man · Resistance 2 · Resistance 3 · Ratchet &amp; Clank: Tools of Destruction · Full Frontal Assault · All 4 One</sub>
 </p>
 
 <p align="center">
@@ -79,12 +79,14 @@ empty meshes; they don't crash the loader.
 
 ## Supported games
 
-| Game | IGHW version | SCREAM version | Status |
-|---|---|---|---|
-| Resistance: Fall of Man | v0.2 / v1.1 | V1 | ⚠️ Needs testing |
-| Resistance 2 | v1.1 | V2 | ✅ Tested |
-| Resistance 3 | v1.1 | V2 | ✅ Tested |
-| Ratchet &amp; Clank Future trilogy | v1.1 | V2 | ⚠️ Needs testing |
+| Game | Layout | IGHW | SCREAM | Mesh | Tex | Skel | Anim | Notes |
+|---|---|---|---|---|---|---|---|---|
+| Resistance: Fall of Man | `ps3levelmain.dat` | v1.1 | V1 | ✅ | ✅ | ✅ | ✅ | extract `game.psarc` first |
+| Resistance 2 | `assetlookup.dat` (V2) | v1.1 | V2 | ✅ | ✅ | ✅ | ✅ | tested end-to-end |
+| Resistance 3 | `assetlookup.dat` (V2) | v1.1 | V2 | ✅ | ✅ | ✅ | ✅ | tested end-to-end |
+| R&C: Tools of Destruction | `main.dat` (TOD) | v1.1 | V2 | ✅ | ✅ | ✅ | ⚠️ T-pose | per-frame anim format unsolved |
+| R&C: Full Frontal Assault | `assetlookup.dat` (V2) | v1.1 | V2 | ✅ | ⚠️ | ✅ | ✅ | a few textures still missing |
+| R&C: All 4 One | `assetlookup.dat` (V2) | v1.1 | V2 | ✅ | ✅ | ✅ | ✅ | tested |
 
 ---
 
@@ -146,13 +148,29 @@ Linux, `.dmg` on macOS, into `apps/desktop/src-tauri/target/release/bundle/`.
 against a real file without booting the app):
 
 ```sh
+# Container & top-level lookups
 cargo run -p lunalib --example dump_assetlookup -- "<level-folder>/assetlookup.dat"
-cargo run -p lunalib --example dump_textures    -- "<level-folder>"
+
+# Per-asset content
 cargo run -p lunalib --example dump_moby_meshes -- "<level-folder>"
-cargo run -p lunalib --example dump_gameplay    -- "<level-folder>"
+cargo run -p lunalib --example dump_moby_skin   -- "<level-folder>" [--first N]
+cargo run -p lunalib --example dump_tie_meshes  -- "<level-folder>"
+cargo run -p lunalib --example dump_shaders     -- "<level-folder>"
+cargo run -p lunalib --example dump_textures    -- "<level-folder>" [output_dir] [max_pngs]
+
+# Animation
+cargo run -p lunalib --example dump_animsets    -- "<level-folder>" [--decode N]
+
+# Level-scope: terrain, zones, gameplay placements
 cargo run -p lunalib --example dump_zones       -- "<level-folder>"
 cargo run -p lunalib --example dump_ufrags      -- "<level-folder>"
+cargo run -p lunalib --example dump_gameplay    -- "<level-folder>"
 ```
+
+All ten examples build under `cargo build -p lunalib --examples` and
+read the same `<level-folder>` your app would. They auto-detect engine
+era (V2 / RFOM / TOD) via [`level_layout.rs`](crates/lunalib/src/level_layout.rs)
+so the same command works against every supported game.
 
 For the architecture, parser internals, and the full IT / ReLunacy
 cross-references, see [`docs/`](docs/) — the same content is

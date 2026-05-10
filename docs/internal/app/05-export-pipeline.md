@@ -1,12 +1,12 @@
 # 05 — Export pipeline
 
 Source: `apps/desktop/src-tauri/src/cache.rs::export_moby_glb_with_options`,
-`apps/desktop/src/ExportOptionsModal.tsx`,
-`apps/desktop/src/GlbPreview.tsx`.
+`apps/desktop/src/components/ExportOptionsModal.tsx`,
+`apps/desktop/src/views/GlbPreview.tsx`.
 
 This is the user-facing export flow. The actual GLB-byte writer it sits
 on top of is documented at
-[`../lunarlib-and-IT/08-gltf-export.md`](../lunarlib-and-IT/08-gltf-export.md).
+[`../lunalib-and-IT/08-gltf-export.md`](../lunalib-and-IT/08-gltf-export.md).
 
 ## Two export paths
 
@@ -37,14 +37,26 @@ pub struct ClipPick {
 ```
 
 The Rust handler:
-1. Re-loads the moby via `lunalib::read_moby_assets_with_total(level, Some(&[tuid]), ...)`.
-   - Falls back to `read_tie_assets_with_total` if not found.
+1. Detects `LevelLayout` from the marker file in the folder, then
+   re-loads the moby through the matching parser:
+   - V2: `lunalib::read_moby_assets_with_total(level, Some(&[tuid]), ...)`
+   - RFOM: `lunalib::read_mobys_rfom(...)` against `ps3levelmain.dat`
+   - TOD: `lunalib::read_mobys_old(...)` against `main.dat`
+   - Falls back to the matching tie reader if not found in the moby pool.
 2. Strips `asset.skeleton` if `!include_armature`.
 3. Picks shaders + textures based on `include_materials` and `texture_max_dim`.
-4. Decodes the moby's primary animset clips (if armature is on).
+   Shader/texture readers are also layout-dispatched
+   (`read_shaders` vs `read_shaders_rfom` vs `read_shaders_old`,
+   `bulk_extract_pngs` vs `read_textures_rfom` vs `read_textures_old`).
+4. Decodes animation clips:
+   - V2: from the moby's primary animset.
+   - RFOM: from inline anim offsets via `decode_clips_for_moby_inline("ps3levelmain.dat")`.
+   - TOD: skipped (T-pose only — frame format unsolved).
 5. Walks `extra_clips`; for each pick, decodes the requested clips from
    the chosen animset using **this skeleton's** quantization shifts (since
-   the bones we're targeting are this skeleton's bones).
+   the bones we're targeting are this skeleton's bones). On RFOM/TOD
+   `extra_clips` is effectively empty because there are no animsets to
+   pick from.
 6. Calls `lunalib::write_moby_glb_full(asset, &all_clips, &shaders, &texture_pngs)`.
 7. Writes the result to `out_path`.
 
@@ -100,7 +112,7 @@ After clicking Export:
 
 ## Integration with the GLB preview burger menu
 
-The burger menu in `GlbPreview.tsx` (described in
+The burger menu in `views/GlbPreview.tsx` (described in
 [`03-frontend.md`](03-frontend.md)) writes its checkbox selections into
 a `previewPicks` state object held by `CacheLibraryModal`. When the
 user clicks Export, that state is passed to `ExportOptionsModal` as
@@ -119,5 +131,8 @@ source `textures.dat` block. The trade-off is: cache stays small,
 exports take a few extra seconds but get full quality.
 
 This is the same `lunalib::bulk_extract_pngs` function the cache itself
-calls — just with a larger `max_dim` argument. The single function
-serves both call sites identically.
+calls (V2 layout) — just with a larger `max_dim` argument. The single
+function serves both call sites identically. RFOM and TOD use their
+own layout-specific texture readers (`read_textures_rfom`,
+`read_textures_old`) which take the same `max_dim` parameter and
+behave identically from the export modal's perspective.

@@ -36,6 +36,21 @@ go straight to the GPU without transposition. The previous version of
 this code transposed them, which double-flipped the rotations into their
 inverses. We don't transpose any more.
 
+## Insomniac root-bone convention
+
+Critical: roots are marked `parent_index == own_index`, **not** `-1`.
+A bone whose `parent_index` equals its own index is the root marker.
+
+Treating this naively as a real parent reference (i.e. computing
+`tms1[parent_i] * tms0[i]` when `parent_i == i`) injects the bone's
+own inverse into its local bind and ends up with three.js's
+`GLTFLoader` recursing forever and stack-overflowing. Every walker
+in `skeleton.rs` checks `i == parent_index` and treats it as root.
+
+The same convention is honored across V2, RFOM, and TOD because the
+0xD300 skeleton struct is shared across engines (only the moby
+header that points at it differs).
+
 ## Computing local-bind
 
 For each non-root bone, the local-bind transform is:

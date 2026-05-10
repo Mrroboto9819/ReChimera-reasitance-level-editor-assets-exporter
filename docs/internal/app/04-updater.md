@@ -1,6 +1,7 @@
 # 04 — Updater & platforms
 
 Source: `apps/desktop/src/useUpdater.ts`,
+`apps/desktop/src/components/UpdateChecker.tsx`,
 `apps/desktop/src-tauri/tauri.conf.json` (`plugins.updater`).
 
 ## Why split behaviour by platform
