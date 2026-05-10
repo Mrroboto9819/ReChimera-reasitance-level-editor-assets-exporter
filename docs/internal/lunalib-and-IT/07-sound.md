@@ -86,7 +86,7 @@ diagnosis a one-glance affair.
 
 ## Frontend exposure
 
-The `SoundPlayer` component (`src/SoundPlayer.tsx`) consumes the decoded
+The `SoundPlayer` component (`src/components/SoundPlayer.tsx`) consumes the decoded
 samples directly and feeds them into a Web Audio `AudioBuffer`. The
 hierarchy's "Sounds" section lists every sound (from the bank's
 `SoundNames` table) plus a row per orphan stream entry found via
