@@ -1,10 +1,4 @@
-//! Smoke-test CLI: dump section / asset counts for an `assetlookup.dat`.
-//!
-//! Run it against a Resistance 2 or 3 level dump to validate the parser
-//! before wiring the library into the Tauri shell.
-//!
-//! Example:
-//!   cargo run -p lunalib --example dump_assetlookup -- path/to/assetlookup.dat
+
 
 use std::env;
 use std::fs::File;

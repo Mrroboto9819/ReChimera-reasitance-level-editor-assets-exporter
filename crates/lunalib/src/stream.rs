@@ -10,8 +10,6 @@ pub enum Endian {
     Little,
 }
 
-/// Endian-aware reader. PS3 IGHW files start big-endian; the magic word
-/// determines whether the rest of the file should be interpreted little-endian.
 pub struct StreamHelper<R: Read + Seek> {
     inner: R,
     pub endian: Endian,
@@ -88,7 +86,6 @@ impl<R: Read + Seek> StreamHelper<R> {
         })
     }
 
-    /// Read three consecutive `f32`s as `[x, y, z]`.
     pub fn read_vec3(&mut self) -> Result<[f32; 3]> {
         Ok([self.read_f32()?, self.read_f32()?, self.read_f32()?])
     }
@@ -99,7 +96,6 @@ impl<R: Read + Seek> StreamHelper<R> {
         Ok(buf)
     }
 
-    /// Read a NUL-terminated ASCII string at the current position.
     pub fn read_cstring(&mut self) -> Result<String> {
         let mut bytes = Vec::new();
         loop {
@@ -112,7 +108,6 @@ impl<R: Read + Seek> StreamHelper<R> {
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    /// Seek to `offset`, read a NUL-terminated string, then restore position.
     pub fn read_cstring_at(&mut self, offset: u64) -> Result<String> {
         let saved = self.position()?;
         self.seek_to(offset)?;

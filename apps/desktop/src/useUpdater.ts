@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { platform } from "@tauri-apps/plugin-os";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 const STORAGE_KEY = "rechimera.update.remindLaterAt";
 const REMIND_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const INITIAL_DELAY_MS = 3000;
 
+const RELEASES_URL = "https://github.com/Mrroboto9819/ReChimera/releases/latest";
+
 export type UpdatePhase =
   | { kind: "idle" }
-  | { kind: "available"; update: Update }
+  | { kind: "available"; update: Update; manual: boolean }
   | { kind: "downloading"; progress: number; total: number | null }
   | { kind: "ready" }
   | { kind: "error"; message: string };
@@ -22,10 +26,15 @@ export interface UpdaterState {
   dismiss: () => void;
 }
 
+function isAutoUpdateSupported(os: string): boolean {
+  return os === "windows";
+}
+
 export function useUpdater(): UpdaterState {
   const [phase, setPhase] = useState<UpdatePhase>({ kind: "idle" });
   const [hidden, setHidden] = useState(false);
   const inFlightRef = useRef(false);
+  const osRef = useRef<string | null>(null);
 
   const remindLaterStillActive = useCallback(() => {
     try {
@@ -44,9 +53,17 @@ export function useUpdater(): UpdaterState {
     if (remindLaterStillActive()) return;
     inFlightRef.current = true;
     try {
+      if (osRef.current == null) {
+        try {
+          osRef.current = platform();
+        } catch {
+          osRef.current = "unknown";
+        }
+      }
       const update = await check();
       if (update) {
-        setPhase({ kind: "available", update });
+        const manual = !isAutoUpdateSupported(osRef.current ?? "unknown");
+        setPhase({ kind: "available", update, manual });
         setHidden(false);
       }
     } catch (e) {
@@ -80,6 +97,15 @@ export function useUpdater(): UpdaterState {
   const install = useCallback(async () => {
     setPhase((prev) => {
       if (prev.kind !== "available") return prev;
+      if (prev.manual) {
+        void openUrl(RELEASES_URL).catch((e) => {
+          setPhase({
+            kind: "error",
+            message: `Could not open browser: ${e instanceof Error ? e.message : String(e)}`,
+          });
+        });
+        return prev;
+      }
       void (async () => {
         try {
           let downloaded = 0;

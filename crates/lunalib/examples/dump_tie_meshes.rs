@@ -1,4 +1,4 @@
-//! cargo run -p lunalib --example dump_tie_meshes -- <path/to/level>
+
 
 use std::env;
 use std::path::Path;

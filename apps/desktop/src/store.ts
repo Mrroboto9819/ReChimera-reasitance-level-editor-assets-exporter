@@ -17,10 +17,10 @@ import {
 } from "redux-persist";
 import storage from "redux-persist/lib/storage";
 
-/* ────────────────────────────────────────────────────────────────────────
- * View settings — what to render in the viewport. Persisted so a user's
- * "I always want grid off" preference survives reloads.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
+
 
 export interface ViewSettingsState {
   showMobys: boolean;
@@ -29,14 +29,14 @@ export interface ViewSettingsState {
   showUFragBounds: boolean;
   showGrid: boolean;
   showAxes: boolean;
-  /** When true, the viewport FPS overlay shows a graph instead of a counter. */
+  
   showStats: boolean;
-  /** Draw bone hierarchies as cyan line segments for selected mobys whose
-   *  IGHW chunk includes section 0xD300. Useful for verifying skeleton
-   *  parse before skin weights / animation playback land. */
+  
+
+
   showBones: boolean;
-  /** Drive the selected character's SkinnedMesh via AnimationMixer using
-   *  its animset clip. Off → bind pose. */
+  
+
   playAnimation: boolean;
 }
 
@@ -65,28 +65,28 @@ const viewSlice = createSlice({
   },
 });
 
-/* ────────────────────────────────────────────────────────────────────────
- * Layout — panel sizes (as percentages 0–100) and collapsed states.
- * Mirrors the structure of <PanelGroup> usage so each id maps to one
- * splitter position.
- * ──────────────────────────────────────────────────────────────────────── */
+
+
+
+
+
 
 export interface LayoutState {
-  /** Horizontal split: hierarchy / center / inspector */
   hierarchyPct: number;
   inspectorPct: number;
-  /** Vertical split inside center: viewport / bottom panel */
   bottomPct: number;
   consoleCollapsed: boolean;
+  hierarchyHidden: boolean;
+  inspectorHidden: boolean;
 }
 
 const DEFAULT_LAYOUT: LayoutState = {
   hierarchyPct: 18,
   inspectorPct: 22,
   bottomPct: 24,
-  // Start folded — the bottom panel only has useful content when there's a
-  // log/asset/tools state worth seeing. The user expands it explicitly.
   consoleCollapsed: true,
+  hierarchyHidden: false,
+  inspectorHidden: false,
 };
 
 const layoutSlice = createSlice({
@@ -105,6 +105,12 @@ const layoutSlice = createSlice({
     toggleConsoleCollapsed(state) {
       state.consoleCollapsed = !state.consoleCollapsed;
     },
+    toggleHierarchyHidden(state) {
+      state.hierarchyHidden = !state.hierarchyHidden;
+    },
+    toggleInspectorHidden(state) {
+      state.inspectorHidden = !state.inspectorHidden;
+    },
     resetLayout() {
       return DEFAULT_LAYOUT;
     },
@@ -117,28 +123,217 @@ export const {
   setInspectorPct,
   setBottomPct,
   toggleConsoleCollapsed,
+  toggleHierarchyHidden,
+  toggleInspectorHidden,
   resetLayout,
 } = layoutSlice.actions;
 
-/* ────────────────────────────────────────────────────────────────────────
- * Persistence — stash everything in localStorage. The whitelist keeps us
- * from accidentally persisting transient state if we add slices later.
- * Bumping `version` invalidates old saved state when the schema changes.
- * ──────────────────────────────────────────────────────────────────────── */
+export type PanelId = "left" | "right" | "bottom" | "center";
+export type ViewId = "hierarchy" | "inspector" | "console" | "viewport";
+
+export interface PanelLayout {
+  tabs: ViewId[];
+  activeTab: ViewId | null;
+}
+
+export interface PanelsState {
+  panels: Record<PanelId, PanelLayout>;
+}
+
+const DEFAULT_PANELS: PanelsState = {
+  panels: {
+    left: { tabs: ["hierarchy"], activeTab: "hierarchy" },
+    right: { tabs: ["inspector"], activeTab: "inspector" },
+    bottom: { tabs: ["console"], activeTab: "console" },
+    center: { tabs: ["viewport"], activeTab: "viewport" },
+  },
+};
+
+const panelsSlice = createSlice({
+  name: "panels",
+  initialState: DEFAULT_PANELS,
+  reducers: {
+    setActiveTab(
+      state,
+      action: PayloadAction<{ panelId: PanelId; viewId: ViewId }>,
+    ) {
+      const p = state.panels[action.payload.panelId];
+      if (p && p.tabs.includes(action.payload.viewId)) {
+        p.activeTab = action.payload.viewId;
+      }
+    },
+    moveTab(
+      state,
+      action: PayloadAction<{
+        viewId: ViewId;
+        from: PanelId;
+        to: PanelId;
+        insertIndex?: number;
+      }>,
+    ) {
+      const { viewId, from, to, insertIndex } = action.payload;
+      const src = state.panels[from];
+      const dst = state.panels[to];
+      if (!src || !dst) return;
+      const i = src.tabs.indexOf(viewId);
+      if (i < 0) return;
+      src.tabs.splice(i, 1);
+      if (src.activeTab === viewId) {
+        src.activeTab = src.tabs[0] ?? null;
+      }
+      const at =
+        insertIndex == null
+          ? dst.tabs.length
+          : Math.max(0, Math.min(insertIndex, dst.tabs.length));
+      const existingAt = dst.tabs.indexOf(viewId);
+      if (existingAt >= 0) {
+        dst.tabs.splice(existingAt, 1);
+      }
+      const finalAt = Math.min(at, dst.tabs.length);
+      dst.tabs.splice(finalAt, 0, viewId);
+      dst.activeTab = viewId;
+    },
+    addTabToPanel(
+      state,
+      action: PayloadAction<{ panelId: PanelId; viewId: ViewId }>,
+    ) {
+      const { panelId, viewId } = action.payload;
+      const p = state.panels[panelId];
+      if (!p) return;
+      if (!p.tabs.includes(viewId)) {
+        p.tabs.push(viewId);
+      }
+      p.activeTab = viewId;
+    },
+    closeTab(
+      state,
+      action: PayloadAction<{ panelId: PanelId; viewId: ViewId }>,
+    ) {
+      const { panelId, viewId } = action.payload;
+      const p = state.panels[panelId];
+      if (!p) return;
+      const i = p.tabs.indexOf(viewId);
+      if (i < 0) return;
+      p.tabs.splice(i, 1);
+      if (p.activeTab === viewId) {
+        p.activeTab = p.tabs[0] ?? null;
+      }
+    },
+    resetPanels() {
+      return DEFAULT_PANELS;
+    },
+  },
+});
+
+export const {
+  setActiveTab,
+  moveTab,
+  addTabToPanel,
+  closeTab,
+  resetPanels,
+} = panelsSlice.actions;
+
+
+
+
+
+
+
+
+export type ThemeMode = "dark" | "light";
+
+export type Language = "en" | "es" | "fr" | "zh" | "ru";
+
+export interface AssetColors {
+  
+  moby: string;
+  
+  tie: string;
+  
+  ufrag: string;
+  
+  selection: string;
+  
+
+  proxy: string;
+}
+
+export interface SettingsState {
+  theme: ThemeMode;
+  brandColor: string;
+  assetColors: AssetColors;
+  language: Language;
+}
+
+const DEFAULT_SETTINGS: SettingsState = {
+  theme: "dark",
+  brandColor: "#FF6363",
+  assetColors: {
+    moby: "#ff8a3d",
+    tie: "#3dd0ff",
+    ufrag: "#97de82",
+    selection: "#3eb1ff",
+    proxy: "#8a8a8a",
+  },
+  language: "en",
+};
+
+const settingsSlice = createSlice({
+  name: "settings",
+  initialState: DEFAULT_SETTINGS,
+  reducers: {
+    setTheme(state, action: PayloadAction<ThemeMode>) {
+      state.theme = action.payload;
+    },
+    toggleTheme(state) {
+      state.theme = state.theme === "dark" ? "light" : "dark";
+    },
+    setBrandColor(state, action: PayloadAction<string>) {
+      state.brandColor = action.payload;
+    },
+    setAssetColor(
+      state,
+      action: PayloadAction<{ key: keyof AssetColors; value: string }>,
+    ) {
+      state.assetColors[action.payload.key] = action.payload.value;
+    },
+    setLanguage(state, action: PayloadAction<Language>) {
+      state.language = action.payload;
+    },
+    resetSettings() {
+      return DEFAULT_SETTINGS;
+    },
+  },
+});
+
+export const {
+  setTheme,
+  toggleTheme,
+  setBrandColor,
+  setAssetColor,
+  setLanguage,
+  resetSettings,
+} = settingsSlice.actions;
+
+
+
+
+
+
 
 const rootReducer = combineReducers({
   view: viewSlice.reducer,
   layout: layoutSlice.reducer,
+  settings: settingsSlice.reducer,
+  panels: panelsSlice.reducer,
 });
 
 const persistedReducer = persistReducer(
   {
     key: "rechimera-config",
-    // v2: changed `consoleCollapsed` default to true so the bottom panel
-    // starts folded. Bumping the version invalidates v1 saves.
-    version: 2,
+    version: 5,
     storage,
-    whitelist: ["view", "layout"],
+    whitelist: ["view", "layout", "settings", "panels"],
   },
   rootReducer,
 );
@@ -161,8 +356,10 @@ export type AppDispatch = typeof store.dispatch;
 export const useAppDispatch: () => AppDispatch = useDispatch;
 export const useAppSelector: TypedUseSelectorHook<RootState> = useSelector;
 
-/** Reset everything to defaults — bound to a "Reset Layout" menu item. */
+
 export function resetAll(dispatch: AppDispatch) {
   dispatch(resetView());
   dispatch(resetLayout());
+  dispatch(resetSettings());
+  dispatch(resetPanels());
 }

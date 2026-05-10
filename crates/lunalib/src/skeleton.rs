@@ -1,54 +1,23 @@
-//! Skeleton parser — reads section `0xD300` of a moby IGHW chunk.
-//!
-//! Layout per [InsomniaToolset/animation.hpp](../../../../../InsomniaToolset/common/include/insomnia/classes/moby.hpp)
-//! `Skeleton` and `Bone`:
-//!
-//! - section `0xD300` — single 0x20-byte `Skeleton` header:
-//!   - `0x00` u16 numBones
-//!   - `0x02` u16 rootBone
-//!   - `0x04` u32 bonesPtr           — file-relative pointer to `Bone[numBones]`
-//!   - `0x08` u32 tms0Ptr            — pointer to `Matrix44[numBones]` (bind pose)
-//!   - `0x0C` u32 tms1Ptr            — pointer to `Matrix44[numBones]` (inverse bind / world)
-//!   - `0x10` u16 scaleShift
-//!   - `0x12` u16 translationShift
-//!   - `0x14` u32 spuRefPoseBuffer   — pointer (unused for our needs)
-//!   - `0x18` u32 unkOffset
-//!   - `0x1C` padding to 0x20
-//!
-//! - `Bone` is 8 bytes:
-//!   - `0x00` u16 flags          — bit 0 = FLAG_DONT_INHERIT_SCALE
-//!   - `0x02` i16 parentIndex    — -1 for root
-//!   - `0x04` u16 child          — first child bone index (0xFFFF = none)
-//!   - `0x06` u16 sibling        — next sibling at same depth (0xFFFF = none)
-//!
-//! Phase 1 just exposes the hierarchy + the two matrix arrays. Skin weights
-//! and animation playback layer on top in later phases.
-
 use std::io::{Read, Seek};
 
 use crate::error::Result;
 use crate::igfile::IgFile;
+use crate::math::mat4_mul_row_major;
 
-/// Section ID where the skeleton header lives inside a moby IGHW chunk.
 pub const SECT_MOBY_SKELETON: u32 = 0xD300;
 
 const BONE_BYTES: u64 = 0x08;
 
-/// Sanity cap on bone count. Insomniac PS3 mobys have at most a few hundred
-/// bones (humans / chimeran are ~100, big bosses maybe ~300). Anything above
-/// this is overwhelmingly likely to be misinterpreted bytes — either wrong
-/// section layout or wrong endianness — so we bail with `Ok(None)` rather
-/// than allocate gigabytes and seek into garbage.
 const MAX_REASONABLE_BONES: usize = 4096;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Bone {
     pub flags: u16,
-    /// `-1` for the root bone.
+
     pub parent_index: i16,
-    /// `0xFFFF` when the bone has no children.
+
     pub child: u16,
-    /// `0xFFFF` when there's no next sibling.
+
     pub sibling: u16,
 }
 
@@ -59,7 +28,7 @@ impl Bone {
     pub fn dont_inherit_scale(self) -> bool {
         self.flags & 0x01 != 0
     }
-    /// Convenience: clean parent option (`None` for root, `Some(idx)` else).
+
     pub fn parent(self) -> Option<usize> {
         if self.parent_index < 0 {
             None
@@ -73,13 +42,14 @@ impl Bone {
 pub struct Skeleton {
     pub root_bone: u16,
     pub bones: Vec<Bone>,
-    /// `tms0` array — typically the local bind-pose transform per bone
-    /// (column-major float4x4 as stored in the file). Empty when the
-    /// pointer is null.
+
     pub bind_local: Vec<[f32; 16]>,
-    /// `tms1` array — typically the world-space inverse bind-pose used to
-    /// undo the rest-pose when applying skinning.
+
     pub bind_world_inverse: Vec<[f32; 16]>,
+
+    pub tms0_col: Vec<[f32; 16]>,
+
+    pub tms1_col: Vec<[f32; 16]>,
     pub scale_shift: u16,
     pub translation_shift: u16,
 }
@@ -90,15 +60,17 @@ impl Skeleton {
     }
 }
 
-/// Parse the skeleton from a per-moby IGHW chunk. Returns `Ok(None)` when
-/// section `0xD300` isn't present (props with no rig — e.g. crates) so the
-/// moby decoder can still succeed for rigless mobys.
 pub fn read_skeleton<R: Read + Seek>(ig: &mut IgFile<R>) -> Result<Option<Skeleton>> {
     let Some(section) = ig.section(SECT_MOBY_SKELETON) else {
         return Ok(None);
     };
-    let header_off = u64::from(section.offset);
+    read_skeleton_at(ig, u64::from(section.offset))
+}
 
+pub fn read_skeleton_at<R: Read + Seek>(
+    ig: &mut IgFile<R>,
+    header_off: u64,
+) -> Result<Option<Skeleton>> {
     ig.stream.seek_to(header_off + 0x00)?;
     let num_bones = ig.stream.read_u16()? as usize;
     let root_bone = ig.stream.read_u16()?;
@@ -112,9 +84,7 @@ pub fn read_skeleton<R: Read + Seek>(ig: &mut IgFile<R>) -> Result<Option<Skelet
         return Ok(None);
     }
     if num_bones > MAX_REASONABLE_BONES {
-        // Malformed skeleton header — most likely the section layout for
-        // R2/R3 differs from the InsomniaToolset C++ struct we ported.
-        // Bail rather than allocate gigabytes / seek into garbage.
+
         eprintln!(
             "warn: skeleton numBones={num_bones} exceeds cap {MAX_REASONABLE_BONES} — \
              skipping skeleton (file layout may differ from spec)"
@@ -122,9 +92,6 @@ pub fn read_skeleton<R: Read + Seek>(ig: &mut IgFile<R>) -> Result<Option<Skelet
         return Ok(None);
     }
 
-    // Read Bone[numBones]. We seek-and-read per bone; if any seek lands past
-    // EOF the inner reader returns ErrorKind::UnexpectedEof which propagates
-    // as Error::Io, killing the whole moby parse. Catch at call site.
     let mut bones = Vec::with_capacity(num_bones);
     for i in 0..num_bones {
         ig.stream.seek_to(bones_ptr + (i as u64) * BONE_BYTES)?;
@@ -140,20 +107,55 @@ pub fn read_skeleton<R: Read + Seek>(ig: &mut IgFile<R>) -> Result<Option<Skelet
         });
     }
 
-    // Matrix arrays are best-effort — if either pointer is bad, return what
-    // we have rather than failing the whole skeleton.
-    let bind_local = read_matrix_array(ig, tms0_ptr, num_bones).unwrap_or_default();
-    let bind_world_inverse =
-        read_matrix_array(ig, tms1_ptr, num_bones).unwrap_or_default();
+    let tms0_raw = read_matrix_array(ig, tms0_ptr, num_bones).unwrap_or_default();
+    let tms1_raw = read_matrix_array(ig, tms1_ptr, num_bones).unwrap_or_default();
+
+    let mut bind_local = Vec::with_capacity(num_bones);
+    if tms0_raw.len() == num_bones && tms1_raw.len() == num_bones {
+        for i in 0..num_bones {
+            let parent = bones[i].parent_index;
+            let is_root = parent < 0
+                || (parent as usize) >= num_bones
+                || (parent as usize) == i;
+            let local_col = if is_root {
+                tms0_raw[i]
+            } else {
+                mat4_mul_row_major(&tms0_raw[i], &tms1_raw[parent as usize])
+            };
+            bind_local.push(clean_rigid_col_major(local_col));
+        }
+    }
+
+    let bind_world_inverse: Vec<[f32; 16]> =
+        tms1_raw.iter().copied().map(clean_rigid_col_major).collect();
+    let tms0_col: Vec<[f32; 16]> =
+        tms0_raw.iter().copied().map(clean_rigid_col_major).collect();
+    let tms1_col: Vec<[f32; 16]> =
+        tms1_raw.iter().copied().map(clean_rigid_col_major).collect();
 
     Ok(Some(Skeleton {
         root_bone,
         bones,
         bind_local,
         bind_world_inverse,
+        tms0_col,
+        tms1_col,
         scale_shift,
         translation_shift,
     }))
+}
+
+fn clean_rigid_col_major(mut m: [f32; 16]) -> [f32; 16] {
+    for v in m.iter_mut() {
+        if !v.is_finite() {
+            *v = 0.0;
+        }
+    }
+    m[3] = 0.0;
+    m[7] = 0.0;
+    m[11] = 0.0;
+    m[15] = 1.0;
+    m
 }
 
 fn read_matrix_array<R: Read + Seek>(

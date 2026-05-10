@@ -1,40 +1,76 @@
-//! Parser for Insomniac's IGHW asset containers used on PS3.
-//!
-//! Initial scope: read the `assetlookup.dat` table for Resistance 2/3 and the
-//! Ratchet & Clank Future series. Higher-level decoders (mobys, ties, textures,
-//! shaders, zones) come later — see the corresponding C# parser in
-//! `LibLunacy/` and the C++ struct definitions in
-//! `InsomniaToolset/common/include/insomnia/classes/`.
+
+
 
 pub mod animation;
 pub mod assetlookup;
 pub mod error;
+pub mod gltf_export;
+
+
+pub const MAX_ASSET_SIZE: u32 = 512 * 1024 * 1024;
+
+
+pub const MAX_SECTION_ENTRIES: usize = 4 * 1024 * 1024;
 pub mod gameplay;
+pub mod gameplay_old;
+pub mod gameplay_rfom;
 pub mod igfile;
+pub mod level_layout;
 pub mod math;
 pub mod moby;
+pub mod moby_old;
+pub mod moby_rfom;
 pub mod shader;
+pub mod shader_old;
+pub mod shader_rfom;
 pub mod skeleton;
 pub mod sound;
 pub mod stream;
 pub mod texture;
+pub mod texture_old;
+pub mod texture_rfom;
 pub mod tie;
+pub mod tie_inst_rfom;
+pub mod tie_old;
+pub mod tie_rfom;
+pub mod region_rfom;
 pub mod zone;
+pub mod zone_old;
 
 pub use animation::{
-    decode_animation, read_animation_control, read_animation_frame, read_animation_header,
-    AnimationControl, AnimationHeader, DecodedBone, DecodedClip, TrackKind, TrackMask,
+    animation_section_offsets, decode_animation, decode_animation_with_skel_bones,
+    decode_animation_with_skeleton, read_animation_control, read_animation_frame,
+    read_animation_header, read_animation_header_at, AnimationControl, AnimationHeader,
+    DecodedBone, DecodedClip, TrackKind, TrackMask,
 };
 pub use assetlookup::{AssetKind, AssetLookup, AssetPointer};
 pub use error::{Error, Result};
+pub use gltf_export::{
+    write_moby_geometry_glb, write_moby_glb_full, write_moby_glb_with_animations,
+};
 pub use gameplay::{read_gameplay, GameplayLayout, MobyInstance, Region};
 pub use igfile::{IgFile, SectionHeader, Version};
+pub use level_layout::{detect_layout, LevelLayout};
 pub use moby::{
     read_moby_assets, read_moby_assets_streaming, read_moby_assets_with_total, MobyAsset,
     MobyBangle, MobyMesh,
 };
+pub use gameplay_old::read_gameplay_old;
+pub use gameplay_rfom::read_gameplay_rfom;
+pub use tie_inst_rfom::read_tie_instances_rfom;
+pub use moby_old::read_moby_assets_old;
+pub use moby_rfom::read_moby_assets_rfom;
+pub use shader_old::read_shaders_old;
+pub use shader_rfom::read_shaders_rfom;
+pub use texture::decode_format;
+pub use texture_old::{read_textures_old, texture_to_png};
+pub use texture_rfom::{read_textures_rfom, texture_rfom_to_png};
+pub use tie_old::read_tie_assets_old;
+pub use tie_rfom::read_tie_assets_rfom;
+pub use zone_old::read_zones_old;
+pub use region_rfom::read_regions_rfom;
 pub use shader::{read_shaders, ShaderInfo};
-pub use skeleton::{read_skeleton, Bone, Skeleton};
+pub use skeleton::{read_skeleton, read_skeleton_at, Bone, Skeleton};
 pub use sound::{
     bank_pair_for, decode_adpcm_block, decode_adpcm_stream, dump_sound_bank_info,
     extract_bank_sounds, extract_raw_streaming, extract_stream_sounds, list_raw_streaming,
@@ -43,7 +79,8 @@ pub use sound::{
 };
 pub use stream::{Endian, StreamHelper};
 pub use texture::{
-    bulk_extract_pngs, downsample_rgba, encode_png, read_textures, read_textures_streaming,
+    bulk_extract_pngs, downsample_png_to, downsample_rgba, encode_png, read_textures,
+    read_textures_streaming,
     read_textures_with_total, TexFormat, Texture,
 };
 pub use tie::{

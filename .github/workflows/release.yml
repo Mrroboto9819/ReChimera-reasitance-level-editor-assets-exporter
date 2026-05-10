@@ -86,7 +86,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.check-version.outputs.version }}
         run: |
-          BODY=$(cat <<EOF
+          # Build the release body. If RELEASE_NOTES.md exists at the repo
+          # root we use it verbatim — that file is hand-curated per release
+          # and contains the changelog, game-support table, and any help-
+          # wanted / acknowledgement sections for this push. If it's
+          # missing we fall back to a minimal auto-generated body so the
+          # workflow doesn't break on bare release tags.
+          if [ -f RELEASE_NOTES.md ]; then
+            BODY=$(cat RELEASE_NOTES.md)
+            echo "Using RELEASE_NOTES.md ($(wc -l < RELEASE_NOTES.md) lines)"
+          else
+            BODY=$(cat <<EOF
           **ReChimera v$VERSION** — built from \`${{ github.sha }}\` on \`main\`.
 
           Cross-platform desktop binaries built by the release workflow.
@@ -101,6 +111,8 @@ jobs:
           extracted level folders.
           EOF
           )
+            echo "RELEASE_NOTES.md missing — used fallback template"
+          fi
           RELEASE_ID=$(gh api \
             --method POST \
             -H "Accept: application/vnd.github+json" \
@@ -176,6 +188,7 @@ jobs:
         run: bun install
 
       - name: Build & upload to release
+        id: tauri_build
         uses: tauri-apps/tauri-action@v0.6.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -196,6 +209,46 @@ jobs:
           # set yet — the file is just a manifest.
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+      # Per-platform Discord notification. `if: always()` so we report
+      # failures too. Secret `DISCORD_WEBHOOK_URL` is set in repo settings;
+      # if missing the step is skipped silently so forks/private builds
+      # without the webhook keep working.
+      - name: Notify Discord (per-platform build status)
+        if: always() && env.DISCORD_WEBHOOK_URL != ''
+        shell: bash
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PLATFORM: ${{ matrix.platform }}
+          ARGS: ${{ matrix.args }}
+          BUILD_STATUS: ${{ steps.tauri_build.outcome }}
+          VERSION: ${{ needs.check-version.outputs.version }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          PLAT_LABEL="$PLATFORM"
+          if [ -n "$ARGS" ]; then
+            PLAT_LABEL="$PLATFORM ($ARGS)"
+          fi
+          if [ "$BUILD_STATUS" = "success" ]; then
+            TITLE_PREFIX="✅"
+            COLOR=5763719
+          elif [ "$BUILD_STATUS" = "failure" ]; then
+            TITLE_PREFIX="❌"
+            COLOR=15548997
+          else
+            TITLE_PREFIX="⚠️"
+            COLOR=16776960
+          fi
+          PAYLOAD=$(jq -n \
+            --arg title "$TITLE_PREFIX ReChimera v$VERSION — $PLAT_LABEL" \
+            --arg desc "Build $BUILD_STATUS" \
+            --arg url "$RUN_URL" \
+            --argjson color "$COLOR" \
+            '{embeds: [{title: $title, description: $desc, url: $url, color: $color}]}')
+          curl -sS -X POST \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "$DISCORD_WEBHOOK_URL" || echo "Discord notify failed (non-blocking)"
 
   # Once every matrix job has uploaded its bundles, flip the draft to a
   # real published release. If any build failed, the release stays as a
@@ -219,3 +272,24 @@ jobs:
             "/repos/${{ github.repository }}/releases/$RELEASE_ID" \
             -F draft=false
           echo "Release v${{ needs.check-version.outputs.version }} published."
+
+      # Final Discord notification once the release flips from draft to
+      # published. Only runs if all matrix builds succeeded (this job's
+      # `needs: build` enforces that).
+      - name: Notify Discord (release published)
+        if: env.DISCORD_WEBHOOK_URL != ''
+        shell: bash
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          VERSION: ${{ needs.check-version.outputs.version }}
+          RELEASE_URL: https://github.com/${{ github.repository }}/releases/tag/v${{ needs.check-version.outputs.version }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg title "🚀 ReChimera v$VERSION released" \
+            --arg desc "All platform bundles built and the release is now public. Click through for installers." \
+            --arg url "$RELEASE_URL" \
+            '{embeds: [{title: $title, description: $desc, url: $url, color: 3447003}]}')
+          curl -sS -X POST \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "$DISCORD_WEBHOOK_URL" || echo "Discord notify failed (non-blocking)"

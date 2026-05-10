@@ -1,7 +1,4 @@
-//! Walks every shader in `shaders.dat`, then samples the per-asset shader
-//! tables (moby/tie/zone) to verify the index→TUID→albedo path.
-//!
-//!   cargo run -p lunalib --example dump_shaders -- <path/to/level/folder>
+
 
 use std::env;
 use std::path::Path;
