@@ -210,46 +210,6 @@ jobs:
           includeUpdaterJson: true
           args: ${{ matrix.args }}
 
-      # Per-platform Discord notification. `if: always()` so we report
-      # failures too. Secret `DISCORD_WEBHOOK_URL` is set in repo settings;
-      # if missing the step is skipped silently so forks/private builds
-      # without the webhook keep working.
-      - name: Notify Discord (per-platform build status)
-        if: always() && env.DISCORD_WEBHOOK_URL != ''
-        shell: bash
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          PLATFORM: ${{ matrix.platform }}
-          ARGS: ${{ matrix.args }}
-          BUILD_STATUS: ${{ steps.tauri_build.outcome }}
-          VERSION: ${{ needs.check-version.outputs.version }}
-          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          PLAT_LABEL="$PLATFORM"
-          if [ -n "$ARGS" ]; then
-            PLAT_LABEL="$PLATFORM ($ARGS)"
-          fi
-          if [ "$BUILD_STATUS" = "success" ]; then
-            TITLE_PREFIX="✅"
-            COLOR=5763719
-          elif [ "$BUILD_STATUS" = "failure" ]; then
-            TITLE_PREFIX="❌"
-            COLOR=15548997
-          else
-            TITLE_PREFIX="⚠️"
-            COLOR=16776960
-          fi
-          PAYLOAD=$(jq -n \
-            --arg title "$TITLE_PREFIX ReChimera v$VERSION — $PLAT_LABEL" \
-            --arg desc "Build $BUILD_STATUS" \
-            --arg url "$RUN_URL" \
-            --argjson color "$COLOR" \
-            '{embeds: [{title: $title, description: $desc, url: $url, color: $color}]}')
-          curl -sS -X POST \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD" \
-            "$DISCORD_WEBHOOK_URL" || echo "Discord notify failed (non-blocking)"
-
   # Once every matrix job has uploaded its bundles, flip the draft to a
   # real published release. If any build failed, the release stays as a
   # draft so we don't ship a half-built version. (`fail-fast: false`
@@ -289,6 +249,34 @@ jobs:
             --arg desc "All platform bundles built and the release is now public. Click through for installers." \
             --arg url "$RELEASE_URL" \
             '{embeds: [{title: $title, description: $desc, url: $url, color: 3447003}]}')
+          curl -sS -X POST \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "$DISCORD_WEBHOOK_URL" || echo "Discord notify failed (non-blocking)"
+
+  # If any matrix build fails, `publish-release` is gated off and we'd
+  # otherwise hear nothing. This job runs on the build-job result and
+  # only fires the failure ping when at least one matrix entry didn't
+  # succeed. Single notification, end of run, never overlaps with the
+  # success ping above.
+  notify-build-failure:
+    needs: [check-version, build]
+    if: failure() || cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Discord (build failed)
+        if: env.DISCORD_WEBHOOK_URL != ''
+        shell: bash
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          VERSION: ${{ needs.check-version.outputs.version }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg title "❌ ReChimera v$VERSION — build failed" \
+            --arg desc "One or more platforms failed to build. Click through for the workflow log." \
+            --arg url "$RUN_URL" \
+            '{embeds: [{title: $title, description: $desc, url: $url, color: 15548997}]}')
           curl -sS -X POST \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD" \
