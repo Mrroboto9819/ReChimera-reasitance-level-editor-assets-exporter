@@ -25,24 +25,36 @@ import storage from "redux-persist/lib/storage";
 export interface ViewSettingsState {
   showMobys: boolean;
   showTies: boolean;
+  showDetails: boolean;
+  showLights: boolean;
+  showEnvSamplers: boolean;
   showUFrags: boolean;
   showUFragBounds: boolean;
   showGrid: boolean;
   showAxes: boolean;
-  
+
   showStats: boolean;
-  
+
 
 
   showBones: boolean;
-  
+
 
   playAnimation: boolean;
+
+  showCollision: boolean;
+
+  showSkyDome: boolean;
+
+  skyboxTextureId: number | null;
 }
 
 const DEFAULT_VIEW: ViewSettingsState = {
   showMobys: true,
   showTies: true,
+  showDetails: true,
+  showLights: true,
+  showEnvSamplers: false,
   showUFrags: true,
   showUFragBounds: false,
   showGrid: true,
@@ -50,14 +62,26 @@ const DEFAULT_VIEW: ViewSettingsState = {
   showStats: false,
   showBones: false,
   playAnimation: true,
+  showCollision: false,
+  showSkyDome: true,
+  skyboxTextureId: null,
 };
+
+export type BooleanViewKey = {
+  [K in keyof ViewSettingsState]: ViewSettingsState[K] extends boolean
+    ? K
+    : never;
+}[keyof ViewSettingsState];
 
 const viewSlice = createSlice({
   name: "view",
   initialState: DEFAULT_VIEW,
   reducers: {
-    toggleView(state, action: PayloadAction<keyof ViewSettingsState>) {
+    toggleView(state, action: PayloadAction<BooleanViewKey>) {
       state[action.payload] = !state[action.payload];
+    },
+    setSkybox(state, action: PayloadAction<number | null>) {
+      state.skyboxTextureId = action.payload;
     },
     resetView() {
       return DEFAULT_VIEW;
@@ -117,7 +141,7 @@ const layoutSlice = createSlice({
   },
 });
 
-export const { toggleView, resetView } = viewSlice.actions;
+export const { toggleView, resetView, setSkybox } = viewSlice.actions;
 export const {
   setHierarchyPct,
   setInspectorPct,
@@ -245,15 +269,23 @@ export type ThemeMode = "dark" | "light";
 export type Language = "en" | "es" | "fr" | "zh" | "ru";
 
 export interface AssetColors {
-  
+
   moby: string;
-  
+
   tie: string;
-  
+
+  detail: string;
+
+  light: string;
+
+  envsampler: string;
+
+  sky: string;
+
   ufrag: string;
-  
+
   selection: string;
-  
+
 
   proxy: string;
 }
@@ -271,6 +303,10 @@ const DEFAULT_SETTINGS: SettingsState = {
   assetColors: {
     moby: "#ff8a3d",
     tie: "#3dd0ff",
+    detail: "#b48cff",
+    light: "#ffd83d",
+    envsampler: "#46e0c8",
+    sky: "#5d9bff",
     ufrag: "#97de82",
     selection: "#3eb1ff",
     proxy: "#8a8a8a",

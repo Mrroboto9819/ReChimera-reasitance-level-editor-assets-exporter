@@ -50,9 +50,17 @@ interface CacheLibraryModalProps {
   initialSoundKey?: string | null;
   sounds?: SoundEntry[];
   onRequestExtract?: () => void;
+  onUseAsSkybox?: (textureId: number) => void;
+  currentSkyboxTextureId?: number | null;
 }
 
-export type LibraryFilter = "moby" | "tie" | "sound" | "texture";
+export type LibraryFilter =
+  | "moby"
+  | "tie"
+  | "detail"
+  | "sound"
+  | "texture"
+  | "sky";
 
 interface MobyRow {
   entry: CacheManifestEntry;
@@ -104,6 +112,8 @@ export function CacheLibraryModal({
   initialSoundKey,
   sounds,
   onRequestExtract,
+  onUseAsSkybox,
+  currentSkyboxTextureId,
 }: CacheLibraryModalProps) {
   const [manifest, setManifest] = useState<CacheManifest | null>(null);
   const [manifestError, setManifestError] = useState<string | null>(null);
@@ -200,7 +210,7 @@ export function CacheLibraryModal({
   
   
   const grouped = useMemo(() => {
-    if (filter === "sound" || filter === "texture") return [];
+    if (filter !== "moby" && filter !== "tie" && filter !== "detail") return [];
     if (!manifest) return [];
     const needle = search.trim().toLowerCase();
     const rows: MobyRow[] = [];
@@ -274,11 +284,17 @@ export function CacheLibraryModal({
     if (!open || !initialAssetTuid || !manifest) return;
     const entry = manifest.entries.find(
       (e) =>
-        (e.kind === "moby" || e.kind === "tie") && e.tuid === initialAssetTuid,
+        (e.kind === "moby" ||
+          e.kind === "tie" ||
+          e.kind === "detail" ||
+          e.kind === "sky") &&
+        e.tuid === initialAssetTuid,
     );
     if (entry) {
       setFilter(entry.kind as LibraryFilter);
-      setSelectedTuid(initialAssetTuid);
+      if (entry.kind !== "sky") {
+        setSelectedTuid(initialAssetTuid);
+      }
     }
   }, [open, initialAssetTuid, manifest]);
 
@@ -835,7 +851,8 @@ export function CacheLibraryModal({
   
   
   const previewInstance: Instance | null =
-    selectedAsset && (filter === "moby" || filter === "tie")
+    selectedAsset &&
+    (filter === "moby" || filter === "tie" || filter === "detail")
       ? {
           tuid: `${selectedAsset.asset_tuid}#cache`,
           asset_tuid: selectedAsset.asset_tuid,
@@ -855,6 +872,7 @@ export function CacheLibraryModal({
     ? {
         moby_assets: filter === "moby" ? [selectedAsset] : [],
         tie_assets: filter === "tie" ? [selectedAsset] : [],
+        detail_assets: filter === "detail" ? [selectedAsset] : [],
         ufrag_meshes: [],
         textures: [...selectedTextures.keys()].map((id) => ({
           id,
@@ -986,6 +1004,15 @@ export function CacheLibraryModal({
             <button
               type="button"
               role="tab"
+              aria-selected={filter === "detail"}
+              className={`cache-library-tab cache-library-tab--detail ${filter === "detail" ? "active" : ""}`}
+              onClick={() => setFilter("detail")}
+            >
+              Details
+            </button>
+            <button
+              type="button"
+              role="tab"
               aria-selected={filter === "texture"}
               className={`cache-library-tab ${filter === "texture" ? "active" : ""}`}
               onClick={() => setFilter("texture")}
@@ -1000,6 +1027,15 @@ export function CacheLibraryModal({
               onClick={() => setFilter("sound")}
             >
               Sounds
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={filter === "sky"}
+              className={`cache-library-tab cache-library-tab--sky ${filter === "sky" ? "active" : ""}`}
+              onClick={() => setFilter("sky")}
+            >
+              Sky
             </button>
           </div>
           <button
@@ -1024,7 +1060,7 @@ export function CacheLibraryModal({
             </span>
           )}
           <Button onClick={onClose}>Close</Button>
-          {(filter === "moby" || filter === "tie") &&
+          {(filter === "moby" || filter === "tie" || filter === "detail") &&
             (assetMulti.size > 1 ? (
               <Button
                 variant="primary"
@@ -1084,6 +1120,19 @@ export function CacheLibraryModal({
                 >
                   Save PNG
                 </Button>
+                {onUseAsSkybox && (
+                  <Button
+                    onClick={() => {
+                      const id = selectedTextureId
+                        ? parseInt(selectedTextureId, 10)
+                        : NaN;
+                      if (Number.isFinite(id)) onUseAsSkybox(id);
+                    }}
+                    disabled={!selectedTextureId}
+                  >
+                    Use as skybox
+                  </Button>
+                )}
               </>
             ))}
           {filter === "sound" &&
@@ -1118,7 +1167,7 @@ export function CacheLibraryModal({
         }`}
       >
         <div className="cache-library-list">
-          {(filter === "moby" || filter === "tie") && (
+          {(filter === "moby" || filter === "tie" || filter === "detail") && (
             <div className="cache-library-toolbar">
               <button
                 type="button"
@@ -1178,7 +1227,10 @@ export function CacheLibraryModal({
             initialAssetTuid &&
             !manifest.entries.some(
               (e) =>
-                (e.kind === "moby" || e.kind === "tie") &&
+                (e.kind === "moby" ||
+                  e.kind === "tie" ||
+                  e.kind === "detail" ||
+                  e.kind === "sky") &&
                 e.tuid === initialAssetTuid,
             ) && (
               <div className="cache-library-extract-cta">
@@ -1200,12 +1252,16 @@ export function CacheLibraryModal({
                 )}
               </div>
             )}
-          {manifest && totalShown === 0 && (
-            <div className="dim small" style={{ padding: 12 }}>
-              No mobys match this search.
-            </div>
-          )}
-          {(filter === "moby" || filter === "tie") && (
+          {manifest &&
+            totalShown === 0 &&
+            (filter === "moby" ||
+              filter === "tie" ||
+              filter === "detail") && (
+              <div className="dim small" style={{ padding: 12 }}>
+                No {filter === "moby" ? "mobys" : filter === "tie" ? "ties" : "details"} match this search.
+              </div>
+            )}
+          {(filter === "moby" || filter === "tie" || filter === "detail") && (
             <ul className="cache-library-rows">
               {grouped.map((bucket) => (
                 <li key={bucket.group} className="cache-library-bucket">
@@ -1473,14 +1529,17 @@ export function CacheLibraryModal({
           })()}
         </div>
         <div className="cache-library-preview">
-          {(filter === "moby" || filter === "tie") && !selectedAsset && !loadingAsset && (
-            <div className="cache-library-empty dim">
-              Select a moby on the left to preview it.
-            </div>
-          )}
-          {(filter === "moby" || filter === "tie") && loadingAsset && (
-            <div className="cache-library-empty dim">Loading asset…</div>
-          )}
+          {(filter === "moby" || filter === "tie" || filter === "detail") &&
+            !selectedAsset &&
+            !loadingAsset && (
+              <div className="cache-library-empty dim">
+                Select a {filter === "moby" ? "moby" : filter === "tie" ? "tie" : "detail cluster"} on the left to preview it.
+              </div>
+            )}
+          {(filter === "moby" || filter === "tie" || filter === "detail") &&
+            loadingAsset && (
+              <div className="cache-library-empty dim">Loading asset…</div>
+            )}
 
           {filter === "texture" && !selectedTextureId && (
             <div className="cache-library-empty dim">
@@ -1509,7 +1568,33 @@ export function CacheLibraryModal({
             </div>
           )}
 
-          {(filter === "moby" || filter === "tie") && selectedAsset && (
+          {filter === "sky" && (
+            <SkyTexturePanel
+              folder={folder}
+              currentSkyboxTextureId={currentSkyboxTextureId ?? null}
+              onPickTexture={() => setFilter("texture")}
+              onClearSkybox={() => onUseAsSkybox?.(-1)}
+              onExportPng={async () => {
+                if (currentSkyboxTextureId == null || !folder) return;
+                const out = (await saveDialog({
+                  defaultPath: `skybox_${currentSkyboxTextureId}.png`,
+                  filters: [{ name: "PNG", extensions: ["png"] }],
+                })) as string | null;
+                if (out) await exportTexturePng(folder, currentSkyboxTextureId, out);
+              }}
+              onExportDds={async () => {
+                if (currentSkyboxTextureId == null || !folder) return;
+                const out = (await saveDialog({
+                  defaultPath: `skybox_${currentSkyboxTextureId}.dds`,
+                  filters: [{ name: "DDS", extensions: ["dds"] }],
+                })) as string | null;
+                if (out) await exportTextureDds(folder, currentSkyboxTextureId, out);
+              }}
+            />
+          )}
+
+          {(filter === "moby" || filter === "tie" || filter === "detail") &&
+            selectedAsset && (
             <>
               {(() => {
                 const idx = selectedTuid
@@ -1639,7 +1724,9 @@ export function CacheLibraryModal({
       {fullscreen && (
         <div className="cache-fullscreen" role="dialog" aria-modal="true">
           <div className="cache-fullscreen-toolbar">
-            {(filter === "moby" || filter === "tie") && (
+            {(filter === "moby" ||
+              filter === "tie" ||
+              filter === "detail") && (
               <span className="dim small mono">
                 {selectedAsset?.name || selectedAsset?.asset_tuid}
               </span>
@@ -1685,16 +1772,19 @@ export function CacheLibraryModal({
             </button>
           </div>
           <div className="cache-fullscreen-body">
-            {(filter === "moby" || filter === "tie") && selectedAsset && (
-              <AssetPreview
-                instance={previewInstance}
-                meshes={previewMeshes}
-                textureBlobs={selectedTextures.size > 0 ? selectedTextures : null}
-                cacheFolder={folder ?? undefined}
-                exportPicks={previewPicks}
-                onExportPicksChange={setPreviewPicks}
-              />
-            )}
+            {(filter === "moby" ||
+              filter === "tie" ||
+              filter === "detail") &&
+              selectedAsset && (
+                <AssetPreview
+                  instance={previewInstance}
+                  meshes={previewMeshes}
+                  textureBlobs={selectedTextures.size > 0 ? selectedTextures : null}
+                  cacheFolder={folder ?? undefined}
+                  exportPicks={previewPicks}
+                  onExportPicksChange={setPreviewPicks}
+                />
+              )}
             {filter === "texture" && textureBlobUrl && (
               <img
                 src={textureBlobUrl}
@@ -1706,6 +1796,127 @@ export function CacheLibraryModal({
         </div>
       )}
     </Modal>
+  );
+}
+
+function SkyTexturePanel({
+  folder,
+  currentSkyboxTextureId,
+  onPickTexture,
+  onClearSkybox,
+  onExportPng,
+  onExportDds,
+}: {
+  folder: string | null;
+  currentSkyboxTextureId: number | null;
+  onPickTexture: () => void;
+  onClearSkybox: () => void;
+  onExportPng: () => void | Promise<void>;
+  onExportDds: () => void | Promise<void>;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!folder || currentSkyboxTextureId == null) {
+      setUrl(null);
+      return;
+    }
+    let cancelled = false;
+    let created: string | null = null;
+    readCachedBytes(folder, `textures/${currentSkyboxTextureId}.png`)
+      .then((bytes) => {
+        if (cancelled) return;
+        const blob = new Blob([bytes as ArrayBuffer], { type: "image/png" });
+        created = URL.createObjectURL(blob);
+        setUrl(created);
+      })
+      .catch(() => {
+        if (!cancelled) setUrl(null);
+      });
+    return () => {
+      cancelled = true;
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [folder, currentSkyboxTextureId]);
+
+  return (
+    <div
+      className="cache-sky-panel"
+      style={{
+        padding: 16,
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+        height: "100%",
+        minHeight: 0,
+      }}
+    >
+      <div>
+        <h3 style={{ margin: "0 0 4px" }}>Skybox image</h3>
+        <p className="dim small" style={{ margin: 0 }}>
+          Pick any cached texture as the skybox. It applies as the scene
+          background (equirectangular mapping) and you can save it as PNG or
+          DDS.
+        </p>
+      </div>
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          border: "1px solid var(--border-subtle, #2a2d33)",
+          borderRadius: 6,
+          background: "#0a0c10",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          overflow: "hidden",
+        }}
+      >
+        {currentSkyboxTextureId == null ? (
+          <span className="dim">No skybox texture set</span>
+        ) : url ? (
+          <img
+            src={url}
+            alt={`skybox ${currentSkyboxTextureId}`}
+            draggable={false}
+            onDragStart={(e) => e.preventDefault()}
+            style={{
+              maxWidth: "100%",
+              maxHeight: "100%",
+              objectFit: "contain",
+              imageRendering: "auto",
+            }}
+          />
+        ) : (
+          <span className="dim small">Loading…</span>
+        )}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
+        <Button onClick={onPickTexture}>
+          {currentSkyboxTextureId == null ? "Pick texture…" : "Change texture…"}
+        </Button>
+        {currentSkyboxTextureId != null && (
+          <>
+            <Button onClick={onClearSkybox}>Clear skybox</Button>
+            <Button icon={Download} onClick={() => void onExportPng()}>
+              Save PNG
+            </Button>
+            <Button icon={Download} onClick={() => void onExportDds()}>
+              Save DDS
+            </Button>
+            <span className="dim small mono" style={{ marginLeft: "auto" }}>
+              id {currentSkyboxTextureId}
+            </span>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 

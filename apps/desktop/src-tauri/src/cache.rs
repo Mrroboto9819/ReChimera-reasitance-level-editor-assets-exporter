@@ -461,6 +461,7 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                     "[cache] RFOM layout: read {} materials from ps3levelmain.dat",
                     map.len()
                 );
+                let _ = lunalib::probe_rfom_unknowns(level_path);
                 map
             }
             Err(e) => {
@@ -829,6 +830,121 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
             eprintln!("warn: RFOM tie read failed: {e}");
         }
         eprintln!("[cache] RFOM layout: extracted {tie_done} ties");
+
+        // RFOM also has DetailCluster (0xB300) — small static props
+        // (debris, signs, etc.) that share the V1 Vertex0 stride and
+        // meshScale convention with regular ties. Surface them under
+        // their own `kind: "detail"` so the cache modal can filter
+        // them into a dedicated tab and the viewport can color them
+        // distinctly. Geometry pipeline is identical to ties — they
+        // still feed `tie_assets_for_glb` so the per-asset GLB +
+        // texture resolution work the same.
+        let _ = lunalib::read_detail_clusters_rfom(level_path)
+            .map(|(detail_assets, _)| {
+                let _ = fs::create_dir_all(root.join("details"));
+                let mut detail_done = 0usize;
+                for asset in detail_assets {
+                    tie_assets_for_glb.push(asset.clone());
+                    let submeshes: Vec<_> = asset
+                        .meshes
+                        .into_iter()
+                        .map(|m| {
+                            let (albedo, normal, emissive) = resolve_shader_textures(
+                                &shaders,
+                                &asset.shader_tuids,
+                                m.shader_index as usize,
+                            );
+                            for id in [albedo, normal, emissive].into_iter().flatten() {
+                                needed_textures.insert(id);
+                            }
+                            mesh_dto(
+                                m.positions,
+                                m.uvs,
+                                m.indices,
+                                albedo,
+                                normal,
+                                emissive,
+                                Vec::new(),
+                                Vec::new(),
+                            )
+                        })
+                        .collect();
+                    let dto = AssetMeshesDto {
+                        asset_tuid: format!("0x{:016X}", asset.tuid),
+                        name: format!("detail_{:016X}", asset.tuid),
+                        submeshes,
+                        skeleton: None,
+                        animset_hash: None,
+                        bind_pose_inverse_offset: 0,
+                        embedded_animation_count: 0,
+                    };
+                    let file_rel = format!("details/0x{:016X}.json", asset.tuid);
+                    let path = root.join(&file_rel);
+                    if let Ok(size_bytes) = write_json(&path, &dto) {
+                        entries.push(CacheManifestEntry {
+                            kind: "detail".into(),
+                            tuid: dto.asset_tuid.clone(),
+                            name: dto.name.clone(),
+                            file: file_rel,
+                            size_bytes,
+                        });
+                    }
+                    detail_done += 1;
+                    let _ = on_event.send(CacheEvent::Item {
+                        kind: "tie",
+                        name: dto.name,
+                    });
+                }
+                eprintln!("[cache] RFOM layout: extracted {detail_done} detail clusters");
+            })
+            .map_err(|e| eprintln!("warn: RFOM detail-cluster read failed: {e}"));
+
+        match lunalib::read_skybox_rfom(level_path) {
+            Ok(Some(sky)) => {
+                let sky_dir = root.join("skybox");
+                let _ = fs::create_dir_all(&sky_dir);
+                let glb = lunalib::write_skybox_glb(&sky)
+                    .unwrap_or_default();
+                let obj = lunalib::write_skybox_obj(&sky);
+                let ply = lunalib::write_skybox_ply(&sky);
+                let json = serde_json::json!({
+                    "vertex_count": sky.vertices.len(),
+                    "triangle_count": sky.indices.len() / 3,
+                    "aabb_min": sky.aabb_min,
+                    "aabb_max": sky.aabb_max,
+                    "texture_offset": sky.texture_offset,
+                });
+
+                let glb_path = sky_dir.join("sky.glb");
+                let obj_path = sky_dir.join("sky.obj");
+                let ply_path = sky_dir.join("sky.ply");
+                let json_path = sky_dir.join("sky.json");
+                let _ = fs::write(&glb_path, &glb);
+                let _ = fs::write(&obj_path, obj.as_bytes());
+                let _ = fs::write(&ply_path, ply.as_bytes());
+                let _ = fs::write(
+                    &json_path,
+                    serde_json::to_vec_pretty(&json).unwrap_or_default(),
+                );
+
+                let glb_size = glb.len() as u64;
+                entries.push(CacheManifestEntry {
+                    kind: "sky".into(),
+                    tuid: format!("0x{:08X}", sky.texture_offset.unwrap_or(0)),
+                    name: "sky_dome".into(),
+                    file: "skybox/sky.glb".into(),
+                    size_bytes: glb_size,
+                });
+                eprintln!(
+                    "[cache] RFOM layout: wrote skybox GLB ({} verts, {} tris, {} bytes)",
+                    sky.vertices.len(),
+                    sky.indices.len() / 3,
+                    glb_size
+                );
+            }
+            Ok(None) => eprintln!("[cache] RFOM layout: no skybox sections found"),
+            Err(e) => eprintln!("warn: RFOM skybox read failed: {e}"),
+        }
     } else {
     let tie_phase_emit = |total: usize| {
         let _ = on_event.send(CacheEvent::Phase {
@@ -1730,6 +1846,42 @@ pub fn export_moby_glb_with_options(
 }
 
 #[tauri::command]
+pub fn export_skybox(
+    level_folder: String,
+    format: String,
+    out_path: String,
+) -> Result<u64, String> {
+    let root = cache_root(&level_folder);
+    let file = match format.as_str() {
+        "glb" => "skybox/sky.glb",
+        "obj" => "skybox/sky.obj",
+        "ply" => "skybox/sky.ply",
+        "json" => "skybox/sky.json",
+        other => return Err(format!("Unsupported skybox format: {other}")),
+    };
+    let src = root.join(file);
+    if !src.is_file() {
+        return Err(format!(
+            "Skybox not in cache yet ({}). Re-extract the level.",
+            file
+        ));
+    }
+    fs::copy(&src, &out_path)
+        .map_err(|e| format!("copy {} → {}: {e}", src.display(), out_path))
+}
+
+#[tauri::command]
+pub fn read_cached_skybox_meta(level_folder: String) -> Result<serde_json::Value, String> {
+    let root = cache_root(&level_folder);
+    let meta = root.join("skybox/sky.json");
+    if !meta.is_file() {
+        return Err("no skybox in cache".into());
+    }
+    let bytes = fs::read(&meta).map_err(|e| format!("read {}: {e}", meta.display()))?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("parse skybox meta: {e}"))
+}
+
+#[tauri::command]
 pub fn export_cached_moby_glb(
     level_folder: String,
     asset_tuid_hex: String,
@@ -1808,14 +1960,32 @@ fn run_export_level_glb(
         if let Some(idx) = asset_idx_by_tuid.get(&key) {
             return Ok(Some(*idx));
         }
-        let folder = if kind_name == "moby" { "mobys" } else { "ties" };
-        let json_path = cache_root.join(folder).join(format!("{}.json", asset_tuid));
-        let bytes = match fs::read(&json_path) {
+        let folder = match kind_name {
+            "moby" => "mobys",
+            "detail" => "details",
+            _ => "ties",
+        };
+        let primary = cache_root.join(folder).join(format!("{}.json", asset_tuid));
+        let bytes = match fs::read(&primary) {
             Ok(b) => b,
-            Err(_) => return Ok(None),
+            Err(_) => {
+                // Fallback: detail JSONs may have been routed to ties/ in older
+                // caches, or vice versa.
+                let alt = if folder == "details" {
+                    cache_root.join("ties").join(format!("{}.json", asset_tuid))
+                } else if folder == "ties" {
+                    cache_root.join("details").join(format!("{}.json", asset_tuid))
+                } else {
+                    primary.clone()
+                };
+                match fs::read(&alt) {
+                    Ok(b) => b,
+                    Err(_) => return Ok(None),
+                }
+            }
         };
         let dto: AssetMeshesDto = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("parse {}: {e}", json_path.display()))?;
+            .map_err(|e| format!("parse {}: {e}", primary.display()))?;
         let mut submeshes: Vec<lunalib::level_glb::LevelGlbSubmesh> =
             Vec::with_capacity(dto.submeshes.len());
         for m in &dto.submeshes {
@@ -1864,10 +2034,11 @@ fn run_export_level_glb(
         if progress % 16 == 0 {
             let _ = on_event.send(LevelGlbExportEvent::Progress { current: progress });
         }
-        if let Some(idx) = load_one("tie", &inst.asset_tuid)? {
+        let kind_name: &'static str = if inst.kind == "detail" { "detail" } else { "tie" };
+        if let Some(idx) = load_one(kind_name, &inst.asset_tuid)? {
             instances.push(lunalib::level_glb::LevelGlbInstance {
                 asset_idx: idx,
-                name: format!("tie:{}:{}", inst.name, inst.tuid),
+                name: format!("{}:{}:{}", kind_name, inst.name, inst.tuid),
                 translation: inst.position,
                 rotation: inst.quaternion,
                 scale: inst.scale,

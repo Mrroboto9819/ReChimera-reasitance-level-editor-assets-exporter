@@ -104,6 +104,7 @@ pub fn read_gameplay_rfom(level_folder: &Path) -> Result<GameplayLayout> {
     }
 
     let mut moby_instances: Vec<MobyInstance> = Vec::with_capacity(num_items as usize);
+    let mut sample_logged = 0usize;
     for i in 0..num_items {
         let base = items_ptr + (i as u64) * GAMEPLAY_INSTANCE_MOBY_SIZE;
 
@@ -116,20 +117,28 @@ pub fn read_gameplay_rfom(level_folder: &Path) -> Result<GameplayLayout> {
         ig.stream.seek_to(base + 0x3C)?;
         let moby_class_index = ig.stream.read_u16()?;
 
+        let position_m = [pos[0] * YARD_TO_M, pos[1] * YARD_TO_M, pos[2] * YARD_TO_M];
+
+        if sample_logged < 3 {
+            eprintln!(
+                "[rfom-gp-moby] [{i}] class=0x{moby_class_index:04X} raw_yards=({:.2}, {:.2}, {:.2}) → m=({:.2}, {:.2}, {:.2})",
+                pos[0], pos[1], pos[2],
+                position_m[0], position_m[1], position_m[2]
+            );
+            sample_logged += 1;
+        }
+
         moby_instances.push(MobyInstance {
             moby_tuid: u64::from(moby_class_index),
             instance_tuid: i as u64,
             name: format!("Moby_{moby_class_index:04X}_Instance_{i:04X}"),
-            position: [
-                pos[0] * YARD_TO_M,
-                pos[1] * YARD_TO_M,
-                pos[2] * YARD_TO_M,
-            ],
+            position: position_m,
             rotation: rot,
             scale: 1.0,
             group: 0,
         });
     }
+    eprintln!("[rfom-gp-moby] {} moby placements scaled to meters", moby_instances.len());
 
     Ok(GameplayLayout {
         regions: vec![Region {

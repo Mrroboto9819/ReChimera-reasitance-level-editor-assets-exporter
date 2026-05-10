@@ -23,16 +23,19 @@ const NAME_POINTER_SIZE: u64 = 0x10;
 const UFRAG_SIZE: u64 = 0x80;
 const UFRAG_VERTEX_STRIDE: usize = 0x18;
 
-/// IT's `RegionToGltf` (extract_gltf.cpp:881-884) decodes vertex
-/// positions as `R16G16B16A16_NORM`, then applies
+/// IT's `RegionToGltf` (extract_gltf.cpp:881-884) decodes V2 region
+/// vertex positions as `R16G16B16A16_NORM`, then applies
 /// `world = normalized * mul + add` where:
 ///   `mul = (0x7FFF / 0x100) * YARD_TO_M`
 ///   `add = (item.position / 0x100) * YARD_TO_M`
 ///
 /// Algebraically that simplifies to
-/// `world_xyz = (raw_i16 + position_xyz) * YARD_TO_M / 256`,
-/// so we can scale the raw `i16` directly without going through
-/// the NORM round-trip. `YARD_TO_M = 0.9144`, divisor = 256.
+/// `world_xyz = (raw_i16 + position_xyz) * YARD_TO_M / 256`.
+/// `YARD_TO_M = 0.9144`, divisor = 256.
+///
+/// This V2 path serves R2 / R3 / RCFFA / A4O. RFOM uses
+/// `region_rfom.rs` which intentionally does NOT scale (raw values
+/// match the moby/tie placement unit system on that game).
 const UFRAG_VERTEX_SCALE: f32 = 0.9144 / 256.0;
 
 #[derive(Debug, Clone)]

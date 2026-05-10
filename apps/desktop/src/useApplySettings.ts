@@ -51,10 +51,24 @@ export function useApplySettings(): void {
     const root = document.documentElement;
     root.style.setProperty("--asset-moby", colors.moby);
     root.style.setProperty("--asset-tie", colors.tie);
+    root.style.setProperty("--asset-detail", colors.detail);
+    root.style.setProperty("--asset-light", colors.light);
+    root.style.setProperty("--asset-envsampler", colors.envsampler);
+    root.style.setProperty("--asset-sky", colors.sky);
     root.style.setProperty("--asset-ufrag", colors.ufrag);
     root.style.setProperty("--asset-selection", colors.selection);
     root.style.setProperty("--asset-proxy", colors.proxy);
-  }, [colors.moby, colors.tie, colors.ufrag, colors.selection, colors.proxy]);
+  }, [
+    colors.moby,
+    colors.tie,
+    colors.detail,
+    colors.light,
+    colors.envsampler,
+    colors.sky,
+    colors.ufrag,
+    colors.selection,
+    colors.proxy,
+  ]);
 }
 
 

@@ -464,8 +464,66 @@ fn level_layout(folder: String) -> Result<LevelLayoutDto, String> {
     let mut instances = Vec::new();
     instances.extend(real_moby_layout(&folder).unwrap_or_default());
     instances.extend(real_tie_layout(&folder).unwrap_or_default());
+    instances.extend(real_light_layout(&folder).unwrap_or_default());
+    instances.extend(real_envsampler_layout(&folder).unwrap_or_default());
     let ufrags = real_ufrag_bounds(&folder).unwrap_or_default();
     Ok(LevelLayoutDto { instances, ufrags })
+}
+
+pub(crate) fn real_envsampler_layout(folder: &str) -> Option<Vec<InstanceDto>> {
+    let path = Path::new(folder);
+    if !matches!(lunalib::detect_layout(path), Ok(lunalib::LevelLayout::Rfom)) {
+        return None;
+    }
+    let probes = lunalib::read_envsamplers_rfom(path).ok()?;
+    if probes.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(probes.len());
+    for (idx, p) in probes.iter().enumerate() {
+        out.push(InstanceDto {
+            tuid: format!("0x{:016X}", p.tuid),
+            asset_tuid: format!("0x{:016X}", p.cubemap_tuid),
+            kind: "envsampler",
+            name: format!("envprobe_{:02}", idx),
+            position: p.position,
+            quaternion: [0.0, 0.0, 0.0, 1.0],
+            scale: [
+                p.half_extents[0].max(0.05),
+                p.half_extents[1].max(0.05),
+                p.half_extents[2].max(0.05),
+            ],
+        });
+    }
+    Some(out)
+}
+
+pub(crate) fn real_light_layout(folder: &str) -> Option<Vec<InstanceDto>> {
+    let path = Path::new(folder);
+    if !matches!(lunalib::detect_layout(path), Ok(lunalib::LevelLayout::Rfom)) {
+        return None;
+    }
+    let lights = lunalib::read_lights_rfom(path).ok()?;
+    if lights.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(lights.len());
+    for (idx, l) in lights.iter().enumerate() {
+        out.push(InstanceDto {
+            tuid: format!("0x{:016X}", l.tuid),
+            asset_tuid: format!("0x{:016X}", l.tuid),
+            kind: "light",
+            name: format!("light_{:02}", idx),
+            position: l.position,
+            quaternion: [0.0, 0.0, 0.0, 1.0],
+            scale: [
+                l.color[0].max(0.05),
+                l.color[1].max(0.05),
+                l.color[2].max(0.05),
+            ],
+        });
+    }
+    Some(out)
 }
 
 pub(crate) fn real_moby_layout(folder: &str) -> Option<Vec<InstanceDto>> {
@@ -507,6 +565,13 @@ pub(crate) fn real_tie_layout(folder: &str) -> Option<Vec<InstanceDto>> {
             for inst in lunalib::read_tie_instances_rfom(path).ok()? {
                 out.push(tie_instance_dto(&inst));
             }
+            if let Ok((_, detail_insts)) =
+                lunalib::read_detail_clusters_rfom(path)
+            {
+                for inst in detail_insts {
+                    out.push(detail_instance_dto(&inst));
+                }
+            }
         }
         _ => {
             for zone in read_zones(path).ok()? {
@@ -524,6 +589,18 @@ fn tie_instance_dto(inst: &lunalib::TieInstance) -> InstanceDto {
         tuid: format!("0x{:016X}", inst.instance_tuid),
         asset_tuid: format!("0x{:016X}", inst.tie_tuid),
         kind: AssetKind::Tie.name(),
+        name: inst.name.clone(),
+        position: inst.position,
+        quaternion: inst.quaternion,
+        scale: inst.scale,
+    }
+}
+
+fn detail_instance_dto(inst: &lunalib::TieInstance) -> InstanceDto {
+    InstanceDto {
+        tuid: format!("0x{:016X}", inst.instance_tuid),
+        asset_tuid: format!("0x{:016X}", inst.tie_tuid),
+        kind: "detail",
         name: inst.name.clone(),
         position: inst.position,
         quaternion: inst.quaternion,
@@ -2776,6 +2853,8 @@ fn main() {
             cache::read_cached_asset,
             cache::read_cached_bytes,
             cache::export_cached_moby_glb,
+            cache::export_skybox,
+            cache::read_cached_skybox_meta,
             cache::export_moby_glb_with_options,
             cache::list_animsets,
             cache::decode_animset_clip,

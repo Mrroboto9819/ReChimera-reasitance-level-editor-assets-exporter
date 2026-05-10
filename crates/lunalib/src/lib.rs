@@ -5,8 +5,13 @@ pub mod animation;
 pub mod assetlookup;
 pub mod error;
 pub mod dds;
+pub mod detail_rfom;
 pub mod gltf_export;
 pub mod level_glb;
+pub mod lighting_rfom;
+pub mod envsampler_rfom;
+pub mod skybox_rfom;
+pub mod rfom_probe;
 
 
 pub const MAX_ASSET_SIZE: u32 = 512 * 1024 * 1024;
@@ -60,6 +65,13 @@ pub use moby::{
 pub use gameplay_old::read_gameplay_old;
 pub use gameplay_rfom::read_gameplay_rfom;
 pub use tie_inst_rfom::read_tie_instances_rfom;
+pub use detail_rfom::read_detail_clusters_rfom;
+pub use lighting_rfom::{read_lights_rfom, LightInstance};
+pub use envsampler_rfom::{read_envsamplers_rfom, EnvSampler};
+pub use skybox_rfom::{
+    read_skybox_rfom, write_skybox_glb, write_skybox_obj, write_skybox_ply, SkyboxMesh,
+};
+pub use rfom_probe::probe_rfom_unknowns;
 pub use moby_old::read_moby_assets_old;
 pub use moby_rfom::read_moby_assets_rfom;
 pub use shader_old::read_shaders_old;

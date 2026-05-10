@@ -41,7 +41,12 @@ export type AssetKind =
   | "animset"
   | "cinematic"
   | "zone"
-  | "lighting";
+  | "lighting"
+  | "ufrag"
+  | "detail"
+  | "light"
+  | "envsampler"
+  | "sky";
 
 export interface Instance {
   
@@ -99,7 +104,7 @@ export const buildLevelManifest = (folder: string) =>
 
 
 export interface CacheManifestEntry {
-  kind: "moby" | "tie" | "texture" | "ufrag";
+  kind: "moby" | "tie" | "detail" | "texture" | "ufrag" | "sky";
   tuid: string;
   name: string;
   file: string;
@@ -257,6 +262,26 @@ export const exportMobyGlbWithOptions = (
 export const writeBytes = (path: string, bytes: number[]) =>
   invoke<void>("write_bytes", { path, bytes });
 
+export type SkyboxFormat = "glb" | "obj" | "ply" | "json";
+
+export interface SkyboxMeta {
+  vertex_count: number;
+  triangle_count: number;
+  aabb_min: [number, number, number];
+  aabb_max: [number, number, number];
+  texture_offset: number | null;
+}
+
+export const exportSkybox = (
+  levelFolder: string,
+  format: SkyboxFormat,
+  outPath: string,
+) =>
+  invoke<number>("export_skybox", { levelFolder, format, outPath });
+
+export const readCachedSkyboxMeta = (levelFolder: string) =>
+  invoke<SkyboxMeta>("read_cached_skybox_meta", { levelFolder });
+
 export const exportTexturePng = (
   levelFolder: string,
   texId: number,
@@ -339,6 +364,9 @@ export async function loadFromCache(
   const tieEntries = manifest.entries.filter(
     (e) => e.kind === "tie" && e.file.endsWith(".json"),
   );
+  const detailEntries = manifest.entries.filter(
+    (e) => e.kind === "detail" && e.file.endsWith(".json"),
+  );
   const ufragEntries = manifest.entries.filter((e) => e.kind === "ufrag");
   const textureEntries = manifest.entries.filter((e) => e.kind === "texture");
 
@@ -370,6 +398,16 @@ export async function loadFromCache(
     }
   }
 
+  const detail_assets: AssetMeshes[] = [];
+  for (let i = 0; i < detailEntries.length; i++) {
+    try {
+      const data = (await readCachedAsset(folder, detailEntries[i]!.file)) as AssetMeshes;
+      detail_assets.push(data);
+    } catch {
+      /* skip */
+    }
+  }
+
   const ufrag_meshes: UFragMesh[] = [];
   onProgress?.({ phase: "ufrags", current: 0, total: ufragEntries.length });
   for (let i = 0; i < ufragEntries.length; i++) {
@@ -391,7 +429,7 @@ export async function loadFromCache(
   }));
   onProgress?.({ phase: "textures", current: textures.length, total: textures.length });
 
-  return { moby_assets, tie_assets, ufrag_meshes, textures };
+  return { moby_assets, tie_assets, detail_assets, ufrag_meshes, textures };
 }
 
 export interface UFragBounds {
@@ -516,6 +554,7 @@ export type TextureBlobMap = Map<number, Blob>;
 export interface LevelMeshes {
   moby_assets: AssetMeshes[];
   tie_assets: AssetMeshes[];
+  detail_assets?: AssetMeshes[];
   ufrag_meshes: UFragMesh[];
   textures: TexturePayload[];
 }

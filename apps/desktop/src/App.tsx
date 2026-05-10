@@ -89,9 +89,10 @@ import {
   toggleHierarchyHidden,
   toggleInspectorHidden,
   toggleView,
+  setSkybox,
   useAppDispatch,
   useAppSelector,
-  type ViewSettingsState,
+  type BooleanViewKey,
 } from "./store";
 
 export function App() {
@@ -461,7 +462,7 @@ export function App() {
   
   
   const toggle = useCallback(
-    (key: keyof ViewSettingsState) => dispatch(toggleView(key)),
+    (key: BooleanViewKey) => dispatch(toggleView(key)),
     [dispatch],
   );
 
@@ -1049,6 +1050,10 @@ export function App() {
           meshLoadPhase={meshLoadPhase}
           levelFolder={summary?.folder ?? null}
           overrideAnimsetHash={overrideAnimsetHash}
+          hasCachedSky={
+            cacheManifest?.entries.some((e) => e.kind === "sky") ?? false
+          }
+          cacheVersion={cacheManifest?.entries.length ?? 0}
         />
       </div>
     ),
@@ -1135,12 +1140,57 @@ export function App() {
               Ties
             </MenuCheckItem>
             <MenuCheckItem
+              checked={view.showDetails}
+              onToggle={() => toggle("showDetails")}
+              disabled={!summary}
+            >
+              Details
+            </MenuCheckItem>
+            <MenuCheckItem
+              checked={view.showLights}
+              onToggle={() => toggle("showLights")}
+              disabled={!summary}
+            >
+              Lights
+            </MenuCheckItem>
+            <MenuCheckItem
+              checked={view.showEnvSamplers}
+              onToggle={() => toggle("showEnvSamplers")}
+              disabled={!summary}
+            >
+              Env Probes
+            </MenuCheckItem>
+            <MenuCheckItem
+              checked={view.showCollision}
+              onToggle={() => toggle("showCollision")}
+              disabled={!summary}
+            >
+              Collision (wireframe)
+            </MenuCheckItem>
+            <MenuCheckItem
               checked={view.showUFrags}
               onToggle={() => toggle("showUFrags")}
               disabled={!summary}
             >
               UFrag Terrain
             </MenuCheckItem>
+            <MenuSpacer />
+            <MenuItem
+              onSelect={() => {
+                setCacheModalInitialPanel("texture");
+                setCacheLibraryOpen(true);
+              }}
+              disabled={!summary}
+            >
+              {view.skyboxTextureId != null
+                ? `Skybox: tex ${view.skyboxTextureId}`
+                : "Skybox: pick texture…"}
+            </MenuItem>
+            {view.skyboxTextureId != null && (
+              <MenuItem onSelect={() => dispatch(setSkybox(null))}>
+                Clear skybox
+              </MenuItem>
+            )}
             <MenuCheckItem
               checked={view.showUFragBounds}
               onToggle={() => toggle("showUFragBounds")}
@@ -1438,6 +1488,13 @@ export function App() {
         initialTextureId={cacheModalInitialTextureId}
         initialSoundKey={cacheModalInitialSoundKey}
         sounds={levelSounds}
+        currentSkyboxTextureId={view.skyboxTextureId}
+        onUseAsSkybox={(id) => {
+          dispatch(setSkybox(id < 0 ? null : id));
+          if (id >= 0) {
+            setCacheModalInitialPanel("sky");
+          }
+        }}
         onRequestExtract={() => {
           if (!summary) return;
           console.log("[cache-modal] user requested extract", summary.folder);

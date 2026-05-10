@@ -147,11 +147,19 @@ interface Group {
 const KIND_LABELS: Partial<Record<AssetKind, string>> = {
   moby: "Mobys",
   tie: "Ties",
+  detail: "Details",
+  light: "Lights",
+  envsampler: "Env Probes",
+  sky: "Skybox",
 };
 
 const KIND_GLYPHS: Partial<Record<AssetKind, string>> = {
   moby: "M",
   tie: "T",
+  detail: "D",
+  light: "L",
+  envsampler: "E",
+  sky: "S",
 };
 
 
@@ -222,6 +230,8 @@ export function Hierarchy({
     if (!cacheManifest || cacheManifest.entries.length === 0) return null;
     const cacheMobys: AssetMeshes[] = [];
     const cacheTies: AssetMeshes[] = [];
+    const cacheDetails: AssetMeshes[] = [];
+    const cacheSkies: AssetMeshes[] = [];
     const shellOf = (e: CacheManifestEntry): AssetMeshes => ({
       asset_tuid: e.tuid,
       name: e.name,
@@ -239,14 +249,32 @@ export function Hierarchy({
         if (!cacheTies.some((t) => t.asset_tuid === entry.tuid)) {
           cacheTies.push(shellOf(entry));
         }
+      } else if (entry.kind === "detail") {
+        if (!cacheDetails.some((t) => t.asset_tuid === entry.tuid)) {
+          cacheDetails.push(shellOf(entry));
+        }
+      } else if (entry.kind === "sky") {
+        if (!cacheSkies.some((s) => s.asset_tuid === entry.tuid)) {
+          cacheSkies.push(shellOf(entry));
+        }
       }
     }
-    if (cacheMobys.length === 0 && cacheTies.length === 0) return null;
+    if (
+      cacheMobys.length === 0 &&
+      cacheTies.length === 0 &&
+      cacheDetails.length === 0 &&
+      cacheSkies.length === 0
+    )
+      return null;
     const roots: AssetTreeNode[] = [];
     if (cacheMobys.length > 0)
       roots.push(buildAssetTree("Cache · Mobys", "moby", cacheMobys));
     if (cacheTies.length > 0)
       roots.push(buildAssetTree("Cache · Ties", "tie", cacheTies));
+    if (cacheDetails.length > 0)
+      roots.push(buildAssetTree("Cache · Details", "detail", cacheDetails));
+    if (cacheSkies.length > 0)
+      roots.push(buildAssetTree("Cache · Sky", "sky", cacheSkies));
     return roots;
   }, [cacheManifest]);
 

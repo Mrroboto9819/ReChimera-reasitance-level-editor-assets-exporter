@@ -34,6 +34,10 @@
   --brand-color: var(--accent-red);
   --asset-moby: #ff8a3d;
   --asset-tie: #3dd0ff;
+  --asset-detail: #b48cff;
+  --asset-light: #ffd83d;
+  --asset-envsampler: #46e0c8;
+  --asset-sky: #5d9bff;
   --asset-ufrag: #97de82;
   --asset-selection: #3eb1ff;
   --asset-proxy: #8a8a8a;
@@ -1878,8 +1882,9 @@ textarea {
   font-weight: 700;
 }
 
-.scene-badge-icon.kind-moby { background: rgba(255, 138, 61, 0.25); color: #ff8a3d; }
-.scene-badge-icon.kind-tie  { background: rgba(61, 208, 255, 0.25); color: #3dd0ff; }
+.scene-badge-icon.kind-moby   { background: color-mix(in srgb, var(--asset-moby) 25%, transparent); color: var(--asset-moby); }
+.scene-badge-icon.kind-tie    { background: color-mix(in srgb, var(--asset-tie) 25%, transparent); color: var(--asset-tie); }
+.scene-badge-icon.kind-detail { background: color-mix(in srgb, var(--asset-detail) 25%, transparent); color: var(--asset-detail); }
 .scene-badge-icon.kind-zone { background: rgba(157, 109, 255, 0.25); color: #9d6dff; }
 
 .scene-badge-name {
@@ -3961,8 +3966,13 @@ textarea {
   border-radius: 3px;
 }
 
-.tree-icon.kind-moby    { background: rgba(255, 138, 61, 0.18); color: #ff8a3d; }
-.tree-icon.kind-tie     { background: rgba(61, 208, 255, 0.18); color: #3dd0ff; }
+.tree-icon.kind-moby    { background: color-mix(in srgb, var(--asset-moby) 18%, transparent); color: var(--asset-moby); }
+.tree-icon.kind-tie     { background: color-mix(in srgb, var(--asset-tie) 18%, transparent); color: var(--asset-tie); }
+.tree-icon.kind-detail  { background: color-mix(in srgb, var(--asset-detail) 18%, transparent); color: var(--asset-detail); }
+.tree-icon.kind-light   { background: color-mix(in srgb, var(--asset-light) 18%, transparent); color: var(--asset-light); }
+.tree-icon.kind-envsampler { background: color-mix(in srgb, var(--asset-envsampler) 18%, transparent); color: var(--asset-envsampler); }
+.tree-icon.kind-sky     { background: color-mix(in srgb, var(--asset-sky) 18%, transparent); color: var(--asset-sky); }
+.tree-icon.kind-ufrag   { background: color-mix(in srgb, var(--asset-ufrag) 18%, transparent); color: var(--asset-ufrag); }
 .tree-icon.kind-zone    { background: rgba(157, 109, 255, 0.18); color: #9d6dff; }
 .tree-icon.kind-library { background: rgba(255, 188, 51, 0.18); color: var(--accent-yellow); }
 .tree-icon.kind-gltf    { background: rgba(151, 222, 130, 0.18); color: var(--accent-green); }
