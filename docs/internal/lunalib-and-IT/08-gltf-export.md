@@ -12,6 +12,14 @@ multi-step modal, texture quality presets) lives on the **app** side
 and is documented at [`../app/02-cache.md`](../app/02-cache.md) +
 [`../app/03-frontend.md`](../app/03-frontend.md).
 
+The writer is **engine-agnostic**. It takes a `MobyAsset`,
+`DecodedClip`s, shaders, and textures — all of which are produced in
+the same shape by the V2 / RFOM / TOD parser families. There is no
+V2/RFOM/TOD branch inside this file. Per-engine differences are
+absorbed upstream in the parser modules; by the time bytes reach
+`write_moby_glb_full`, the only knob that varies is whether `clips`
+is non-empty (V2 always, RFOM usually, TOD currently never).
+
 ## Two entry points
 
 ```rust

@@ -4,30 +4,37 @@ Every level folder has an `assetlookup.dat` — a top-level IGHW that
 indexes every other `.dat` in the folder by *class kind* and *asset hash*.
 Reader: `crates/lunalib/src/assetlookup.rs`.
 
-> ⚠️ **Two layouts exist, both supported.** This chapter covers the
-> **V2 / R3 / FFA layout** built around `assetlookup.dat`. Earlier
-> R&C Future titles (notably **Tools of Destruction**) use the older
-> **TOD layout** with a single `main.dat` instead — assets are
-> embedded inside `main.dat` by class ID rather than indexed via a
-> sibling pointer table.
+> ⚠️ **Three layouts exist, all supported.** This chapter covers the
+> **V2 / R3 / FFA / A4O layout** built around `assetlookup.dat`. Two
+> other engine eras need different entry points:
+>
+> - **RFOM layout** (Resistance: Fall of Man) — single
+>   `ps3levelmain.dat` with assets bundled inline, addressed by
+>   absolute byte offsets per moby instead of a sibling pointer table.
+>   Readers live in `*_rfom.rs` (`moby_rfom`, `tie_rfom`,
+>   `texture_rfom`, `shader_rfom`, `region_rfom`, `gameplay_rfom`,
+>   `tie_inst_rfom`).
+> - **TOD layout** (R&C: Tools of Destruction) — single `main.dat`
+>   with assets embedded by class ID. Readers live in `*_old.rs`
+>   (`moby_old`, `tie_old`, `texture_old`, `shader_old`, `zone_old`,
+>   `gameplay_old`).
 >
 > Detection lives in `crates/lunalib/src/level_layout.rs::detect_layout`
-> (`Tod` if `main.dat` is present, `V2` if `assetlookup.dat` is
-> present). The `*_old.rs` modules
-> (`moby_old`, `tie_old`, `shader_old`, `texture_old`) implement the
-> TOD readers as ports of ReLunacy's `LoadMobysOld` /
-> `LoadTiesOld` / `LoadShadersOld` / `LoadTexturesOld`. They emit the
-> exact same `MobyAsset` / `TieAsset` / `Texture` / `ShaderInfo`
-> types as the V2 readers, so the cache, GLB writer, and modal
-> preview don't branch. Status of remaining TOD pieces (zones,
-> skeleton + animation, bone palette / skinning) lives in the
-> `project_tod_format_layout` memory note — they're skipped pending
-> real-data investigation, since ReLunacy's reference doesn't fully
-> implement them either.
+> and returns one of `LevelLayout::{V2, Rfom, Tod}` based on which
+> marker file is present. All three families emit the same
+> `MobyAsset` / `TieAsset` / `Texture` / `ShaderInfo` shapes so the
+> cache, GLB writer, and modal preview stay engine-agnostic. The
+> top-level `project_game_support_matrix` memory note tracks
+> per-feature status across the three layouts (what works, what's
+> partial, what's still pending — most notably TOD per-frame
+> animation, which is unsolved upstream as well).
 >
-> IT has `Version::TOD` in the enum but no module uses it. **Never
-> replace the V2 path when adding TOD support** — the two paths
-> coexist via the dispatch in `cache.rs::run_extract`.
+> IT has `Version::TOD` in the enum but no module uses it. IT *does*
+> have an extensive `levelmain/extract.cpp` for RFOM. ReLunacy is the
+> opposite: it ports TOD but not RFOM. **Never collapse the three
+> paths into one** — each engine era has different on-disk byte
+> layouts; the dispatch in `cache.rs::run_extract` keeps them
+> separate.
 
 **IT reference**: per-kind class IDs and pointer-table layouts mirror
 `common/include/insomnia/classes/resource.hpp` — `ResourceShaders`
