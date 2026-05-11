@@ -52,6 +52,7 @@ pub fn read_tie_instances_rfom(level_folder: &Path) -> Result<Vec<TieInstance>> 
     let count = section.count as usize;
     let mut out: Vec<TieInstance> = Vec::with_capacity(count);
     let mut sample_logged = 0usize;
+    let log_probes = std::env::var("RECHIMERA_LOG_PROBES").is_ok();
     for i in 0..count {
         let base = u64::from(section.offset) + (i as u64) * TIE_INSTANCE_SIZE;
 
@@ -67,7 +68,7 @@ pub fn read_tie_instances_rfom(level_folder: &Path) -> Result<Vec<TieInstance>> 
             position_raw[2] * YARD_TO_M,
         ];
 
-        if sample_logged < 3 {
+        if sample_logged < 3 && log_probes {
             eprintln!(
                 "[rfom-tie-inst] [{i}] raw_pos=({:.2}, {:.2}, {:.2}) → meters=({:.2}, {:.2}, {:.2}) scale=({:.3}, {:.3}, {:.3})",
                 position_raw[0], position_raw[1], position_raw[2],
@@ -90,6 +91,8 @@ pub fn read_tie_instances_rfom(level_folder: &Path) -> Result<Vec<TieInstance>> 
             bounding_radius: 0.0,
         });
     }
-    eprintln!("[rfom-tie-inst] {} tie placements scaled to meters", out.len());
+    if log_probes {
+        eprintln!("[rfom-tie-inst] {} tie placements scaled to meters", out.len());
+    }
     Ok(out)
 }

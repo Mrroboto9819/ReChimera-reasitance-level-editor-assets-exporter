@@ -96,7 +96,9 @@ where
         .ok_or(Error::SectionNotFound(SECT_LEVEL_INDEX_BUFFER))?;
 
     let count = tie_section.count as usize;
-    eprintln!("[rfom] ties section: {count} ties");
+    if std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+        eprintln!("[rfom] ties section: {count} ties");
+    }
     for i in 0..count {
         let header_off = u64::from(tie_section.offset) + (i as u64) * RFOM_TIE_HEADER_SIZE;
         match parse_one(

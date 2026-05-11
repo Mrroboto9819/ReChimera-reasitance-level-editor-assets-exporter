@@ -121,10 +121,12 @@ pub fn read_detail_clusters_rfom(
 
     let cluster_section_offset = u64::from(cluster_section.offset);
     let cluster_count = cluster_section.count as usize;
-    eprintln!(
-        "[rfom-detail] {} DetailClusters / {} Details / {} DetailInstances",
-        cluster_count, detail_section.count, inst_section.count
-    );
+    if std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+        eprintln!(
+            "[rfom-detail] {} DetailClusters / {} Details / {} DetailInstances",
+            cluster_count, detail_section.count, inst_section.count
+        );
+    }
 
     let mut tie_assets: Vec<TieAsset> = Vec::with_capacity(cluster_count);
     let mut cluster_ptr_to_idx: HashMap<u64, usize> = HashMap::new();
@@ -278,7 +280,7 @@ pub fn read_detail_clusters_rfom(
             tie_assets.first().map(|t| t.tuid).unwrap_or(0)
         };
 
-        if sample_logged < 3 {
+        if sample_logged < 3 && std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
             eprintln!(
                 "[rfom-detail-inst] [{i}] cluster_ptr=0x{cluster_ptr:X} → asset=0x{asset_tuid:X} m=({:.2}, {:.2}, {:.2})",
                 position[0], position[1], position[2]
@@ -296,11 +298,13 @@ pub fn read_detail_clusters_rfom(
             bounding_radius: 0.0,
         });
     }
-    eprintln!(
-        "[rfom-detail] surfaced {} detail-cluster ties + {} instances",
-        tie_assets.len(),
-        instances.len()
-    );
+    if std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+        eprintln!(
+            "[rfom-detail] surfaced {} detail-cluster ties + {} instances",
+            tie_assets.len(),
+            instances.len()
+        );
+    }
 
     Ok((tie_assets, instances))
 }

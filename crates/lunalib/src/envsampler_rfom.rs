@@ -35,16 +35,19 @@ pub fn read_envsamplers_rfom(level_folder: &Path) -> Result<Vec<EnvSampler>> {
 
     let count = section.count as usize;
     let base = u64::from(section.offset);
-    eprintln!(
-        "[rfom-envs] {} env-samplers @ section 0x9700 (record={} bytes)",
-        count, ENVSAMPLER_SIZE
-    );
+    let log_probes = std::env::var("RECHIMERA_LOG_PROBES").is_ok();
+    if log_probes {
+        eprintln!(
+            "[rfom-envs] {} env-samplers @ section 0x9700 (record={} bytes)",
+            count, ENVSAMPLER_SIZE
+        );
+    }
 
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let rec = base + (i as u64) * ENVSAMPLER_SIZE;
 
-        if i == 0 {
+        if i == 0 && log_probes {
             ig.stream.seek_to(rec)?;
             let mut hex = String::new();
             for row in 0..(ENVSAMPLER_SIZE as usize / 16) {
@@ -92,12 +95,14 @@ pub fn read_envsamplers_rfom(level_folder: &Path) -> Result<Vec<EnvSampler>> {
             col_z_len * YARD_TO_M,
         ];
 
-        eprintln!(
-            "[rfom-envs] [{}] m=({:.2}, {:.2}, {:.2}) half=({:.2}, {:.2}, {:.2}) cube_off=0x{:08X}",
-            i, position[0], position[1], position[2],
-            half_extents[0], half_extents[1], half_extents[2],
-            cubemap_tuid
-        );
+        if log_probes {
+            eprintln!(
+                "[rfom-envs] [{}] m=({:.2}, {:.2}, {:.2}) half=({:.2}, {:.2}, {:.2}) cube_off=0x{:08X}",
+                i, position[0], position[1], position[2],
+                half_extents[0], half_extents[1], half_extents[2],
+                cubemap_tuid
+            );
+        }
 
         out.push(EnvSampler {
             tuid: rec,

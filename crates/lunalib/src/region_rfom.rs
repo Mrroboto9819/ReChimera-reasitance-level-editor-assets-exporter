@@ -114,7 +114,9 @@ pub fn read_regions_rfom(level_folder: &Path) -> Result<Vec<Zone>> {
     let index_section_length = u64::from(index_section.length);
 
     let count = region_section.count as usize;
-    eprintln!("[rfom] region meshes section: {count} entries");
+    if std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+        eprintln!("[rfom] region meshes section: {count} entries");
+    }
 
     let mut ufrags: Vec<UFrag> = Vec::with_capacity(count);
     let mut skipped = 0usize;
@@ -227,7 +229,7 @@ pub fn read_regions_rfom(level_folder: &Path) -> Result<Vec<Zone>> {
             region_pos_y * REGION_VERTEX_SCALE,
             region_pos_z * REGION_VERTEX_SCALE,
         ];
-        if i < 3 {
+        if i < 3 && std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
             eprintln!(
                 "[rfom-region] [{i}] raw_pos=({:.0}, {:.0}, {:.0}) → m=({:.2}, {:.2}, {:.2}) mesh_local_aabb m=[{:.2}..{:.2}, {:.2}..{:.2}, {:.2}..{:.2}] verts={num_verts} idx={num_indices}",
                 region_pos_x, region_pos_y, region_pos_z,

@@ -36,16 +36,19 @@ pub fn read_lights_rfom(level_folder: &Path) -> Result<Vec<LightInstance>> {
 
     let count = section.count as usize;
     let base = u64::from(section.offset);
-    eprintln!(
-        "[rfom-light] {} lights @ section 0xC200 (record={} bytes)",
-        count, LIGHT_SIZE
-    );
+    let log_probes = std::env::var("RECHIMERA_LOG_PROBES").is_ok();
+    if log_probes {
+        eprintln!(
+            "[rfom-light] {} lights @ section 0xC200 (record={} bytes)",
+            count, LIGHT_SIZE
+        );
+    }
 
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let rec = base + (i as u64) * LIGHT_SIZE;
 
-        if i == 0 {
+        if i == 0 && log_probes {
             ig.stream.seek_to(rec)?;
             let mut hex = String::new();
             for row in 0..(LIGHT_SIZE as usize / 16) {
@@ -76,10 +79,12 @@ pub fn read_lights_rfom(level_folder: &Path) -> Result<Vec<LightInstance>> {
         let position = [px * YARD_TO_M, py * YARD_TO_M, pz * YARD_TO_M];
         let color = [cr.max(0.0), cg.max(0.0), cb.max(0.0)];
 
-        eprintln!(
-            "[rfom-light] [{}] m=({:.2}, {:.2}, {:.2}) rgb=({:.2}, {:.2}, {:.2}) range={:.2} intensity={:.2}",
-            i, position[0], position[1], position[2], color[0], color[1], color[2], range, intensity
-        );
+        if log_probes {
+            eprintln!(
+                "[rfom-light] [{}] m=({:.2}, {:.2}, {:.2}) rgb=({:.2}, {:.2}, {:.2}) range={:.2} intensity={:.2}",
+                i, position[0], position[1], position[2], color[0], color[1], color[2], range, intensity
+            );
+        }
 
         out.push(LightInstance {
             tuid: rec,

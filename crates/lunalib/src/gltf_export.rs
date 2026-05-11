@@ -365,13 +365,7 @@ fn emit_skin(
         name: Some("skeleton".into()),
         skeleton: None,
     });
-    let asset_roots = resolved_parents.iter().filter(|p| p.is_none()).count();
-    if bone_count >= 8 || std::env::var("RECHIMERA_LOG_ANIM_DETAIL").is_ok() {
-        eprintln!(
-            "[glb-skin] bones={} roots={} ibm_bytes={} node_base={} skin_idx={}",
-            bone_count, asset_roots, bone_count * 64, bone_node_base, skin_idx,
-        );
-    }
+    let _ = resolved_parents;
     skin_idx
 }
 
@@ -778,9 +772,6 @@ fn emit_animations(
     bone_count: usize,
 ) {
     let detail_log = std::env::var("RECHIMERA_LOG_ANIM_DETAIL").is_ok();
-    let mut total_channels = 0usize;
-    let mut total_samplers = 0usize;
-    let mut total_frames = 0u32;
     for (clip_idx, clip) in clips.iter().enumerate() {
         let dt = if clip.frame_rate > 0.0 {
             1.0 / clip.frame_rate
@@ -900,15 +891,10 @@ fn emit_animations(
             }
         }
 
-        let nchan = channels.len();
-        let nsamp = samplers.len();
-        total_channels += nchan;
-        total_samplers += nsamp;
-        total_frames += clip.num_frames as u32;
         if detail_log {
             eprintln!(
                 "[glb-anim] clip[{}] '{}' frames={} fps={:.1} channels={} samplers={} bones_used={}",
-                clip_idx, clip.name, clip.num_frames, clip.frame_rate, nchan, nsamp, bones_to_use,
+                clip_idx, clip.name, clip.num_frames, clip.frame_rate, channels.len(), samplers.len(), bones_to_use,
             );
         }
         if !channels.is_empty() {
@@ -921,10 +907,6 @@ fn emit_animations(
             });
         }
     }
-    eprintln!(
-        "[glb-anim] {} clip(s) emitted: {} channels, {} samplers, {} total frames (skel_bones={}, node_base={})",
-        clips.len(), total_channels, total_samplers, total_frames, bone_count, bone_node_base,
-    );
 }
 
 fn push_scalar_f32_accessor(

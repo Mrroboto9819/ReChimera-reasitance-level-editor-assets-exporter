@@ -68,9 +68,13 @@ pub fn dump_skeleton_bind(moby_tuid: u64, skel: &Skeleton) {
         Ok(s) => s,
         Err(_) => return,
     };
-    let want_norm = want.trim_start_matches("0x").to_ascii_uppercase();
     let tuid_hex = format!("{:016X}", moby_tuid);
-    if !tuid_hex.ends_with(&want_norm) {
+    let any_match = want
+        .split(',')
+        .map(|s| s.trim().trim_start_matches("0x").trim_start_matches("0X").to_ascii_uppercase())
+        .filter(|s| !s.is_empty())
+        .any(|s| tuid_hex.ends_with(&s));
+    if !any_match {
         return;
     }
     eprintln!(
@@ -116,8 +120,25 @@ pub fn read_skeleton_at<R: Read + Seek>(
     let bones_ptr = u64::from(ig.stream.read_u32()?);
     let tms0_ptr = u64::from(ig.stream.read_u32()?);
     let tms1_ptr = u64::from(ig.stream.read_u32()?);
-    let scale_shift = ig.stream.read_u16()?;
-    let translation_shift = ig.stream.read_u16()?;
+    let scale_shift_raw = ig.stream.read_u16()?;
+    let translation_shift_raw = ig.stream.read_u16()?;
+    // IT's FByteswapper<Skeleton> deliberately skips these two u16s (see
+    // common/src/serialize.cpp:186 — only numBones/rootBone/bones/tms0/tms1
+    // get swapped). On PS3 BE files our read_u16 over-swaps them. The real
+    // shift is always 0..15 in IT; if we read > 15, swap_bytes recovers it.
+    // Without this fix `pos_scale` in cache.rs falls through to 1/32768
+    // → animation translations decode 30000x too small → bones collapse to
+    // origin when anims override bind pose. See memory:
+    // `skeleton_shift_byte_quirk` for the long story.
+    //
+    // Some 49-bone head rigs (soldierHead/cartwright/Winters viseme rigs)
+    // have raw values like 0x0103 — both raw (259) and swapped (769) are
+    // > 15. We leave those as-is and let cache.rs fall back to its default
+    // pos_scale=1/32768. The low-byte heuristic (0x0103 → 3) was tried and
+    // made anims worse, so the real fix needs option 2 (probe IT's
+    // animation_machine.cpp for whatever shift handling those rigs use).
+    let scale_shift = recover_shift(scale_shift_raw);
+    let translation_shift = recover_shift(translation_shift_raw);
 
     if num_bones == 0 || bones_ptr == 0 {
         return Ok(None);
@@ -131,21 +152,14 @@ pub fn read_skeleton_at<R: Read + Seek>(
         return Ok(None);
     }
 
-    eprintln!(
-        "[skel-read] hdr_off=0x{:X} numBones={} rootBone={} bones_ptr=0x{:X} \
-         tms0_ptr=0x{:X} tms1_ptr=0x{:X} scaleShift={} translationShift={}",
-        header_off, num_bones, root_bone, bones_ptr, tms0_ptr, tms1_ptr,
-        scale_shift, translation_shift,
-    );
-    if scale_shift > 15 || translation_shift > 15 {
+    if scale_shift_raw > 15 && scale_shift_raw.swap_bytes() > 15
+        || translation_shift_raw > 15 && translation_shift_raw.swap_bytes() > 15
+    {
         eprintln!(
-            "warn: [skel-shift] scaleShift={} translationShift={} look byte-swapped \
-             (IT's FByteswapper<Skeleton> skips these; PS3 BE files need raw read). \
-             swapped guesses: scale={} translation={} — see skeleton_shift_byte_quirk memory",
-            scale_shift,
-            translation_shift,
-            scale_shift.swap_bytes(),
-            translation_shift.swap_bytes(),
+            "[skel-shift] hdr=0x{:X} bones={} viseme-rig: raw {:#06X}/{:#06X} → swap & 0x1F = {}/{} \
+             (matching IT's x86 SHR mask). pos_scale = 1/(0x8000 >> {}).",
+            header_off, num_bones, scale_shift_raw, translation_shift_raw,
+            scale_shift, translation_shift, translation_shift,
         );
     }
 
@@ -192,20 +206,8 @@ pub fn read_skeleton_at<R: Read + Seek>(
         }
     }
 
-    if !bind_local.is_empty() {
-        let m = bind_local[0];
-        let tx_yard = m[12];
-        let ty_yard = m[13];
-        let tz_yard = m[14];
-        eprintln!(
-            "[skel-bind] bones={} roots={} self_parent_roots={} bone0_translation_yards=[{:.3}, {:.3}, {:.3}] (IT applies *YARD_TO_M=0.9144 — we DO NOT, downstream callers expect yards)",
-            num_bones, root_count, self_parent_count, tx_yard, ty_yard, tz_yard,
-        );
-        eprintln!(
-            "[skel-bind] mul-order: ours = tms0[i] * tms1[parent]; IT (extract_gltf.cpp:18) = tms1[parent] * tms0[i]. \
-             If first-bone TRS looks wrong in GLB, swap the args in skeleton.rs::mat4_mul_row_major call."
-        );
-    }
+    let _ = root_count;
+    let _ = self_parent_count;
 
     let bind_world_inverse: Vec<[f32; 16]> =
         tms1_raw.iter().copied().map(clean_rigid_col_major).collect();
@@ -224,6 +226,25 @@ pub fn read_skeleton_at<R: Read + Seek>(
         scale_shift,
         translation_shift,
     }))
+}
+
+fn recover_shift(raw: u16) -> u16 {
+    if raw <= 15 {
+        return raw;
+    }
+    let swapped = raw.swap_bytes();
+    if swapped <= 15 {
+        return swapped;
+    }
+    // For the 14 viseme head rigs, raw=0x0103 → swap=0x0301=769. IT reads
+    // these bytes as LE (the field is deliberately skipped by FByteswapper<Skeleton>)
+    // and passes the resulting u16 directly to `0x8000 >> shift`. On x86 the
+    // SHR instruction masks the shift count to 5 bits, so the effective value
+    // is `swap & 0x1F` = `769 & 0x1F` = 1. We replicate that masking to match
+    // IT's runtime behavior (shift=1 → pos_scale=1/16384 → ~5cm viseme deltas).
+    // The low-byte heuristic (raw & 0xFF = 3) was tried first and gave the
+    // wrong magnitude; this 5-bit-mask matches the actual silicon.
+    swapped & 0x1F
 }
 
 fn clean_rigid_col_major(mut m: [f32; 16]) -> [f32; 16] {

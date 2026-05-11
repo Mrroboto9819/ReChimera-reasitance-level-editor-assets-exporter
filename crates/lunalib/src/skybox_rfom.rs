@@ -34,10 +34,12 @@ pub fn read_skybox_rfom(level_folder: &Path) -> Result<Option<SkyboxMesh>> {
     let vert_count = (total_bytes / VERTEX_STRIDE) as usize;
     let base = u64::from(verts_section.offset);
 
-    eprintln!(
-        "[rfom-sky] reading {} dome vertices @ 0x9150",
-        vert_count
-    );
+    if std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+        eprintln!(
+            "[rfom-sky] reading {} dome vertices @ 0x9150",
+            vert_count
+        );
+    }
 
     let mut vertices = Vec::with_capacity(vert_count);
     let mut min = [f32::INFINITY; 3];
@@ -71,12 +73,14 @@ pub fn read_skybox_rfom(level_folder: &Path) -> Result<Option<SkyboxMesh>> {
     });
 
     let indices = triangulate_dome(&vertices);
-    eprintln!(
-        "[rfom-sky] generated {} triangles ({} indices) — bbox=[{:.2}..{:.2}, {:.2}..{:.2}, {:.2}..{:.2}]",
-        indices.len() / 3,
-        indices.len(),
-        min[0], max[0], min[1], max[1], min[2], max[2]
-    );
+    if std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+        eprintln!(
+            "[rfom-sky] generated {} triangles ({} indices) — bbox=[{:.2}..{:.2}, {:.2}..{:.2}, {:.2}..{:.2}]",
+            indices.len() / 3,
+            indices.len(),
+            min[0], max[0], min[1], max[1], min[2], max[2]
+        );
+    }
 
     Ok(Some(SkyboxMesh {
         vertices,

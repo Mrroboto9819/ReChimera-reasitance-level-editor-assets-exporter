@@ -90,9 +90,11 @@ pub fn read_gameplay_rfom(level_folder: &Path) -> Result<GameplayLayout> {
     let items_ptr = u64::from(ig.stream.read_u32()?);
     let num_items = ig.stream.read_u32()?;
 
-    eprintln!(
-        "[rfom-gp] Gameplay@0x{gameplay_off:X} instances@0x{instances_ptr:X} items@0x{items_ptr:X} numItems={num_items}"
-    );
+    if std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+        eprintln!(
+            "[rfom-gp] Gameplay@0x{gameplay_off:X} instances@0x{instances_ptr:X} items@0x{items_ptr:X} numItems={num_items}"
+        );
+    }
 
     if items_ptr == 0 || num_items == 0 {
         return Ok(GameplayLayout {
@@ -119,7 +121,7 @@ pub fn read_gameplay_rfom(level_folder: &Path) -> Result<GameplayLayout> {
 
         let position_m = [pos[0] * YARD_TO_M, pos[1] * YARD_TO_M, pos[2] * YARD_TO_M];
 
-        if sample_logged < 3 {
+        if sample_logged < 3 && std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
             eprintln!(
                 "[rfom-gp-moby] [{i}] class=0x{moby_class_index:04X} raw_yards=({:.2}, {:.2}, {:.2}) → m=({:.2}, {:.2}, {:.2})",
                 pos[0], pos[1], pos[2],
@@ -138,7 +140,9 @@ pub fn read_gameplay_rfom(level_folder: &Path) -> Result<GameplayLayout> {
             group: 0,
         });
     }
-    eprintln!("[rfom-gp-moby] {} moby placements scaled to meters", moby_instances.len());
+    if std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+        eprintln!("[rfom-gp-moby] {} moby placements scaled to meters", moby_instances.len());
+    }
 
     Ok(GameplayLayout {
         regions: vec![Region {

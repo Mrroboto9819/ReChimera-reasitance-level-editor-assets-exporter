@@ -202,7 +202,8 @@ fn decode_clips_for_moby_inline(
     };
     let skel_bones = skeleton.bones.len() as u16;
     let mut out = Vec::with_capacity(anim_offsets.len());
-    let probe_layout = matches!(layout, LevelLayout::Rfom);
+    let probe_layout = matches!(layout, LevelLayout::Rfom)
+        && std::env::var("RECHIMERA_LOG_ANIM_DETAIL").is_ok();
     for (i, off) in anim_offsets.iter().enumerate() {
         if probe_layout && i == 0 {
             eprintln!("[rfom-anim-probe] anim[0] @ file_off=0x{:08X}", off);
@@ -362,6 +363,36 @@ pub fn extract_level_to_cache(
     }
 }
 
+/// When `RECHIMERA_DEBUG_MOBY=<hex>[,<hex>...]` is set, only mobys whose tuid hex
+/// ends with one of the given suffixes are processed (case-insensitive, accepts
+/// `0x` prefix per entry). All other extraction phases (ties, details, ufrags,
+/// sky, lights, env-samplers, gameplay) are skipped to make the iteration loop
+/// tight for debugging. Textures still run — they're filtered to whatever the
+/// matched mobys need.
+///
+/// Examples:
+///   `RECHIMERA_DEBUG_MOBY=0212`        — one moby
+///   `RECHIMERA_DEBUG_MOBY=0212,00CD`   — multiple
+///   `RECHIMERA_DEBUG_MOBY=0x0212,0326` — `0x` prefix allowed
+fn debug_moby_filter() -> Option<Vec<String>> {
+    let raw = std::env::var("RECHIMERA_DEBUG_MOBY").ok()?;
+    let suffixes: Vec<String> = raw
+        .split(',')
+        .map(|s| s.trim().trim_start_matches("0x").trim_start_matches("0X").to_ascii_uppercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if suffixes.is_empty() {
+        None
+    } else {
+        Some(suffixes)
+    }
+}
+
+fn debug_moby_match(tuid: u64, suffixes: &[String]) -> bool {
+    let hex = format!("{:016X}", tuid);
+    suffixes.iter().any(|s| hex.ends_with(s.as_str()))
+}
+
 fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, String> {
     let level_path = Path::new(folder);
     let root = cache_root(folder);
@@ -378,10 +409,18 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         layout.label()
     );
 
-    // RFOM probe — log every IGHW section in ps3levelmain.dat so we
-    // can keep porting structures off real bytes. Stage R.1 (mobys)
-    // is wired below; later stages reuse the same probe.
-    if matches!(layout, LevelLayout::Rfom) {
+    let debug_filter = debug_moby_filter();
+    if let Some(suffixes) = &debug_filter {
+        eprintln!(
+            "[cache] DEBUG MODE: RECHIMERA_DEBUG_MOBY={} — extracting only matching mobys, \
+             skipping ties/details/ufrags/sky/lights/envsamplers/gameplay phases.",
+            suffixes.join(","),
+        );
+    }
+
+    // RFOM section-list probe — only useful when investigating unknown
+    // section IDs. Gated behind RECHIMERA_LOG_PROBES=1.
+    if matches!(layout, LevelLayout::Rfom) && std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
         let entry_path = level_path.join("ps3levelmain.dat");
         match std::fs::File::open(&entry_path) {
             Ok(file) => match IgFile::open(std::io::BufReader::new(file)) {
@@ -399,9 +438,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         );
                     }
                 }
-                Err(e) => eprintln!("[probe-rfom] failed to parse ps3levelmain.dat: {e}"),
+                Err(e) => eprintln!("warn: [probe-rfom] parse ps3levelmain.dat: {e}"),
             },
-            Err(e) => eprintln!("[probe-rfom] failed to open ps3levelmain.dat: {e}"),
+            Err(e) => eprintln!("warn: [probe-rfom] open ps3levelmain.dat: {e}"),
         }
         let gp_path = level_path.join("ps3gameplay.dat");
         if gp_path.exists() {
@@ -421,12 +460,10 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                             );
                         }
                     }
-                    Err(e) => eprintln!("[probe-rfom-gp] failed to parse ps3gameplay.dat: {e}"),
+                    Err(e) => eprintln!("warn: [probe-rfom-gp] parse ps3gameplay.dat: {e}"),
                 },
-                Err(e) => eprintln!("[probe-rfom-gp] failed to open ps3gameplay.dat: {e}"),
+                Err(e) => eprintln!("warn: [probe-rfom-gp] open ps3gameplay.dat: {e}"),
             }
-        } else {
-            eprintln!("[probe-rfom-gp] ps3gameplay.dat not present in level folder");
         }
     }
 
@@ -489,7 +526,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                     "[cache] RFOM layout: read {} materials from ps3levelmain.dat",
                     map.len()
                 );
-                let _ = lunalib::probe_rfom_unknowns(level_path);
+                if std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+                    let _ = lunalib::probe_rfom_unknowns(level_path);
+                }
                 map
             }
             Err(e) => {
@@ -530,6 +569,11 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         let mut tod_total_emitted = false;
         let mut tod_count = 0usize;
         if let Err(e) = read_moby_assets_old(level_path, |asset| {
+            if let Some(suffixes) = &debug_filter {
+                if !debug_moby_match(asset.tuid, suffixes) {
+                    return;
+                }
+            }
             if !tod_total_emitted {
                 let _ = on_event.send(CacheEvent::Phase {
                     phase: "mobys",
@@ -601,6 +645,11 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         let mut rfom_total_emitted = false;
         let mut rfom_count = 0usize;
         if let Err(e) = lunalib::read_moby_assets_rfom(level_path, |asset| {
+            if let Some(suffixes) = &debug_filter {
+                if !debug_moby_match(asset.tuid, suffixes) {
+                    return;
+                }
+            }
             if !rfom_total_emitted {
                 let _ = on_event.send(CacheEvent::Phase {
                     phase: "mobys",
@@ -669,6 +718,11 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
             None,
             phase_total_emit,
             |asset| {
+                if let Some(suffixes) = &debug_filter {
+                    if !debug_moby_match(asset.tuid, suffixes) {
+                        return;
+                    }
+                }
                 moby_assets_for_glb.push(asset.clone());
 
                 let mut submeshes = Vec::new();
@@ -726,7 +780,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
     }
 
     let mut tie_done = 0usize;
-    if matches!(layout, LevelLayout::Tod) {
+    if debug_filter.is_some() {
+        eprintln!("[cache] debug mode: skipping ties / details / ufrags / sky / lights / envsamplers");
+    } else if matches!(layout, LevelLayout::Tod) {
         let mut tod_total_emitted = false;
         if let Err(e) = lunalib::read_tie_assets_old(level_path, |asset| {
             if !tod_total_emitted {
@@ -1043,7 +1099,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
     .map_err(|e| e.to_string())?;
     }
 
-    let zones: Vec<Zone> = match layout {
+    let zones: Vec<Zone> = if debug_filter.is_some() {
+        Vec::new()
+    } else { match layout {
         LevelLayout::V2 => match read_zones(level_path) {
             Ok(z) => z,
             Err(e) => {
@@ -1071,7 +1129,7 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 }
             }
         }
-    };
+    } };
 
     let mut total_ufrags = 0usize;
     for z in &zones {
@@ -1263,9 +1321,11 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         skel,
                         layout,
                     );
-                    if matches!(layout, LevelLayout::Rfom) {
+                    if matches!(layout, LevelLayout::Rfom)
+                        && decoded.len() != asset.rfom_anim_offsets.len()
+                    {
                         eprintln!(
-                            "[rfom-anim] moby_{:04X}: {} offsets → {} clips decoded (skel_bones={})",
+                            "warn: [rfom-anim] moby_{:04X}: {} offsets but only {} clips decoded (skel_bones={})",
                             asset.tuid,
                             asset.rfom_anim_offsets.len(),
                             decoded.len(),
@@ -1279,7 +1339,7 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         && !asset.rfom_anim_offsets.is_empty()
                     {
                         eprintln!(
-                            "[rfom-anim] moby_{:04X}: {} offsets but no skeleton — skipping",
+                            "warn: [rfom-anim] moby_{:04X}: {} offsets but no skeleton — skipping",
                             asset.tuid,
                             asset.rfom_anim_offsets.len()
                         );
