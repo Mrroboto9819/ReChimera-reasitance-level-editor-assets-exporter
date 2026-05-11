@@ -1,24 +1,68 @@
-//! RFOM foliage (sprite + branch vegetation) reader. Ports IT's
-//! `FoliageToGltf` at `levelmain/extract.cpp:929` for the branch-mesh
-//! path. Sprite rendering is omitted for now — that's a billboarded
-//! quad system that needs special handling in the viewport.
+//! RFOM foliage reader. Ports IT's `FoliageToGltf` (extract.cpp:929-1126).
+//! Emits both branch meshes and sprite quads.
 //!
-//! Two sections:
-//! - **`0xC200` Foliage** (288 bytes each) — mesh + sprite descriptors. Holds
-//!   indexOffset, branchVertexOffset, branchLods[4], spriteVertexOffset,
-//!   spriteLodRanges[6], spritePositions ptr, spriteRanges[8].
-//! - **`0x9700` FoliageInstance** (224 bytes each) — placement: Matrix44 +
-//!   pointer to a Foliage. Translation row × YARD_TO_M is world position.
+//! ## Sections used (all in `ps3levelmain.dat`)
 //!
-//! Vertex format: `BranchVertex` (20 bytes — per `vertex.hpp:43-48`):
-//! - float16 position[4]  (8 bytes, *YARD_TO_M per IT)
-//! - float16 uv[2]        (4 bytes)
-//! - uint8   tangent[4]   (4 bytes)
-//! - uint8   normal[3]    (3 bytes)
-//! - 1 byte align to even → 20 bytes
+//! ### `0xC200` Foliage — 288 bytes per record, **mesh + sprite descriptor**
+//! ```text
+//! +0x00..+0x04  u32  unk0
+//! +0x04..+0x06  u16  foliageId
+//! +0x06..+0x08  u16  unk6
+//! +0x08..+0x0C  u32  textureIndex          — material slot
+//! +0x0C..+0x10  u32  unk5
+//! +0x10..+0x14  u32  indexOffset           — u16-units into shared index buffer (0x9100 in ps3levelverts.dat)
+//! +0x14..+0x18  u32  null0
+//! +0x18..+0x1C  u32  branchVertexOffset    — byte offset into shared vertex buffer (0x9000)
+//! +0x1C..+0x20  u32  unk1
+//! +0x20..+0x40  FoliageBranchLod[4]        — 8 bytes each: { u32 indexOffset; u16 numIndices; u16 unk }
+//! +0x40..+0x44  u32  spriteVertexOffset    — byte offset into shared vertex buffer (sprite vertex section)
+//! +0x44..+0x48  u32  usedSpriteLods        — count, 0..6
+//! +0x48..+0xA8  SpriteLodRange[6]          — 16 bytes each: { u32 indexBegin; u32 indexEnd; u32 unk0; f32 unk1 }
+//! +0xA8..+0xB8  float unk2[4]              — wind/sway params? unverified
+//! +0xB8..+0xBC  PointerX86 spritePositions — file offset to Vector4 array of sprite centers
+//! +0xBC..+0xC0  u32  usedSpriteRanges      — count, 0..8
+//! +0xC0..+0x100 SpriteRange[8]             — 8 bytes each: { u16 indexBegin; u16 indexEnd; u16 positionsOffset; u16 numSprites }
+//! +0x100..+0x120 float unk3[8]             — shader params, not decoded
+//! ```
 //!
-//! Old `lighting_rfom.rs` (also 0xC200) and `envsampler_rfom.rs` (0x9700)
-//! were misidentified — they should now no longer be called.
+//! ### `0x9700` FoliageInstance — 224 bytes per record, **placement**
+//! ```text
+//! +0x00..+0x40  es::Matrix44 tm            — world transform (row-major)
+//! +0x40..+0xC4  float unk0[33]             — 132 bytes, undecoded
+//! +0xC4..+0xC8  PointerX86<Foliage>        — points back at the Foliage descriptor
+//! +0xC8..+0xD0  u32 unk1[2]
+//! +0xD0..+0xE0  u32 unk[4]
+//! ```
+//!
+//! ## Vertex formats (in `ps3levelverts.dat` shared buffer 0x9000)
+//!
+//! ### `BranchVertex` — 20 bytes, per IT `vertex.hpp:43-48`
+//! ```text
+//! +0x00..+0x08  float16 position[4]   — half2-encoded XYZ + ignored W (multiply XYZ by YARD_TO_M)
+//! +0x08..+0x0C  float16 uv[2]
+//! +0x0C..+0x10  uint8   tangent[4]    — packed octahedral?
+//! +0x10..+0x13  uint8   normal[3]
+//! +0x13..+0x14  pad to 2-byte align
+//! ```
+//!
+//! ### `SpriteVertex` — 12 bytes, per IT `vertex.hpp:50-54`
+//! ```text
+//! +0x00..+0x04  float16 spriteSize[2] — corner offset from sprite center (yards)
+//! +0x04..+0x08  USVector2 uv          — two u16, normalised 0..65535
+//! +0x08..+0x0C  uint32 unk            — IT speculates "prolly normal"
+//! ```
+//!
+//! ## Sprite centers (read via `spritePositions` ptr above)
+//!
+//! ### `Vector4` — 16 bytes per record, BE f32 (x, y, z, w). W is unused.
+//!
+//! ## Mislabel history (do not delete)
+//!
+//! Sections `0xC200` and `0x9700` were previously routed through
+//! `lighting_rfom.rs` and `envsampler_rfom.rs` respectively. Those readers
+//! were producing bogus light/env-probe instances at world origin because
+//! the data layouts don't match those types. Both readers still exist but
+//! are no longer called from `level_layout` (see main.rs).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -110,23 +154,29 @@ pub fn read_foliage_rfom(
     for f in 0..foliage_count {
         let rec_off = foliage_section_off + (f as u64) * FOLIAGE_SIZE;
 
+        // ---- Foliage header read, skipping +0x00..+0x08 (unk0 + ids) ----
         main_ig.stream.seek_to(rec_off + 0x08)?;
-        let texture_index = main_ig.stream.read_u32()? as u16;
-        let _unk5 = main_ig.stream.read_u32()?;
-        let index_off_u16 = main_ig.stream.read_u32()?;
-        let _null0 = main_ig.stream.read_u32()?;
-        let branch_vertex_off = main_ig.stream.read_u32()? as u64;
-        let _unk1 = main_ig.stream.read_u32()?;
+        let texture_index = main_ig.stream.read_u32()? as u16; // +0x08 textureIndex
+        let _unk5 = main_ig.stream.read_u32()?;                // +0x0C
+        let index_off_u16 = main_ig.stream.read_u32()?;        // +0x10 indexOffset (u16-units)
+        let _null0 = main_ig.stream.read_u32()?;               // +0x14
+        let branch_vertex_off = main_ig.stream.read_u32()? as u64; // +0x18 branchVertexOffset (bytes)
+        let _unk1 = main_ig.stream.read_u32()?;                // +0x1C
 
-        // branchLods[4] starts at +0x20
+        // ---- branchLods[4] @ +0x20 (4 × 8B = 32B) ----
+        // Each entry: { u32 indexOffset; u16 numIndices; u16 unk }
         let mut branch_lods: [(u32, u16); 4] = [(0, 0); 4];
         for slot in branch_lods.iter_mut() {
-            let idx_off = main_ig.stream.read_u32()?;
-            let num_indices = main_ig.stream.read_u16()?;
-            let _unk = main_ig.stream.read_u16()?;
+            let idx_off = main_ig.stream.read_u32()?;     // +0x00 (within entry)
+            let num_indices = main_ig.stream.read_u16()?; // +0x04
+            let _unk = main_ig.stream.read_u16()?;        // +0x06
             *slot = (idx_off, num_indices);
         }
 
+        // ---- spriteVertexOffset @ +0x40 ----
+        // Bytes offset into ps3levelverts.dat 0x9000 vertex buffer.
+        // The branch vertex count is derived from the byte gap between
+        // branchVertexOffset and spriteVertexOffset (see below).
         main_ig.stream.seek_to(rec_off + 0x40)?;
         let sprite_vertex_off = main_ig.stream.read_u32()? as u64;
 
@@ -174,6 +224,16 @@ pub fn read_foliage_rfom(
         let mut uvs: Vec<f32> = Vec::with_capacity(num_verts * 2);
         for k in 0..num_verts {
             let base = k * BRANCH_VERTEX_STRIDE;
+            // BranchVertex byte layout (20 B total — see file header doc):
+            //   +0x00..+0x02  half  position.x
+            //   +0x02..+0x04  half  position.y
+            //   +0x04..+0x06  half  position.z
+            //   +0x06..+0x08  half  position.w  (ignored)
+            //   +0x08..+0x0A  half  uv.u
+            //   +0x0A..+0x0C  half  uv.v
+            //   +0x0C..+0x10  u8[4] tangent       (octahedral?)
+            //   +0x10..+0x13  u8[3] normal
+            //   +0x13..+0x14  pad
             let rx = half_to_f32(u16::from_be_bytes([
                 vertex_block[base + 0], vertex_block[base + 1],
             ]));
@@ -183,7 +243,7 @@ pub fn read_foliage_rfom(
             let rz = half_to_f32(u16::from_be_bytes([
                 vertex_block[base + 4], vertex_block[base + 5],
             ]));
-            // skip position[3] (half at +6..+8)
+            // position[3] (w) skipped — unused.
             positions.push(rx * YARD_TO_M);
             positions.push(ry * YARD_TO_M);
             positions.push(rz * YARD_TO_M);
@@ -195,6 +255,39 @@ pub fn read_foliage_rfom(
             ]));
             uvs.push(u);
             uvs.push(v);
+            // tangent (+0x0C..+0x10) and normal (+0x10..+0x13) currently
+            // discarded. If lighting on foliage looks wrong, decode here.
+        }
+
+        // Sprite quads. Per IT's FoliageToGltf (extract.cpp:1032-1126), only
+        // LOD 0 is emitted. Each sprite is 6 vertices (two triangles forming a
+        // flat XY-plane quad) positioned at `centers[i]` with corner offsets
+        // from SpriteVertex.spriteSize. IT punts on billboard rotation — emits
+        // static geometry. We do the same: cheap, no shader work, looks OK.
+        let mut sprite_mesh = read_foliage_sprites(
+            &mut main_ig, &mut verts_ig,
+            rec_off, sprite_vertex_off,
+            ibuf_off, ibuf_len, vbuf_off, vbuf_len,
+            u64::from(index_off_u16),
+            texture_index,
+        ).unwrap_or(None);
+
+        let mut meshes = vec![TieMeshGeom {
+            shader_index: texture_index,
+            vertex_count: num_verts as u16,
+            index_count: lod0_num_indices,
+            positions,
+            uvs,
+            indices,
+        }];
+        if let Some(sp) = sprite_mesh.take() {
+            if log_probes {
+                eprintln!(
+                    "[rfom-foliage] foliage[{f}] sprite quads: {} verts, {} indices",
+                    sp.vertex_count, sp.index_count
+                );
+            }
+            meshes.push(sp);
         }
 
         let asset_tuid = rec_off;
@@ -202,14 +295,7 @@ pub fn read_foliage_rfom(
         tie_assets.push(TieAsset {
             tuid: asset_tuid,
             scale: [1.0, 1.0, 1.0],
-            meshes: vec![TieMeshGeom {
-                shader_index: texture_index,
-                vertex_count: num_verts as u16,
-                index_count: lod0_num_indices,
-                positions,
-                uvs,
-                indices,
-            }],
+            meshes,
             shader_tuids: identity_shader_tuids.clone(),
         });
     }
@@ -220,6 +306,12 @@ pub fn read_foliage_rfom(
     let mut sample_logged = 0usize;
     for i in 0..inst_count {
         let rec = inst_off + (i as u64) * FOLIAGE_INSTANCE_SIZE;
+
+        // ---- FoliageInstance.tm @ +0x00 (Matrix44 row-major, 64 B) ----
+        // Row 0 = X basis (xyz + w padding)
+        // Row 1 = Y basis
+        // Row 2 = Z basis
+        // Row 3 = translation (xyz, w=1)
         main_ig.stream.seek_to(rec + 0x00)?;
         let mut matrix = [0f32; 16];
         for slot in matrix.iter_mut() {
@@ -232,8 +324,11 @@ pub fn read_foliage_rfom(
             position_raw[2] * YARD_TO_M,
         ];
 
-        // FoliageInstance.foliage ptr is at +0xC4 (after Matrix44=0x40 +
-        // float[33]=0x84 → +0xC4)
+        // ---- foliage ptr @ +0xC4 ----
+        // The struct layout is: Matrix44 tm (64B = 0x40) + float unk0[33] (132B = 0x84),
+        // so the foliage pointer lands at 0x40 + 0x84 = 0xC4.
+        // It's a file offset into ps3levelmain.dat that should match one of
+        // our Foliage descriptor rec_off values.
         main_ig.stream.seek_to(rec + 0xC4)?;
         let foliage_ptr = main_ig.stream.read_u32()? as u64;
         let Some(&asset_idx) = foliage_ptr_to_asset.get(&foliage_ptr) else {
@@ -283,4 +378,209 @@ pub fn read_foliage_rfom(
     }
 
     Ok((tie_assets, instances))
+}
+
+/// Read the sprite-quad geometry for one Foliage descriptor. Returns None if
+/// the foliage has no sprite data (usedSpriteLods == 0 or pointer invalid).
+///
+/// Layout of fields used inside the Foliage record:
+///   +0x40  u32 spriteVertexOffset   (already known by caller via `sprite_vertex_off`)
+///   +0x44  u32 usedSpriteLods
+///   +0x48..+0xA8  SpriteLodRange[6]  (16 bytes each: u32 idxBegin, u32 idxEnd, u32 unk0, f32 unk1)
+///   +0xB8  PointerX86 spritePositions  (file offset to Vector4 array)
+///   +0xBC  u32 usedSpriteRanges
+///   +0xC0..+0x100  SpriteRange[8]  (8 bytes each: u16 idxBegin, u16 idxEnd, u16 positionsOffset, u16 numSprites)
+///
+/// SpriteVertex (12 bytes): float16 spriteSize[2] + USVector2 uv + u32 unk
+fn read_foliage_sprites<R: std::io::Read + std::io::Seek>(
+    main_ig: &mut IgFile<R>,
+    verts_ig: &mut IgFile<R>,
+    rec_off: u64,
+    sprite_vertex_off: u64,
+    ibuf_off: u64,
+    ibuf_len: u64,
+    vbuf_off: u64,
+    vbuf_len: u64,
+    foliage_index_off_u16: u64,
+    shader_index: u16,
+) -> Result<Option<TieMeshGeom>> {
+    const SPRITE_VERTEX_STRIDE: usize = 12;
+
+    // usedSpriteLods at +0x44
+    // ---- usedSpriteLods @ +0x44 ----
+    main_ig.stream.seek_to(rec_off + 0x44)?;
+    let used_sprite_lods = main_ig.stream.read_u32()? as usize;
+    if used_sprite_lods == 0 {
+        return Ok(None);
+    }
+
+    // ---- SpriteLodRange[0] @ +0x48 (16 B) ----
+    // IT only emits LOD 0 (it does `break;` after the first iteration in
+    // FoliageToGltf line ~1125). We mirror that for simplicity.
+    //   +0x00..+0x04  u32 indexBegin  — sprite-index window for this LOD
+    //   +0x04..+0x08  u32 indexEnd
+    //   +0x08..+0x0C  u32 unk0
+    //   +0x0C..+0x10  f32 unk1        — likely LOD distance threshold
+    main_ig.stream.seek_to(rec_off + 0x48)?;
+    let lod_idx_begin = main_ig.stream.read_u32()? as u64;
+    let lod_idx_end = main_ig.stream.read_u32()? as u64;
+    let _lod_unk0 = main_ig.stream.read_u32()?;
+    let _lod_unk1 = main_ig.stream.read_f32()?;
+
+    // ---- spritePositions ptr @ +0xB8 / usedSpriteRanges @ +0xBC ----
+    // spritePositions: u32 file offset into ps3levelmain.dat pointing at a
+    // packed Vector4 array. Per-range subsets are taken via positionsOffset
+    // (byte offset within this packed array).
+    main_ig.stream.seek_to(rec_off + 0xB8)?;
+    let sprite_positions_off = main_ig.stream.read_u32()? as u64;
+    let used_sprite_ranges = main_ig.stream.read_u32()? as usize;
+    if sprite_positions_off == 0 || used_sprite_ranges == 0 {
+        return Ok(None);
+    }
+
+    // ---- SpriteRange[8] @ +0xC0 (8 × 8B = 64 B) ----
+    //   +0x00..+0x02  u16 indexBegin       — first index in sprite-range's index window
+    //   +0x02..+0x04  u16 indexEnd
+    //   +0x04..+0x06  u16 positionsOffset  — byte offset within spritePositions array
+    //   +0x06..+0x08  u16 numSprites       — how many centers live in this range
+    let mut sprite_ranges: Vec<(u16, u16, u16, u16)> = Vec::with_capacity(used_sprite_ranges.min(8));
+    main_ig.stream.seek_to(rec_off + 0xC0)?;
+    for _ in 0..used_sprite_ranges.min(8) {
+        let idx_begin = main_ig.stream.read_u16()?;
+        let idx_end = main_ig.stream.read_u16()?;
+        let positions_offset = main_ig.stream.read_u16()?;
+        let num_sprites = main_ig.stream.read_u16()?;
+        sprite_ranges.push((idx_begin, idx_end, positions_offset, num_sprites));
+    }
+
+    let mut out_positions: Vec<f32> = Vec::new();
+    let mut out_uvs: Vec<f32> = Vec::new();
+    let mut out_indices: Vec<u32> = Vec::new();
+
+    for (idx_begin, idx_end, positions_offset, num_sprites) in sprite_ranges {
+        if num_sprites == 0 || idx_end <= idx_begin {
+            continue;
+        }
+
+        // Indices for this sprite range live in the shared index buffer at
+        // foliage.indexOffset (in u16 units) + r.indexBegin..r.indexEnd
+        let i_start = foliage_index_off_u16 + u64::from(idx_begin);
+        let i_count = u64::from(idx_end - idx_begin);
+        let i_byte_off = i_start * 2;
+        let i_byte_len = i_count * 2;
+        if i_byte_off + i_byte_len > ibuf_len {
+            eprintln!(
+                "warn: RFOM foliage sprite range index out of range ({:#X}+{} > {})",
+                i_byte_off, i_byte_len, ibuf_len
+            );
+            continue;
+        }
+
+        verts_ig.stream.seek_to(ibuf_off + i_byte_off)?;
+        let mut raw_indices: Vec<u16> = Vec::with_capacity(i_count as usize);
+        let mut max_index: u16 = 0;
+        for _ in 0..i_count {
+            let v = verts_ig.stream.read_u16()?;
+            if v > max_index { max_index = v; }
+            raw_indices.push(v);
+        }
+        let num_sprite_verts = max_index as usize + 1;
+
+        // Sprite vertices start at foliage.spriteVertexOffset (byte offset in
+        // shared vertex buffer).
+        let v_byte_len = (num_sprite_verts * SPRITE_VERTEX_STRIDE) as u64;
+        if sprite_vertex_off + v_byte_len > vbuf_len {
+            eprintln!(
+                "warn: RFOM foliage sprite range vertex out of range ({:#X}+{} > {})",
+                sprite_vertex_off, v_byte_len, vbuf_len
+            );
+            continue;
+        }
+        verts_ig.stream.seek_to(vbuf_off + sprite_vertex_off)?;
+        let sprite_vblock = verts_ig.stream.read_bytes(v_byte_len as usize)?;
+
+        // ---- Decode SpriteVertex array (12 B per record) ----
+        //   +0x00..+0x02  half  spriteSize.x   (corner offset from center, yards)
+        //   +0x02..+0x04  half  spriteSize.y
+        //   +0x04..+0x06  u16   uv.u           (normalised 0..65535)
+        //   +0x06..+0x08  u16   uv.v
+        //   +0x08..+0x0C  u32   unk            (IT speculates: normal?)
+        let mut sprite_size: Vec<(f32, f32)> = Vec::with_capacity(num_sprite_verts);
+        let mut sprite_uv: Vec<(f32, f32)> = Vec::with_capacity(num_sprite_verts);
+        for k in 0..num_sprite_verts {
+            let base = k * SPRITE_VERTEX_STRIDE;
+            let sx = half_to_f32(u16::from_be_bytes([sprite_vblock[base + 0], sprite_vblock[base + 1]]));
+            let sy = half_to_f32(u16::from_be_bytes([sprite_vblock[base + 2], sprite_vblock[base + 3]]));
+            // USVector2 uv at +0x04 (two u16 normalized? store as-is for now)
+            let u = (u16::from_be_bytes([sprite_vblock[base + 4], sprite_vblock[base + 5]]) as f32) / 65535.0;
+            let v = (u16::from_be_bytes([sprite_vblock[base + 6], sprite_vblock[base + 7]]) as f32) / 65535.0;
+            sprite_size.push((sx, sy));
+            sprite_uv.push((u, v));
+        }
+
+        // ---- Centers array (Vector4 records, 16 B per sprite) ----
+        // File offset = spritePositions ptr (Foliage +0xB8) + this range's
+        // positionsOffset. Each Vector4 is 4 × BE f32:
+        //   +0x00..+0x04  cx   (world-space sprite center, yards)
+        //   +0x04..+0x08  cy
+        //   +0x08..+0x0C  cz
+        //   +0x0C..+0x10  cw   (ignored)
+        let centers_byte_off = sprite_positions_off + u64::from(positions_offset);
+        main_ig.stream.seek_to(centers_byte_off)?;
+        let mut centers: Vec<[f32; 3]> = Vec::with_capacity(num_sprites as usize);
+        for _ in 0..num_sprites {
+            let cx = main_ig.stream.read_f32()?;
+            let cy = main_ig.stream.read_f32()?;
+            let cz = main_ig.stream.read_f32()?;
+            let _cw = main_ig.stream.read_f32()?;
+            centers.push([cx, cy, cz]);
+        }
+
+        // For each sprite i in this range, IT emits 6 vertices using idx[i*6+d]
+        // unless the sprite is outside the current LOD's index window.
+        // Each emitted vertex's position = centers[i] + (size.x, size.y, 0) yards.
+        for sprite_i in 0..(num_sprites as usize) {
+            let sprite_index = sprite_i * 6 + idx_begin as usize;
+            // LOD-window check (IT punts to LOD 0; we mirror)
+            if (sprite_index as u64) < lod_idx_begin
+                || (sprite_index as u64) >= lod_idx_end
+            {
+                continue;
+            }
+            for d in 0..6 {
+                let local = sprite_i * 6 + d;
+                if local >= raw_indices.len() {
+                    break;
+                }
+                let v_idx = raw_indices[local] as usize;
+                if v_idx >= num_sprite_verts {
+                    continue;
+                }
+                let (sx, sy) = sprite_size[v_idx];
+                let (u, v) = sprite_uv[v_idx];
+                let c = centers[sprite_i];
+                let next_index = out_positions.len() / 3;
+                out_positions.push((c[0] + sx) * YARD_TO_M);
+                out_positions.push((c[1] + sy) * YARD_TO_M);
+                out_positions.push(c[2] * YARD_TO_M);
+                out_uvs.push(u);
+                out_uvs.push(v);
+                out_indices.push(next_index as u32);
+            }
+        }
+    }
+
+    if out_positions.is_empty() {
+        return Ok(None);
+    }
+    let vertex_count = (out_positions.len() / 3) as u16;
+    let index_count = out_indices.len() as u16;
+    Ok(Some(TieMeshGeom {
+        shader_index,
+        vertex_count,
+        index_count,
+        positions: out_positions,
+        uvs: out_uvs,
+        indices: out_indices,
+    }))
 }

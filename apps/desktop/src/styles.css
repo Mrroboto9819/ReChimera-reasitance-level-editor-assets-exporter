@@ -3189,6 +3189,40 @@ textarea {
   color: var(--text-1);
   background: hsla(202, 100%, 67%, 0.18);
 }
+
+.cache-library-subtabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px 10px 6px;
+  border-bottom: 1px solid var(--border-1);
+}
+.cache-library-subtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: var(--r-1);
+  cursor: pointer;
+  font-family: inherit;
+}
+.cache-library-subtab:hover {
+  color: var(--text-1);
+  background: rgba(255, 255, 255, 0.04);
+}
+.cache-library-subtab.active {
+  color: var(--text-1);
+  background: hsla(202, 100%, 67%, 0.18);
+}
+.cache-library-subtab-count {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
 .cache-library-reextract {
   flex: 0 0 auto;
   display: inline-flex;

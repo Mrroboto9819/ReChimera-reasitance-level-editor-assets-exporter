@@ -1,21 +1,65 @@
-//! RFOM shrub (foliage) reader. Ports IT's `ShrubsToGltf` at
-//! `levelmain/extract.cpp:1145-1279`.
+//! RFOM shrub reader. Ports IT's `ShrubsToGltf` (extract.cpp:1145-1279).
 //!
-//! Two sections involved (both in `ps3levelmain.dat`):
-//! - **`0xC700` Shrub** (48 bytes each) — mesh metadata: vertex/index buffer
-//!   offsets + material index + wind-sway params (unk1\[4\] not yet decoded).
-//! - **`0xC650` Shrubs** (single record) — instance container: holds
-//!   `numInstances` × `ShrubCluster` (80B) + `unk0` × `ShrubInstance` (64B).
+//! ## Sections used (all in `ps3levelmain.dat`)
 //!
-//! Each `ShrubCluster` references up to 16 shrubs via `shrubsMask` and walks
-//! `localRanges[4]` to determine how many `ShrubInstance` slots each
-//! referenced shrub claims out of `Vis()`. The cluster's `tm` field is
-//! ignored here (IT also ignores it for glTF emit — instances are placed
-//! directly in world space via `vis.position`).
+//! ### `0xC700` Shrub — 48 bytes per record, **mesh metadata**
+//! ```text
+//! +0x00..+0x04  u32   vertexBufferOffset  — byte offset into ps3levelverts.dat 0x9000
+//! +0x04..+0x08  u32   indexOffset         — u16-units into ps3levelverts.dat 0x9100
+//! +0x08..+0x0C  u32   numIndices
+//! +0x0C..+0x10  u32   unk0
+//! +0x10..+0x20  float unk1[4]             — wind-sway params (not decoded)
+//! +0x20..+0x22  u16   materialIndex
+//! +0x22..+0x2E  u32   unk2[3]
+//! ```
 //!
-//! Vertex format: `ShrubVertex` (16 bytes per IT's `vertex.hpp:56-60`):
-//! `int16 position[4]` + `UCVector4 color` + `float16 uv[2]`. Position is
-//! multiplied by `YARD_TO_M` like detail clusters.
+//! ### `0xC650` Shrubs — single record, **instance container**
+//! ```text
+//! +0x00..+0x04  u32   unk0                — Vis() array length
+//! +0x04..+0x08  u32   unkOffset           — byte offset to ShrubInstance array (Vis)
+//! +0x08..+0x0C  u32   numInstances        — number of ShrubClusters
+//! +0x0C..+0x10  u32   instancesOffset     — byte offset to ShrubCluster array
+//! +0x10..+0x60  u32   unk[20]             — flags/sentinels (not decoded)
+//! ```
+//!
+//! ### `ShrubCluster` — 80 bytes per record (inside the Shrubs container)
+//! ```text
+//! +0x00..+0x40  es::Matrix44 tm           — cluster transform (IGNORED — see note below)
+//! +0x40..+0x48  LocalRange[4]             — 4 × { u8 count; u8 offset } pairs
+//! +0x48..+0x4C  u32   visOffset           — base index into the Vis array for this cluster
+//! +0x4C..+0x4E  u16   shrubsMask          — bitmask: bit i set ⇒ this cluster uses shrub index (15-i)
+//! +0x4E..+0x50  u16   unk1
+//! ```
+//!
+//! ### `ShrubInstance` (Vis array entry) — 64 bytes per record
+//! ```text
+//! +0x00..+0x0C  float position[3]         — world-space (yards) center of one shrub
+//! +0x0C..+0x10  float scale
+//! +0x10..+0x1C  float r1[3]               — rotation matrix row 1 (basis X)
+//! +0x1C..+0x20  float unk0
+//! +0x20..+0x2C  float r2[3]               — rotation matrix row 2 (basis Y)
+//! +0x2C..+0x40  float unk1[5]             — 20 bytes undecoded
+//! ```
+//! Note: row 3 (basis Z) is reconstructed as r1 × r2 cross product.
+//!
+//! ### `ShrubVertex` — 16 bytes (in shared vertex buffer 0x9000)
+//! ```text
+//! +0x00..+0x08  int16  position[4]        — XYZ + ignored W (multiply XYZ by YARD_TO_M)
+//! +0x08..+0x0C  uint8  color[4]           — vertex color (UCVector4, unused for now)
+//! +0x0C..+0x10  float16 uv[2]
+//! ```
+//!
+//! ## Cluster→instance walking algorithm
+//!
+//! Each `ShrubCluster` references up to 16 unique shrub-mesh indices via
+//! `shrubsMask`. For every set bit i, the cluster claims a contiguous slice
+//! of `Vis()` defined by `localRanges[localId]`:
+//!   - `localId` starts at 0 and increments each time we find a set bit.
+//!   - The slice is `Vis[visOffset + offset .. visOffset + offset + count]`.
+//!   - The shrub-mesh index used by that slice is `15 - i` (per IT).
+//!
+//! The cluster's own `tm` matrix is ignored — each `ShrubInstance.position`
+//! is already in world space, so we use it directly. IT does the same.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -100,15 +144,19 @@ pub fn read_shrubs_rfom(
 
     for s in 0..shrub_count {
         let rec_off = shrub_section_off + (s as u64) * SHRUB_SIZE;
+
+        // ---- Shrub record (48 B) — see file-header doc for full layout ----
         main_ig.stream.seek_to(rec_off + 0x00)?;
-        let vertex_buf_off = main_ig.stream.read_u32()? as u64;
-        let index_off_u16 = main_ig.stream.read_u32()?;
-        let num_indices = main_ig.stream.read_u32()? as u64;
-        let _unk0 = main_ig.stream.read_u32()?;
+        let vertex_buf_off = main_ig.stream.read_u32()? as u64;  // +0x00 vertexBufferOffset (bytes)
+        let index_off_u16 = main_ig.stream.read_u32()?;          // +0x04 indexOffset (u16 units)
+        let num_indices = main_ig.stream.read_u32()? as u64;     // +0x08 numIndices
+        let _unk0 = main_ig.stream.read_u32()?;                  // +0x0C unk0
+        // +0x10..+0x20  float unk1[4]  — wind sway parameters (read+discard)
         for _ in 0..4 {
             let _ = main_ig.stream.read_f32()?;
         }
-        let material_index = main_ig.stream.read_u16()?;
+        let material_index = main_ig.stream.read_u16()?;         // +0x20 materialIndex
+        // +0x22..+0x2E  u32 unk2[3]  — not read (we already have all we need)
 
         if num_indices == 0 || num_indices > 0x100000 {
             skipped += 1;
@@ -155,12 +203,21 @@ pub fn read_shrubs_rfom(
         let mut uvs: Vec<f32> = Vec::with_capacity(num_verts * 2);
         for k in 0..num_verts {
             let base = k * SHRUB_VERTEX_STRIDE;
-            // IT declares ShrubVertex.position as int16[4] in vertex.hpp but
-            // the attribute descriptor in ShrubsToGltf uses
-            // `R16G16B16A16 FLOAT` — i.e. four half-precision floats. So
-            // decode as half2f, NOT as i16. Reading as i16 produced a single
-            // ~30 km mesh covering the entire map because raw i16 values like
-            // 32000 multiplied by YARD_TO_M land in the kilometres.
+            // ShrubVertex byte layout (16 B per vertex):
+            //   +0x00..+0x02  half  position.x
+            //   +0x02..+0x04  half  position.y
+            //   +0x04..+0x06  half  position.z
+            //   +0x06..+0x08  half  position.w  (ignored)
+            //   +0x08..+0x0C  u8[4] vertex color (UCVector4, currently unused)
+            //   +0x0C..+0x0E  half  uv.u
+            //   +0x0E..+0x10  half  uv.v
+            //
+            // CRITICAL: IT declares position as int16[4] in vertex.hpp:56-60
+            // but the attribute descriptor used in ShrubsToGltf says
+            // `R16G16B16A16 FLOAT`. The runtime treats these as halfs.
+            // Reading as i16 produced a single ~30 km mesh blob covering the
+            // whole map (raw i16 like 32000 × YARD_TO_M = ~29 km). Decode as
+            // half-float to get sensible meter-scale geometry.
             let rx = half_to_f32(u16::from_be_bytes([
                 vertex_block[base + 0], vertex_block[base + 1],
             ]));
@@ -173,7 +230,6 @@ pub fn read_shrubs_rfom(
             positions.push(rx * YARD_TO_M);
             positions.push(ry * YARD_TO_M);
             positions.push(rz * YARD_TO_M);
-            // bytes +0x08..0x0C = UCVector4 vertex color (not used yet)
             let uv_base = base + 0x0C;
             let u = half_to_f32(u16::from_be_bytes([
                 vertex_block[uv_base],
@@ -206,6 +262,12 @@ pub fn read_shrubs_rfom(
 
     let mut instances: Vec<TieInstance> = Vec::new();
     let shrubs_off = u64::from(shrubs_section.offset);
+
+    // ---- Shrubs container header (first 16 B of section 0xC650) ----
+    //   +0x00..+0x04  u32 unk0            (Vis array length)
+    //   +0x04..+0x08  u32 unkOffset       (byte offset to Vis array, relative to shrubs_off)
+    //   +0x08..+0x0C  u32 numInstances    (number of ShrubClusters)
+    //   +0x0C..+0x10  u32 instancesOffset (byte offset to ShrubCluster array, relative to shrubs_off)
     main_ig.stream.seek_to(shrubs_off + 0x00)?;
     let vis_count = main_ig.stream.read_u32()? as usize;
     let vis_off_rel = main_ig.stream.read_u32()? as u64;
@@ -226,13 +288,23 @@ pub fn read_shrubs_rfom(
     let mut sample_logged = 0usize;
     for c in 0..cluster_count {
         let cluster_off = cluster_base + (c as u64) * SHRUB_CLUSTER_SIZE;
+
+        // Skip cluster.tm (Matrix44 @ +0x00..+0x40) — IT ignores it for glTF
+        // emit; each ShrubInstance.position is already world-space yards.
+        // Read the post-matrix metadata:
         main_ig.stream.seek_to(cluster_off + 0x40)?;
+
+        // ---- LocalRange[4] @ +0x40..+0x48 (4 × 2B = 8B) ----
+        // Each entry: { u8 count, u8 offset }
+        //   count  = how many Vis records this slot claims
+        //   offset = where in the cluster's Vis window the slot starts
         let mut local_ranges = [(0u8, 0u8); 4];
         for r in 0..4 {
             let cnt = main_ig.stream.read_u8()?;
             let off = main_ig.stream.read_u8()?;
             local_ranges[r] = (cnt, off);
         }
+        // +0x48..+0x4C  u32 visOffset   (base into the global Vis array)
         let vis_offset = main_ig.stream.read_u32()? as u64;
         let shrubs_mask = main_ig.stream.read_u16()?;
 
@@ -259,6 +331,14 @@ pub fn read_shrubs_rfom(
                     continue;
                 }
                 let vis_rec = vis_base + vis_slot * SHRUB_INSTANCE_SIZE;
+
+                // ---- ShrubInstance record (64 B) ----
+                //   +0x00..+0x0C  float position[3]  — world XYZ (yards)
+                //   +0x0C..+0x10  float scale
+                //   +0x10..+0x1C  float r1[3]        — basis X
+                //   +0x1C..+0x20  float unk0
+                //   +0x20..+0x2C  float r2[3]        — basis Y
+                //   +0x2C..+0x40  float unk1[5]      — 20 B undecoded
                 main_ig.stream.seek_to(vis_rec + 0x00)?;
                 let px = main_ig.stream.read_f32()?;
                 let py = main_ig.stream.read_f32()?;
@@ -275,6 +355,7 @@ pub fn read_shrubs_rfom(
                     main_ig.stream.read_f32()?,
                     main_ig.stream.read_f32()?,
                 ];
+                // r3 (basis Z) reconstructed below via r1 × r2 cross product.
                 let r3 = [
                     r1[1] * r2[2] - r1[2] * r2[1],
                     r1[2] * r2[0] - r1[0] * r2[2],

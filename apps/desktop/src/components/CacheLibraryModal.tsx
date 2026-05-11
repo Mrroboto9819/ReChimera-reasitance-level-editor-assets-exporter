@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  classifySound,
   exportTextureDds,
   exportTexturePng,
   extractOneSound,
@@ -30,6 +31,7 @@ import {
   type ExtractedSound,
   type Instance,
   type LevelMeshes,
+  type SoundCategory,
   type SoundEntry,
   type TextureBlobMap,
 } from "../api";
@@ -263,19 +265,36 @@ export function CacheLibraryModal({
     return out;
   }, [filter, manifest, search]);
 
+  const [soundCategory, setSoundCategory] = useState<SoundCategory | "all">(
+    "all",
+  );
+
   const soundRows = useMemo(() => {
     if (filter !== "sound") return [];
     if (!sounds) return [];
     const needle = search.trim().toLowerCase();
-    return sounds.filter((s) =>
-      needle
+    return sounds.filter((s) => {
+      if (soundCategory !== "all" && classifySound(s.source) !== soundCategory) {
+        return false;
+      }
+      return needle
         ? s.name.toLowerCase().includes(needle) ||
-          s.source.toLowerCase().includes(needle)
-        : true,
-    );
-  }, [filter, sounds, search]);
+            s.source.toLowerCase().includes(needle)
+        : true;
+    });
+  }, [filter, sounds, search, soundCategory]);
 
-  
+  const soundCategoryCounts = useMemo(() => {
+    const counts = { all: 0, sfx: 0, dialog: 0, music: 0 };
+    if (filter !== "sound" || !sounds) return counts;
+    for (const s of sounds) {
+      counts.all++;
+      counts[classifySound(s.source)]++;
+    }
+    return counts;
+  }, [filter, sounds]);
+
+
   useEffect(() => {
     setSelectedTuid(null);
   }, [filter]);
@@ -447,6 +466,17 @@ export function CacheLibraryModal({
   }, [filter, folder, selectedTextureId]);
 
   const [selectedSoundKey, setSelectedSoundKey] = useState<string | null>(null);
+
+  // If the selected sound falls out of the current category filter, clear it.
+  useEffect(() => {
+    if (filter !== "sound" || !selectedSoundKey) return;
+    if (!soundRows.some(
+      (s) => `${s.source}-${s.index}-${s.name}` === selectedSoundKey,
+    )) {
+      setSelectedSoundKey(null);
+    }
+  }, [filter, soundRows, selectedSoundKey]);
+
   const [decodedSoundCache, setDecodedSoundCache] = useState<
     Map<string, ExtractedSound>
   >(new Map());
@@ -1200,6 +1230,42 @@ export function CacheLibraryModal({
             />
             <span className="dim small">{totalShown}</span>
           </div>
+          {filter === "sound" && (
+            <div
+              className="cache-library-subtabs"
+              role="tablist"
+              aria-label="Sound category"
+            >
+              {(
+                [
+                  ["all", "All"],
+                  ["sfx", "SFX"],
+                  ["dialog", "Dialog"],
+                  ["music", "Music"],
+                ] as const
+              ).map(([key, label]) => {
+                const count = soundCategoryCounts[key];
+                const isActive = soundCategory === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    role="tab"
+                    aria-selected={isActive}
+                    className={`cache-library-subtab${
+                      isActive ? " active" : ""
+                    }`}
+                    onClick={() => setSoundCategory(key)}
+                  >
+                    {label}
+                    <span className="cache-library-subtab-count dim small">
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           {manifestError && (
             <div className="cache-library-extract-cta">
               <div className="cache-library-extract-title">No cache yet</div>

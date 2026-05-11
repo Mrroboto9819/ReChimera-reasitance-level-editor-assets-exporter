@@ -844,11 +844,25 @@ export const findGlbTextures = (
 
 
 
+export type SoundCategory = "sfx" | "dialog" | "music";
+
+/// Classify a sound entry by its source filename. Works for all 4 supported
+/// games — Insomniac uses consistent naming:
+///   - `*dialogue*` / `*voice*` → dialog
+///   - `*music*`                → music
+///   - `*sound*` and everything else → sfx
+export function classifySound(source: string): SoundCategory {
+  const s = source.toLowerCase();
+  if (s.includes("dialogue") || s.includes("voice")) return "dialog";
+  if (s.includes("music")) return "music";
+  return "sfx";
+}
+
 export interface SoundEntry {
   name: string;
-  
+
   index: number;
-  
+
 
   
 
