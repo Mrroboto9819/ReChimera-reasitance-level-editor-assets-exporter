@@ -2,8 +2,12 @@
 
 This release is `feature/cache-mdoels-and-optimize-flow-base-on-IT` →
 `develop` merge. The previous RFOM-heavy round shipped foliage / shrubs
-/ skybox / visemes; **this round is focused on Tools of Destruction**
-plus cross-game cache modal + texture pipeline improvements.
+/ skybox / visemes; **this round adds Tools of Destruction and unlocks
+R&C: A Crack in Time experimentally**, plus cross-game cache modal +
+texture pipeline improvements. ACiT levels (both vanilla and
+mod-extracted) now open end-to-end with geometry + ties + ufrags +
+~95% of textures; the remaining gap is shared `.psarc` content and a
+shader-additional-slots question.
 
 **New lunalib modules** (parsers / writers)
 - `crates/lunalib/src/foliage_rfom.rs` — RFOM Foliage (`0xC200` + `0x9700`) branch meshes + sprite quads
@@ -24,7 +28,11 @@ plus cross-game cache modal + texture pipeline improvements.
 - `crates/lunalib/src/tie_old.rs` *(TOD)* — per-axis scale per-vertex; pre-walk meshes to compute `max_v_local_end` and slurp only what's needed (fixes the 61 failing ties)
 - `crates/lunalib/src/moby_old.rs`, `tie_old.rs`, `moby_rfom.rs`, `tie_rfom.rs` — new `_with_total` variants firing `on_total` callback with section count upfront so cache modal shows real progress
 - `crates/lunalib/src/zone_old.rs` *(TOD)* — extended from tie-instances-only to also read UFrag terrain at `0x6200` + identity shader table sized to `main.dat:0x5000`
-- `apps/desktop/src-tauri/src/cache.rs` — pair-frame anim transform (when `stride==min_data && n8==0`), 3-phase texture write (materials → normalmaps → textures), `[tod-anim]` + `[tod-trans-probe]` diagnostic probes, `[anim-bytes]` byte-dump probe gated on `RECHIMERA_LOG_PROBES`
+- `crates/lunalib/src/moby.rs` *(V2 / ACiT)* — graceful fallback when per-moby `0xE100` (indices) / `0xE200` (vertices) are absent: emit empty mesh + one-time `[acit-probe]` multi-interp hex dump of unknown sections; new `[cache] mobys: total / with_geometry / logic_only` summary
+- `crates/lunalib/src/tie.rs` *(V2 / ACiT)* — `shader_index` resolution is now ACiT-aware: tries V2's `+0x28` first, falls back to ACiT's `+0x0C` when V2 offset reads out-of-range; `+0x28` fast path unchanged for R2 / R3 / RCF / A4O
+- `crates/lunalib/src/texture.rs` *(V2 / ACiT)* — `textures.dat` fallback when `0x1D1C0` high-mip pointer has `length == 0` (recovers per-texture base mips); `highmips.dat` open is now optional — when absent, every texture routes through `textures.dat` with half-resolution decoding (the meta declares top-mip dimensions, base-mip chain starts at `width/2 × height/2`); new `[tex-drop]` summary line categorising every drop reason and `[tex-fallback]` line listing the first 8 truly-missing texture IDs
+- `crates/lunalib/src/shader.rs` *(V2 / ACiT)* — `[shader-probe]` diagnostic dump of the first 3 shaders' `0x5D00` section (hex + u32 BE) to RE additional texture slots beyond albedo / normal / expensive
+- `apps/desktop/src-tauri/src/cache.rs` — pair-frame anim transform (when `stride==min_data && n8==0`), 3-phase texture write (materials → normalmaps → textures), `[tod-anim]` + `[tod-trans-probe]` diagnostic probes, `[anim-bytes]` byte-dump probe gated on `RECHIMERA_LOG_PROBES`, new `[cache] -> phase ...` markers + `V2 tie reader done — N ties` + `V2 textures done — encoded=N PNGs` end-of-phase lines so the log shows exactly where extraction is in the pipeline
 
 **App / UI**
 - `apps/desktop/src-tauri/src/cache.rs` (+855 lines) — full-map export, multi-moby debug filter, foliage/shrub/sky/gameplay cache writers
@@ -51,6 +59,18 @@ mislabeled readers still exist as files but are no longer called from
 ---
 
 # What's new
+
+## R&C: A Crack in Time pipeline (experimental, new this round)
+
+ACiT was previously locked in the wizard. This round opens it up — the game's V2 layout (it ships `assetlookup.dat`) lets it ride on the R2/R3 parser, but it has enough engine-level differences to need dedicated handling. Net result: levels open and render with geometry + ties + ufrags + most textures.
+
+- **Game card unlocked.** Wizard adds R&C: A Crack in Time to the Ratchet & Clank tab with the franchise art. R&C: Full Frontal Assault is now `supported: false` (locked with the "Not yet supported" overlay) until its V2 path is re-validated end-to-end.
+- **Logic-only mobys handled gracefully.** ~1 in 175 mobys (e.g. trigger / audio / spawn entities) ship without `0xE100`/`0xE200` index/vertex sections. Previously the cache extraction aborted with `section 0xE100 not found`; now those mobys emit empty meshes and the rest of the level extracts. Verified `total=115 with_geometry=114 logic_only=1` on `acid_refinery_pre`, `total=175 with_geometry=175 logic_only=0` on `nefarious_station`.
+- **`highmips.dat` optional.** Vanilla ACiT levels (e.g. `nefarious_station/built/levels/`) don't ship `highmips.dat` — only `textures.dat`. Previously the cache aborted with `io: The system cannot find the file specified`. Now every texture routes through `textures.dat` at half resolution (the meta's `width`/`height` describe the top mip in `highmips.dat`; the base-mip chain in `textures.dat` starts at `width/2 × height/2`). Verified by byte-math: `DXT1 512² mip chain starting at 256² = 32768 + 8192 + 2048 + 512 + 128 + 32 + 8 = 43688 bytes` — matches the raw length exactly. All 1410 → 1524 needed textures decode cleanly.
+- **`textures.dat` per-texture fallback.** When a high-mip pointer in `0x1D1C0` has `length == 0` (5 textures on `acid_refinery_pre`), the per-texture loop now looks up the same tuid in `0x1D180` (base-mip table) and reads from `textures.dat` — recovers all 5 with the same half-res mip-chain interpretation.
+- **Tie shader_index offset fix.** ACiT ties' per-mesh struct stores `shader_index` at `+0x0C`, not V2's `+0x28`. Without the fix, every tie mesh resolved to no shader (V2's `+0x28` reads `0xFFFF` sentinel in ACiT) → all 96 ties rendered gray. Fix is a try-V2-then-ACiT cascade keyed on whether the read value is `< shader_count`: R2 / R3 / RCF / A4O always hit the V2 fast path, ACiT falls through and recovers. Verified across three ties — `+0x0C` reads `{0, 1, 3}` (in `[0, count)` range) where `+0x28` reads `{65535, 65535, 65535}`.
+- **Diagnostic probe stack** (all gated on `RECHIMERA_LOG_PROBES=1`): `[acit-probe]` dumps unknown moby sections; `[tex-fallback]` lists base-mip table layout + first 8 truly-missing texture IDs with bottom-32 cross-check against every table tuid; `[tex-drop]` categorises every dropped texture (zero-length / recovered-from-textures-dat / needed-only-in-base / needed-in-cubemap / needed-in-neither / decode-empty / downsample-empty / encode-empty); `[tie-mesh-probe]` dumps first-mesh 0x40 bytes with hex + u16 BE for offset hunting; `[shader-probe]` dumps the first 3 shaders' `0x5D00` section for additional texture-slot RE.
+- **External-asset gap quantified.** On `acid_refinery_pre`: 36/736 textures are referenced by shaders but absent from `0x1D180` / `0x1D1C0` / `0x1D200` in this level's `assetlookup.dat`. On `nefarious_station`: 86/1610. Cross-check confirms these aren't truncation collisions — no table tuid's bottom-32 matches any missing ID. They live in a sibling `.psarc` (shared art / globals / UI) that needs to be extracted into the same level folder. Engine renders engine-default placeholders for these at runtime; our viewport renders gray.
 
 ## R&C: Tools of Destruction pipeline
 
@@ -107,6 +127,13 @@ mislabeled readers still exist as files but are no longer called from
 - **Gameplay placements** — `ps3gameplay.dat` is parsed and 184-ish moby placements feed the viewport / Godot. Probing scaffold added for the 6 unidentified sub-arrays (triggers / volumes / spawns) — set `RECHIMERA_LOG_PROBES=1` to dump them and help reverse-engineer.
 - **Full-map GLB export** — now bakes everything (mobys, ties, details, shrubs, foliage, terrain, sky) into a single drag-into-Godot file.
 
+## R&C: A Crack in Time (newly unlocked, experimental)
+
+- **Wizard card unlocked.** Tile is selectable, opens through the same V2 path as R2/R3 with ACiT-specific fallbacks documented above. Logo: `R&Clank_A_Crack_in_Time.png`. Marked experimental in the byline because the 86-texture external-psarc gap and the shader-additional-slots question remain open.
+- **`acid_refinery_pre` (mod, with `highmips.dat`) verified end-to-end** — 114/115 mobys with geometry, 86 ties (all resolving shaders correctly after the `+0x0C` fix), 700/736 textures, ufrags loading, animset library populated.
+- **`nefarious_station` (vanilla, no `highmips.dat`) verified end-to-end** — 175/175 mobys with geometry, 96 ties (all resolving), 1524/1610 textures via the `textures.dat` half-res fallback, ufrags loading.
+- **Sibling-psarc hint to be added to wizard** — the 36–86 truly-missing textures per level are shared assets. Users with vanilla extracts should pull `common.psarc` / `globals.psarc` / `ratchet.psarc` (whatever is in the parent of the level folder) into the same directory before extraction. The card hint will be updated to mention this in the next round.
+
 ## Resistance 2 / Resistance 3 / R&C: Full Frontal Assault / R&C: All 4 One
 
 - **Sound tab categorised** — SFX / Dialog / Music sub-tabs with counts. Source-filename classifier works the same across all V2 games.
@@ -133,6 +160,10 @@ mislabeled readers still exist as files but are no longer called from
 - **TOD lighting data.** TOD definitely has dynamic lighting in-game; the section IDs that hold light placements aren't identified. RFOM has its own (different) lighting sections and ReLunacy doesn't cover this for TOD.
 - **TOD skybox.** No working reference exists — IT has no TOD decoder, and every ReLunacy branch we audited (`master`, `dev`, `bliss`, `bliss-old-loader`) lacks one (only an unused stub in `dev`). TOD levels currently render with no sky. Would need raw-byte probing of `main.dat` for the dome / texture descriptor sections; no candidate section IDs identified yet.
 - **RFOM lights and gameplay sub-arrays.** If anyone wants to help, see "Help wanted" — both are reverse-engineering tasks gated on raw byte probes from real levels.
+- **ACiT shared-psarc texture hint in wizard.** The ACiT card needs a "extract any sibling `.psarc` (globals / common / art) into the same folder for full texture coverage" note added to its `hint` string.
+- **ACiT shader additional texture slots.** Current `parse_shader` reads 3 u32s from `0x5D00 + 0x10` (albedo / normal / expensive). ACiT shaders may have more slots (detail / lightmap / specular / decal) at higher offsets — the `[shader-probe]` dump in this round captures the data needed to RE them and adds 0–N more texture refs to the resolution path.
+- **ACiT animations audit.** Verified mobys carry skeletons (`[skel-shift]` lines show recovered shifts) but the V2 animset decoder hasn't been tested against ACiT animsets — needs a clip-by-clip check on a known-animated moby.
+- **R&C Full Frontal Assault re-validation.** Locked in the wizard this round; needs a fresh test pass on real FFA level data to confirm whether the V2 path still handles it cleanly or whether it needs FFA-specific gates (its texture format bytes `0x81..0x8B` + `0xA6` are still in `TexFormat::from_byte`, so the decode side should be intact).
 
 # Game support
 
@@ -142,8 +173,9 @@ mislabeled readers still exist as files but are no longer called from
 | Resistance 3 | stable end-to-end |
 | Resistance: Fall of Man | full pipeline + foliage + skybox + visemes + sound (extract `game.psarc` first) |
 | R&C: All 4 One | all features working |
-| R&C: Full Frontal Assault | working — a few textures still missing |
+| R&C: Full Frontal Assault | **locked in wizard** this round — needs a re-validation pass against current V2 pipeline before re-enabling |
 | R&C: Tools of Destruction | meshes / textures / skeletons / ties / terrain / tie placements all load. Animations export T-pose (pair-frame encoding RE'd for simple anims, complex i8-delta encoding unsolved — see Coming next). No skybox (no IT/ReLunacy reference exists). |
+| R&C: A Crack in Time | **newly unlocked, experimental** — meshes / skeletons / ties / ufrags / animsets all load on both vanilla and mod-extracted levels. Textures ~95% (the rest live in a shared sibling `.psarc` not in the level folder). Animations untested. |
 
 # Known limitations
 
@@ -152,6 +184,9 @@ mislabeled readers still exist as files but are no longer called from
 - **Collision geometry** — no IT reference exists for RFOM collision, and TOD's `collision.dat` isn't parsed yet either. Godot users can auto-generate collision from the GLB mesh geometry on import as a workaround. The viewport "Collision" toggle was removed this round since it had no backend.
 - **TOD complex animations** — i8 delta-track encoding (n8>0) remains unsolved; ~95% of TOD anims export as T-pose. Simple anims (n8=0, pair-frame encoded) play correctly. See Coming next.
 - **TOD skybox** — not extracted. No reference in any audited ReLunacy branch (`master` / `dev` / `bliss` / `bliss-old-loader`) and no IT support. TOD levels render without a sky background; the cache produces no `skybox/` folder.
+- **ACiT external textures** — ~5% of shader-referenced texture IDs (36 on `acid_refinery_pre`, 86 on `nefarious_station`) aren't in the level's own `assetlookup.dat`. These are shared assets in a sibling `.psarc` that needs to be extracted alongside the level (e.g. `common.psarc` / `globals.psarc`). Engine renders default placeholders in-game; our viewport renders gray for these meshes.
+- **ACiT shader extra slots** — `parse_shader` reads only albedo / normal / expensive at `+0x10..+0x18`. If ACiT shaders carry more texture references (detail / lightmap / specular at later offsets), they aren't applied yet. Probe scaffold is in place — see Coming next.
+- **R&C: Full Frontal Assault locked in wizard** — pending re-validation; previously listed as "a few textures still missing" but not retested against the current V2 pipeline.
 
 # Install
 

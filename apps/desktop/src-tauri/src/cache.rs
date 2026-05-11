@@ -1076,6 +1076,7 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         .map_err(|e| e.to_string())?;
     }
 
+    eprintln!("[cache] -> phase ties (layout={})", layout.tag());
     let mut tie_done = 0usize;
     if debug_filter.is_some() {
         eprintln!("[cache] debug mode: skipping ties / details / ufrags / sky / lights / envsamplers");
@@ -1484,6 +1485,7 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
             total,
         });
     };
+    eprintln!("[cache] -> V2 tie reader starting");
     read_tie_assets_with_total(
         level_path,
         None,
@@ -1492,15 +1494,25 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
 
             tie_assets_for_glb.push(asset.clone());
 
+            let mut tie_meshes_total = 0usize;
+            let mut tie_meshes_with_albedo = 0usize;
+            let mut tie_first_st: Option<u64> = None;
             let submeshes: Vec<_> = asset
                 .meshes
                 .into_iter()
                 .map(|m| {
+                    tie_meshes_total += 1;
+                    if tie_first_st.is_none() {
+                        tie_first_st = asset.shader_tuids
+                            .get(m.shader_index as usize)
+                            .copied();
+                    }
                     let (albedo, normal, emissive) = resolve_shader_textures(
                         &shaders,
                         &asset.shader_tuids,
                         m.shader_index as usize,
                     );
+                    if albedo.is_some() { tie_meshes_with_albedo += 1; }
                     if let Some(id) = albedo { needed_albedos.insert(id); }
                     if let Some(id) = normal { needed_normals.insert(id); }
                     if let Some(id) = emissive { needed_emissives.insert(id); }
@@ -1516,6 +1528,28 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                     )
                 })
                 .collect();
+            if tie_meshes_total > 0 && tie_meshes_with_albedo == 0 {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                static TIE_NO_ALBEDO_FIRED: AtomicUsize = AtomicUsize::new(0);
+                let n = TIE_NO_ALBEDO_FIRED.fetch_add(1, Ordering::Relaxed);
+                if n < 4 {
+                    let st_label = tie_first_st
+                        .map(|s| format!("0x{:016X}", s))
+                        .unwrap_or_else(|| "(none)".to_string());
+                    let in_shaders = tie_first_st
+                        .map(|s| shaders.contains_key(&s))
+                        .unwrap_or(false);
+                    eprintln!(
+                        "warn: tie 0x{:016X} resolved 0/{} meshes to a shader. first shader_tuid={} (in shaders map: {}). shader_tuids.len={}, shaders.len={}",
+                        asset.tuid,
+                        tie_meshes_total,
+                        st_label,
+                        in_shaders,
+                        asset.shader_tuids.len(),
+                        shaders.len(),
+                    );
+                }
+            }
             let dto = AssetMeshesDto {
                 asset_tuid: format!("0x{:016X}", asset.tuid),
                 name: String::new(),
@@ -1545,8 +1579,10 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         },
     )
     .map_err(|e| e.to_string())?;
+    eprintln!("[cache] V2 tie reader done — {} ties", tie_done);
     }
 
+    eprintln!("[cache] -> phase ufrags");
     let zones: Vec<Zone> = if debug_filter.is_some() {
         Vec::new()
     } else { match layout {
@@ -1700,8 +1736,16 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         );
         reused
     } else { match layout {
-        LevelLayout::V2 => lunalib::bulk_extract_pngs(level_path, Some(&needed_ids), TEXTURE_MAX_DIM)
-            .map_err(|e| e.to_string())?,
+        LevelLayout::V2 => {
+            eprintln!(
+                "[cache] -> V2 bulk_extract_pngs: needed={} textures",
+                needed_ids.len()
+            );
+            let r = lunalib::bulk_extract_pngs(level_path, Some(&needed_ids), TEXTURE_MAX_DIM)
+                .map_err(|e| e.to_string())?;
+            eprintln!("[cache] V2 textures done — encoded={} PNGs", r.len());
+            r
+        }
         LevelLayout::Tod => match lunalib::read_textures_old(level_path) {
             Ok(textures) => {
                 let needed: HashSet<u32> = needed_ids.iter().copied().collect();
@@ -1927,6 +1971,21 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                     clip.bones.len(), animated_bones, total_rot, total_trans
                 );
             }
+        }
+        let has_any_mesh = asset
+            .bangles
+            .iter()
+            .any(|b| b.meshes.iter().any(|m| m.vertex_count > 0));
+        if !has_any_mesh {
+            if probe {
+                eprintln!(
+                    "[probe-moby-{:04X}] no geometry — skipping GLB write",
+                    PROBE_TUID
+                );
+            }
+            glb_done += 1;
+            let _ = on_event.send(CacheEvent::Progress { current: glb_done });
+            continue;
         }
         match lunalib::write_moby_glb_full(&asset, &clips, &shaders, &texture_pngs) {
             Ok(glb_bytes) => {

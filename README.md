@@ -6,7 +6,7 @@
 
 <p align="center">
  <strong>Offline level inspector and asset extractor for Insomniac Games' PS3 titles</strong><br/>
- <sub>Resistance: Fall of Man · Resistance 2 · Resistance 3 · Ratchet &amp; Clank: Tools of Destruction · Full Frontal Assault · All 4 One</sub>
+ <sub>Resistance: Fall of Man · Resistance 2 · Resistance 3 · Ratchet &amp; Clank: Tools of Destruction · A Crack in Time · All 4 One</sub>
 </p>
 
 <p align="center">
@@ -85,7 +85,8 @@ empty meshes; they don't crash the loader.
 | Resistance 2 | `assetlookup.dat` (V2) | v1.1 | V2 | yes | yes | yes | yes | ufrags | tested end-to-end |
 | Resistance 3 | `assetlookup.dat` (V2) | v1.1 | V2 | yes | yes | yes | yes | ufrags | tested end-to-end |
 | R&C: Tools of Destruction | `main.dat` (TOD) | v1.1 | V2 | yes | yes | yes | T-pose | ufrags + tie instances (no sky) | pair-frame encoding RE'd for simple anims; complex (n8>0) format unsolved → T-pose. Zone reader, per-axis tie scale, materials all ship. Skybox not supported — no IT/ReLunacy reference. |
-| R&C: Full Frontal Assault | `assetlookup.dat` (V2) | v1.1 | V2 | yes | partial | yes | yes | ufrags | a few textures still missing |
+| R&C: A Crack in Time | `assetlookup.dat` (V2) | v1.1 | V2 | yes | ~95% | yes | untested | ufrags + tie instances | experimental this round. V2-compatible mobys; ACiT-specific tie `shader_index` at `+0x0C` (not V2's `+0x28`); `highmips.dat` is optional — when absent, textures route through `textures.dat` at half-resolution (base-mip chain). Remaining ~5% of textures live in a shared sibling `.psarc` (globals / common / art) that must be extracted into the same level folder. |
+| R&C: Full Frontal Assault | `assetlookup.dat` (V2) | v1.1 | V2 | locked | locked | locked | locked | locked | locked in wizard this round pending re-validation against the current V2 pipeline. Format readers are intact (`TexFormat::from_byte` still maps `0x81..0x8B + 0xA6`); just needs a test pass. |
 | R&C: All 4 One | `assetlookup.dat` (V2) | v1.1 | V2 | yes | yes | yes | yes | ufrags | tested |
 
 ---
@@ -194,6 +195,7 @@ available inside the running app under **Help → Documentation**.
 - **RFOM viseme rigs** — soldier / cartwright / Winters head clips now animate correctly (was producing collapsed-to-origin bones before the `swap & 0x1F` shift-mask fix).
 - **TOD level pipeline** — Tools of Destruction now extracts ties (all 142 entries, was failing at 81+ due to a `vbuf_size` over-allocation in the header), per-axis tie scale applied per-vertex, zone reader (3790 tie instances + 5410 ufrag terrain pieces on stratus city), shaders/materials/textures, mobys with skeletons and weights. Animations export as T-pose pending full RE.
 - **TOD pair-frame anim encoding** — discovered TOD stores simple anims (n8=0) as (zero-filler, real-keyframe) pairs at half the apparent rate; complex anims (n8>0, the i8-delta path) remain unsolved and are shipped as T-pose to avoid visibly broken motion.
+- **R&C: A Crack in Time experimental pipeline** — ACiT is now selectable in the wizard and opens both vanilla (`PS3_GAME/USRDIR/packed/levels/...`) and mod-extracted levels end-to-end. V2-compatible mobys hit the R2/R3 fast path; logic-only mobys missing `0xE100`/`0xE200` gracefully emit empty meshes; tie `shader_index` falls back from V2's `+0x28` to ACiT's `+0x0C` when the V2 read is out of range; texture pipeline added a `textures.dat` fallback for zero-length high-mip pointers and a half-resolution mip-chain interpretation for levels without `highmips.dat`. ~95% of needed textures decode; the remaining ~5% are external shared assets that need a sibling `.psarc` extracted alongside the level.
 - **Materials / Normalmaps / Textures phase split** — texture extraction in the cache modal now shows three sequential progress bars (Materials → Normal maps → Textures) instead of one monolithic bar. Each unique PNG written exactly once, deduped via written set. Works for V2 / RFOM / TOD uniformly.
 - **Real progress counts** — mobys/ties phases now show real counts (`170/170`) instead of the `123/1` placeholder. Added `_with_total` variants of the TOD/RFOM streaming readers to expose the section count upfront.
 - **Toolbar info expanded** — status bar now shows distinct `(albedo, normal, emissive)` material count and total animation clip count alongside the existing mobys/ties/terrain/textures counts.
@@ -212,6 +214,10 @@ available inside the running app under **Help → Documentation**.
 - **TOD collision geometry** (`collision.dat`). Separate file in every TOD level folder — not currently parsed. Format unknown to us, no IT/ReLunacy reference. Would unlock Godot/Unity import with proper collision volumes instead of mesh-derived approximations.
 - **TOD lighting / environment data**. TOD has dynamic lighting in-game, but the section IDs that hold light placements aren't identified yet. RFOM's lighting sections are in different section IDs and ReLunacy doesn't cover this for TOD.
 - **TOD skybox — not supported.** Unlike RFOM (which has a dedicated dome decoder shipping this round), TOD's sky data has no working reference: IT has no TOD decoder at all, and we audited every ReLunacy branch (`master`, `dev`, `bliss`, `bliss-old-loader`) — only an unused stub exists in `dev`, no section IDs identified, no rendering path. Until a reference surfaces or someone probes the format, TOD levels render with no sky background and the cache produces no `skybox/` folder.
+- **ACiT external textures**. ~5% of shader-referenced texture IDs (36 of 736 on `acid_refinery_pre`, 86 of 1610 on `nefarious_station`) aren't in this level's `assetlookup.dat`. Cross-check confirms they aren't truncation collisions — they truly live in a shared sibling `.psarc` (e.g. `common.psarc` / `globals.psarc` / `ratchet.psarc`). Wizard hint will be updated to mention extracting siblings alongside the level. Engine itself renders defaults for these in-game.
+- **ACiT shader additional texture slots**. Current `parse_shader` reads 3 u32s from `0x5D00 + 0x10` (albedo / normal / expensive). ACiT shaders may carry more refs (detail / lightmap / specular / decal) at higher offsets. `[shader-probe]` dump (gated on `RECHIMERA_LOG_PROBES=1`) captures the bytes for RE.
+- **ACiT animations audit**. Mobys carry skeletons but the V2 animset decoder hasn't been validated against ACiT animsets. Needs a clip-by-clip check on known-animated assets.
+- **R&C: Full Frontal Assault re-validation**. Locked in the wizard this round; needs a fresh test pass against the current V2 pipeline before unlocking. `TexFormat::from_byte` still maps its `0x81..0x8B + 0xA6` byte range, so the decode side should be intact.
 - **RFOM real lights**. The previously-labeled "lights" section (`0xC200`) was Foliage; no actual light section is identified yet. Candidates `0x14300` (404 × 64B) and `0x14B00` (408 × 64B) are unmapped instance tables — possibly lights, possibly trigger volumes. Needs raw-byte probing with `RECHIMERA_LOG_PROBES=1` on a real level.
 - **RFOM gameplay placements beyond mobys** (triggers / volumes / spawns / paths / sound emitters / dynamic lights). IT has the `GameplayInstances` struct but its `other[6]` sub-arrays have **no struct definitions** in IT — would require RFOM debug-symbol reverse-engineering. Probe scaffold lives in `gameplay_rfom.rs` and dumps raw bytes when `RECHIMERA_LOG_PROBES=1`.
 - **RFOM collision**. No IT reference exists — Godot users can auto-generate collision from GLB geometry as a workaround for now.
