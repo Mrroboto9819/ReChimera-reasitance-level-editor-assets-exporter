@@ -64,7 +64,22 @@ where
         .section(SECT_LEVEL_INDEX_BUFFER)
         .ok_or(Error::SectionNotFound(SECT_LEVEL_INDEX_BUFFER))?;
 
+    let log_probes = std::env::var("RECHIMERA_LOG_PROBES").is_ok();
     let count = tie_section.count as usize;
+    if log_probes {
+        eprintln!(
+            "[tod-tie] section 0x3400: count={} offset=0x{:X} length={} (stride 0x{:X})",
+            count, tie_section.offset, tie_section.length, OLD_TIE_HEADER_SIZE
+        );
+        eprintln!(
+            "[tod-tie] vertices.dat 0x9000: offset=0x{:X} length={} bytes",
+            vertex_section.offset, vertex_section.length
+        );
+        eprintln!(
+            "[tod-tie] vertices.dat 0x9100: offset=0x{:X} length={} bytes",
+            index_section.offset, index_section.length
+        );
+    }
     for i in 0..count {
         let header_off = u64::from(tie_section.offset) + (i as u64) * OLD_TIE_HEADER_SIZE;
         match parse_one(
@@ -73,6 +88,10 @@ where
             header_off,
             u64::from(vertex_section.offset),
             u64::from(index_section.offset),
+            u64::from(vertex_section.length),
+            u64::from(index_section.length),
+            i,
+            log_probes,
         ) {
             Ok(asset) => on_each(asset),
             Err(e) => {
@@ -90,6 +109,10 @@ fn parse_one<R1: Read + Seek, R2: Read + Seek>(
     header_off: u64,
     vertex_section_offset: u64,
     index_section_offset: u64,
+    vertex_section_length: u64,
+    index_section_length: u64,
+    tie_index: usize,
+    log_probes: bool,
 ) -> Result<TieAsset> {
     main_ig.stream.seek_to(header_off + 0x00)?;
     let meshes_ptr = u64::from(main_ig.stream.read_u32()?);
@@ -104,6 +127,25 @@ fn parse_one<R1: Read + Seek, R2: Read + Seek>(
     let scale_x = main_ig.stream.read_f32()?;
     let scale_y = main_ig.stream.read_f32()?;
     let scale_z = main_ig.stream.read_f32()?;
+
+    if log_probes {
+        let overruns_vbuf =
+            vertex_buffer_start + (vertex_buffer_size as u64) > vertex_section_length;
+        eprintln!(
+            "[tod-tie] tie[{}] header=0x{:X} meshes_ptr=0x{:X} mesh_count={} \
+             vbuf_start=0x{:X} vbuf_size={} scale=({:.4},{:.4},{:.4}){}",
+            tie_index,
+            header_off,
+            meshes_ptr,
+            mesh_count,
+            vertex_buffer_start,
+            vertex_buffer_size,
+            scale_x,
+            scale_y,
+            scale_z,
+            if overruns_vbuf { " [OVERRUNS 0x9000]" } else { "" }
+        );
+    }
 
     // Slurp this tie's local vertex buffer (a slice of vertices.dat 0x9000).
     let vertex_block = read_section_slice(
@@ -133,6 +175,24 @@ fn parse_one<R1: Read + Seek, R2: Read + Seek>(
 
         main_ig.stream.seek_to(mesh_base + 0x28)?;
         let old_shader_index = main_ig.stream.read_u16()?;
+
+        if log_probes && (tie_index < 3 || (78..=85).contains(&tie_index)) {
+            let idx_byte_end = (index_index as u64) * 2 + (index_count as u64) * 2;
+            let v_local_end = (vertex_index + vertex_count as usize) * OLD_TIE_VERTEX_STRIDE;
+            eprintln!(
+                "[tod-tie]   mesh[{m}] idx_idx={} idx_cnt={} v_idx={} v_cnt={} shader=0x{:X} \
+                 idx_byte_end=0x{:X}/{:X} v_local_end=0x{:X}/{:X}",
+                index_index,
+                index_count,
+                vertex_index,
+                vertex_count,
+                old_shader_index,
+                idx_byte_end,
+                index_section_length,
+                v_local_end,
+                vertex_buffer_size,
+            );
+        }
 
         // Indices live in vertices.dat 0x9100 — read directly there.
         let index_byte_offset = index_section_offset + (index_index as u64) * 2;

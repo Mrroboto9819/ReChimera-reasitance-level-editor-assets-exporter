@@ -1160,6 +1160,24 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
             Ok(None) => eprintln!("[cache] RFOM layout: no skybox sections found"),
             Err(e) => eprintln!("warn: RFOM skybox read failed: {e}"),
         }
+
+        // Gameplay placements (ps3gameplay.dat) — moby instance positions
+        // plus our raw-byte probe of GameplayInstances.other[6] (only when
+        // RECHIMERA_LOG_PROBES=1). Result discarded here — the level_layout
+        // Tauri command reads it again on demand for the viewport. We call
+        // it during cache extraction so the [rfom-gp]/[rfom-gp-other] logs
+        // fire on every full re-extract, not only when the level is opened.
+        match lunalib::read_gameplay_rfom(level_path) {
+            Ok(gp) => {
+                let placement_count: usize =
+                    gp.regions.iter().map(|r| r.moby_instances.len()).sum();
+                eprintln!(
+                    "[cache] RFOM layout: parsed {} gameplay placement(s) from ps3gameplay.dat",
+                    placement_count
+                );
+            }
+            Err(e) => eprintln!("warn: RFOM gameplay read failed: {e}"),
+        }
     } else {
     let tie_phase_emit = |total: usize| {
         let _ = on_event.send(CacheEvent::Phase {

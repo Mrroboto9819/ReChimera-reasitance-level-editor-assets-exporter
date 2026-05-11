@@ -183,22 +183,32 @@ available inside the running app under **Help → Documentation**.
 ### Shipped
 - IGHW container + asset parsers (mobys, ties, skeletons, animsets, textures, shaders, zones, gameplay).
 - SCREAM V1/V2 sound banks + VAGp / VPK / XVAG stream decoders, in-app player, WAV export.
-- PSARC list + extract.
+- **Sound tab categorisation** — SFX / Dialog / Music sub-tabs in the cache library, with counts per category.
+- PSARC list + extract (plus an in-wizard PSARC extraction step).
+- **Wizard franchise tabs** — Resistance / Ratchet & Clank tab strip at the top of step 1, with persisted selection.
 - 3D viewport, hierarchy, inspector, asset library, sound player.
 - Cache library: per-level cache writes one `.glb` per moby/tie; exports use this directly.
+- **RFOM vegetation** — Shrub (mesh) and Foliage (branch + sprite quads) extraction with viewport toggles and dedicated colors.
+- **RFOM detail clusters** — small static debris surfaced as their own asset type with hierarchy + Settings color.
+- **RFOM skybox** — dome geometry extracted as GLB/OBJ/PLY, texture rendered as viewport background.
+- **RFOM viseme rigs** — soldier / cartwright / Winters head clips now animate correctly (was producing collapsed-to-origin bones before the `swap & 0x1F` shift-mask fix).
+- **Full-map GLB export upgrade** — bakes mobys + ties + details + shrubs + foliage + terrain + skybox dome into a single drag-into-Godot/Blender file.
 - GLB export — bones, weights, materials, textures, multi-mesh layout, selectable animations from any animset.
 - Animation picker burger menu on the GLB preview — play any clip on the current rig, tick clips for export.
 - Multi-step Export modal — scope toggles (mesh / materials+textures / armature) + texture quality presets (Low/Medium/High/Original) + animation picker.
+- **Methodology doc + skills** — `docs/internal/lunalib-and-IT/09-debugging-methodology.md` and `/insomnia-toolset` / `/relunacy` skills cover the probe → log → re-extract loop for porting unknown formats.
 
 ### In progress
 - Sound playback verification on R2 / R3 / RCF.
 - MPEG-encoded XVAG decode (currently errors cleanly).
 
-### Roadmap
+### Roadmap (next patches)
+- **R&C: Tools of Destruction animation format** *(focus of the next release)*. The per-frame data layout doesn't fit IT's V2 or RFOM paths and IT itself has no ToD support, so it's reverse-engineering from raw bytes. Captured `clank_idle` frame data lives in the `project_tod_anim_format` memory entry as a starting probe.
+- **RFOM real lights**. The previously-labeled "lights" section (`0xC200`) was Foliage; no actual light section is identified yet. Candidates `0x14300` (404 × 64B) and `0x14B00` (408 × 64B) are unmapped instance tables — possibly lights, possibly trigger volumes. Needs raw-byte probing with `RECHIMERA_LOG_PROBES=1` on a real level.
+- **RFOM gameplay placements beyond mobys** (triggers / volumes / spawns / paths / sound emitters / dynamic lights). IT has the `GameplayInstances` struct but its `other[6]` sub-arrays have **no struct definitions** in IT — would require RFOM debug-symbol reverse-engineering. Probe scaffold lives in `gameplay_rfom.rs` and dumps raw bytes when `RECHIMERA_LOG_PROBES=1`.
+- **RFOM collision**. No IT reference exists — Godot users can auto-generate collision from GLB geometry as a workaround for now.
 - World repackaging — write edited transforms back to disk.
 - Bulk exporters (textures, sounds, meshes, animations).
-- Lighting + cubemap parse, scene-level lighting in viewport.
-- VFX / cinematics / foliage parsers.
 - Cross-platform build verification (macOS + Linux).
 - Headless `rechimera-cli` for batch jobs without WebView2.
 - Built-in PSARC repacker.

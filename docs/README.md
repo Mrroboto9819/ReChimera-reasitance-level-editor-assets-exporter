@@ -20,6 +20,7 @@ against the canonical reference.
 | 07 | [Sound](internal/lunalib-and-IT/07-sound.md) | `sound.rs` | `sound/extract_sound.cpp` |
 | 08 | [GLB writer](internal/lunalib-and-IT/08-gltf-export.md) | `gltf_export.rs`, `math.rs` | `extract/extract_gltf.cpp`, `common/src/gltf_shared.cpp` |
 | 09 | [Debugging methodology](internal/lunalib-and-IT/09-debugging-methodology.md) | (cross-cutting — every new decoder) | IT + ReLunacy as canonical references; probe → log → re-extract loop |
+| 10 | [Vegetation & sky](internal/lunalib-and-IT/10-vegetation-and-sky.md) | `shrub_rfom.rs`, `foliage_rfom.rs`, `skybox_rfom.rs` | `classes/shrub.hpp`, `classes/foliage.hpp`, `levelmain/extract.cpp::ShrubsToGltf` / `FoliageToGltf` (no IT reference for sky) |
 
 ## [`internal/app/`](internal/app/)
 Documentation of the **Tauri 2 + React + Three.js desktop app** that

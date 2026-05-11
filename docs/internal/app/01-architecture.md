@@ -69,8 +69,15 @@ through the Export button. There is no preview/export divergence.
 | `shader.rs`, `shader_rfom.rs`, `shader_old.rs` | Material → texture id lookup (per-engine) |
 | `zone.rs`, `zone_old.rs`, `region_rfom.rs` | Streaming terrain (V2 / TOD / RFOM) |
 | `gameplay.rs`, `gameplay_old.rs`, `gameplay_rfom.rs` | Placed instances + transforms (per-engine) |
+| `detail_rfom.rs` | RFOM `DetailCluster` static debris (`0xB200`/`0xB300`/`0x9500`) |
+| `shrub_rfom.rs` | RFOM `Shrub` mesh vegetation (`0xC700` + `0xC650`) |
+| `foliage_rfom.rs` | RFOM `Foliage` branch meshes + sprite quads (`0xC200` + `0x9700`) |
+| `skybox_rfom.rs` | RFOM sky dome (`0x9150` + `0xDA00`) + GLB/OBJ/PLY/JSON writers |
+| `rfom_probe.rs` | Multi-interpretation byte-dump helpers (hex + f32 BE + u32 BE) |
+| `lighting_rfom.rs`, `envsampler_rfom.rs` | **Legacy / superseded** — were mislabelled as 0xC200 Lights and 0x9700 EnvSamplers; both sections are actually Foliage. No longer called from `level_layout`. |
 | `sound.rs` | SCREAM banks + audio decoders (V1 RFOM + V2 V2-era) |
-| `gltf_export.rs` | GLB writer (skinned + multi-mesh, engine-agnostic) |
+| `gltf_export.rs` | Per-asset GLB writer (skinned + multi-mesh, engine-agnostic) |
+| `level_glb.rs` | Static level-scope GLB writer for the full-map exporter (mobys + ties + details + shrubs + foliage + terrain + sky in one file) |
 
 ### Tauri backend (`apps/desktop/src-tauri/`)
 

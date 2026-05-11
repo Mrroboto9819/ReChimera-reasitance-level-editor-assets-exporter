@@ -152,8 +152,9 @@ pub fn read_skeleton_at<R: Read + Seek>(
         return Ok(None);
     }
 
-    if scale_shift_raw > 15 && scale_shift_raw.swap_bytes() > 15
-        || translation_shift_raw > 15 && translation_shift_raw.swap_bytes() > 15
+    if (scale_shift_raw > 15 && scale_shift_raw.swap_bytes() > 15
+        || translation_shift_raw > 15 && translation_shift_raw.swap_bytes() > 15)
+        && std::env::var("RECHIMERA_LOG_PROBES").is_ok()
     {
         eprintln!(
             "[skel-shift] hdr=0x{:X} bones={} viseme-rig: raw {:#06X}/{:#06X} → swap & 0x1F = {}/{} \

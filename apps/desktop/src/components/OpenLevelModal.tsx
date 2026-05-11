@@ -250,6 +250,26 @@ function lastTwoSegments(path: string): string {
   return parts.slice(-2).join(" / ") || norm;
 }
 
+const FRANCHISE_TAB_KEY = "rechimera.wizardFranchiseTab";
+
+function loadFranchiseTab(): Franchise {
+  try {
+    const v = localStorage.getItem(FRANCHISE_TAB_KEY);
+    if (v === "resistance" || v === "ratchet_clank") return v;
+  } catch {
+    /* noop */
+  }
+  return "resistance";
+}
+
+function saveFranchiseTab(f: Franchise) {
+  try {
+    localStorage.setItem(FRANCHISE_TAB_KEY, f);
+  } catch {
+    /* noop */
+  }
+}
+
 export function OpenLevelModal({
   open,
   busy,
@@ -261,6 +281,7 @@ export function OpenLevelModal({
   const [path, setPath] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
   const [recent, setRecent] = useState<string[]>([]);
+  const [franchiseTab, setFranchiseTab] = useState<Franchise>(loadFranchiseTab);
 
   const [psarcInput, setPsarcInput] = useState("");
   const [psarcOutput, setPsarcOutput] = useState("");
@@ -284,6 +305,11 @@ export function OpenLevelModal({
       setPsarcDone(false);
     }
   }, [open]);
+
+  const pickFranchise = useCallback((f: Franchise) => {
+    setFranchiseTab(f);
+    saveFranchiseTab(f);
+  }, []);
 
   const pickGame = useCallback((id: GameId) => {
     setGame(id);
@@ -696,72 +722,89 @@ export function OpenLevelModal({
     >
       {step === "game" && (
         <div className="game-franchises">
-          {FRANCHISES.map((f) => {
-            const games = GAMES.filter((g) => g.franchise === f.id);
-            if (games.length === 0) return null;
-            return (
-              <section key={f.id} className="game-franchise">
-                <header className="game-franchise-header">
-                  <h3 className="game-franchise-title">{f.label}</h3>
-                  <span className="game-franchise-count small dim">
-                    {games.length} {games.length === 1 ? "game" : "games"}
+          <div
+            className="game-franchise-tabs"
+            role="tablist"
+            aria-label="Choose franchise"
+          >
+            {FRANCHISES.map((f) => {
+              const games = GAMES.filter((g) => g.franchise === f.id);
+              if (games.length === 0) return null;
+              const isActive = franchiseTab === f.id;
+              return (
+                <button
+                  key={f.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  className={`game-franchise-tab${isActive ? " active" : ""}`}
+                  onClick={() => pickFranchise(f.id)}
+                >
+                  <span className="game-franchise-tab-label">{f.label}</span>
+                  <span className="game-franchise-tab-count dim small">
+                    {games.length}
                   </span>
-                </header>
-                <div className="game-grid">
-                  {games.map((g) => (
-                    <button
-                      key={g.id}
-                      type="button"
-                      className={`game-tile${g.supported ? "" : " is-disabled"}`}
-                      onClick={() => g.supported && pickGame(g.id)}
-                      disabled={!g.supported}
-                      title={
-                        g.supported
-                          ? `Open ${g.label}`
-                          : `${g.short} — parser support is not implemented yet`
-                      }
-                    >
-                      <div className="game-tile-art">
-                        <img
-                          src={g.logoSrc}
-                          alt={g.label}
-                          draggable={false}
-                          onError={(e) => {
-                            (e.currentTarget as HTMLImageElement).style.opacity = "0";
-                          }}
-                        />
-                        {!g.supported && (
-                          <div className="game-tile-lockoverlay">
-                            <Lock size={20} strokeWidth={2} />
-                            <span className="small">Not yet supported</span>
-                          </div>
-                        )}
-                      </div>
-                      <div className="game-tile-meta">
-                        <div className="game-tile-name">{g.label}</div>
-                        <div className="game-tile-byline dim small">{g.byline}</div>
-                        <ul className="game-tile-caps" aria-label="Supported features">
-                          {CAPABILITY_LABELS.map(({ key, label }) => {
-                            const state = g.capabilities[key];
-                            return (
-                              <li
-                                key={key}
-                                className={`game-tile-cap is-${state}`}
-                                title={capTooltip(label, state)}
-                              >
-                                <span className="game-tile-cap-dot" aria-hidden />
-                                <span className="game-tile-cap-label">{label}</span>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </section>
+                </button>
+              );
+            })}
+          </div>
+          {(() => {
+            const games = GAMES.filter((g) => g.franchise === franchiseTab);
+            return (
+              <div className="game-grid">
+                {games.map((g) => (
+                  <button
+                    key={g.id}
+                    type="button"
+                    className={`game-tile${g.supported ? "" : " is-disabled"}`}
+                    onClick={() => g.supported && pickGame(g.id)}
+                    disabled={!g.supported}
+                    title={
+                      g.supported
+                        ? `Open ${g.label}`
+                        : `${g.short} — parser support is not implemented yet`
+                    }
+                  >
+                    <div className="game-tile-art">
+                      <img
+                        src={g.logoSrc}
+                        alt={g.label}
+                        draggable={false}
+                        onError={(e) => {
+                          (e.currentTarget as HTMLImageElement).style.opacity = "0";
+                        }}
+                      />
+                      {!g.supported && (
+                        <div className="game-tile-lockoverlay">
+                          <Lock size={20} strokeWidth={2} />
+                          <span className="small">Not yet supported</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="game-tile-meta">
+                      <div className="game-tile-name">{g.label}</div>
+                      <div className="game-tile-byline dim small">{g.byline}</div>
+                      <ul className="game-tile-caps" aria-label="Supported features">
+                        {CAPABILITY_LABELS.map(({ key, label }) => {
+                          const state = g.capabilities[key];
+                          return (
+                            <li
+                              key={key}
+                              className={`game-tile-cap is-${state}`}
+                              title={capTooltip(label, state)}
+                            >
+                              <span className="game-tile-cap-dot" aria-hidden />
+                              <span className="game-tile-cap-label">{label}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  </button>
+                ))}
+              </div>
             );
-          })}
+          })()}
         </div>
       )}
 

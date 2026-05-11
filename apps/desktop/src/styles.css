@@ -6163,7 +6163,7 @@ textarea {
 .game-franchises {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 16px;
 }
 .game-franchise {
   display: flex;
@@ -6184,4 +6184,48 @@ textarea {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-2);
+}
+
+.game-franchise-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--border);
+  border-radius: var(--r-2, 8px);
+  align-self: flex-start;
+}
+.game-franchise-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 6px 14px;
+  border-radius: var(--r-1, 4px);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.game-franchise-tab:hover {
+  color: var(--text-1);
+  background: rgba(255, 255, 255, 0.04);
+}
+.game-franchise-tab.active {
+  color: var(--text-1);
+  background: hsla(202, 100%, 67%, 0.18);
+}
+.game-franchise-tab-count {
+  font-variant-numeric: tabular-nums;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.game-franchise-tab.active .game-franchise-tab-count {
+  background: hsla(202, 100%, 67%, 0.22);
+  color: var(--text-1);
 }

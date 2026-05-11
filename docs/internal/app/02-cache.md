@@ -18,6 +18,17 @@ the same bytes back out, so there's no preview/export divergence.
 ├── ties/
 │   ├── 0x{tuid}.json
 │   └── 0x{tuid}.glb
+├── details/                # RFOM only: DetailCluster (0xB300) static debris
+│   └── 0x{tuid}.json
+├── shrubs/                 # RFOM only: Shrub (0xC700) mesh vegetation
+│   └── 0x{tuid}.json
+├── foliage/                # RFOM only: Foliage (0xC200) branch + sprite vegetation
+│   └── 0x{tuid}.json
+├── skybox/                 # RFOM only: dome geometry
+│   ├── sky.glb
+│   ├── sky.obj
+│   ├── sky.ply
+│   └── sky.json
 ├── ufrags/
 │   └── 0x{tuid}.json
 └── textures/
@@ -35,6 +46,10 @@ the same bytes back out, so there's no preview/export divergence.
     { "kind": "moby_glb", "tuid": "0x...", "name": "...", "file": "mobys/0x....glb",  "size_bytes": ... },
     { "kind": "tie",      ... },
     { "kind": "tie_glb",  ... },
+    { "kind": "detail",   ... },
+    { "kind": "shrub",    ... },
+    { "kind": "foliage",  ... },
+    { "kind": "sky",      ... },
     { "kind": "ufrag",    ... },
     { "kind": "texture",  ... }
   ],
@@ -42,6 +57,21 @@ the same bytes back out, so there's no preview/export divergence.
   "complete": true
 }
 ```
+
+### Kind reference
+
+| `kind` | Source section | Decoder | Notes |
+|---|---|---|---|
+| `moby` | mobys.dat / ps3levelmain.dat 0xD100 | `moby.rs` / `moby_rfom.rs` / `moby_old.rs` | Skinned dynamic asset |
+| `moby_glb` | (baked) | `gltf_export.rs` | Per-moby GLB for modal preview + export |
+| `tie` | ties.dat / ps3levelmain.dat 0x9300 | `tie.rs` / `tie_rfom.rs` / `tie_old.rs` | Static world prop |
+| `tie_glb` | (baked) | `gltf_export.rs` | Per-tie GLB |
+| `detail` | ps3levelmain.dat 0xB200/0xB300/0x9500 | `detail_rfom.rs` | RFOM-only static debris |
+| `shrub` | ps3levelmain.dat 0xC700 + 0xC650 | `shrub_rfom.rs` | RFOM-only mesh vegetation |
+| `foliage` | ps3levelmain.dat 0xC200 + 0x9700 | `foliage_rfom.rs` | RFOM-only branch mesh + sprite quads |
+| `sky` | ps3levelmain.dat 0x9150 + 0xDA00 | `skybox_rfom.rs` | RFOM-only dome geometry |
+| `ufrag` | zones / regions | `region_rfom.rs` (RFOM) or zone readers | Terrain mesh chunks |
+| `texture` | textures.dat / highmips.dat | `texture.rs` / `texture_rfom.rs` / `texture_old.rs` | PNG-encoded, 512px max |
 
 `source_mtimes` lets `cache_status` decide whether the cache is stale
 (any source `.dat` newer than its recorded mtime → user sees "rebuild
@@ -98,6 +128,12 @@ Phase: mobys     → V2/Rfom/Tod: layout-specific reader
                       remember the asset for the GLB step
 Phase: ties      → V2/Rfom: layout-specific tie reader
                    Tod: skipped (no tie support yet)
+RFOM-only follow-on phases (after the tie loop, before textures):
+  → details  : read_detail_clusters_rfom  → details/0x{tuid}.json
+  → shrubs   : read_shrubs_rfom           → shrubs/0x{tuid}.json
+  → foliage  : read_foliage_rfom          → foliage/0x{tuid}.json
+  → skybox   : read_skybox_rfom           → skybox/sky.{glb,obj,ply,json}
+  → gameplay : read_gameplay_rfom (probe-only, discards result)
 Phase: ufrags    → V2: read_zones
                    Rfom: read_regions_rfom
                    Tod: read_zones_old
@@ -113,6 +149,17 @@ Phase: mobys (G1-G4) → for each moby:
 Phase: ties (G1-G4)  → tie_as_moby + write_moby_glb_full → ties/0x{tuid}.glb
 Final: write manifest.json with `complete: true`
 ```
+
+### Debug-only filtering
+
+`RECHIMERA_DEBUG_MOBY=<hex>[,<hex>...]` (comma-separated tuid suffixes)
+flips `run_extract` into single-moby mode: only mobys whose tuid hex
+ends with one of the suffixes are processed, and the RFOM-only follow-on
+phases (ties / details / shrubs / foliage / sky / lights / envsamplers /
+gameplay) are skipped. Textures still run, but the filter naturally
+limits them to whatever the matched mobys need. Re-extraction time
+collapses from minutes to seconds — useful when iterating on an animation
+decoder fix for a specific asset.
 
 The `tie_as_moby` adapter wraps a `TieAsset` in a single-bangle
 `MobyAsset` shape so the GLB writer doesn't need a separate code path.

@@ -136,3 +136,49 @@ function serves both call sites identically. RFOM and TOD use their
 own layout-specific texture readers (`read_textures_rfom`,
 `read_textures_old`) which take the same `max_dim` parameter and
 behave identically from the export modal's perspective.
+
+## Full-map GLB export (`export_level_glb`)
+
+The toolbar's "Export Level GLB" button bakes the entire scene into a
+single static GLB. Implementation: `cache.rs::run_export_level_glb`.
+It does **not** re-parse `.dat` files — it reads back the JSON DTOs
+written to `_rechimera_cache/` by the cache pipeline, decodes the
+base64 vertex/UV/index buffers, and stitches them into one big
+`level_glb::write_static_level_glb` payload.
+
+Streams `LevelGlbExportEvent`:
+
+```rust
+enum LevelGlbExportEvent {
+    Phase { label: &'static str, total: usize },
+    Progress { current: usize },
+    Done { bytes_written: usize, instance_count: usize, asset_count: usize },
+    Error { message: String },
+}
+```
+
+### What gets baked
+
+| Kind | Source folder | Notes |
+|---|---|---|
+| Mobys | `mobys/*.json` | Geometry only (no skinning) — full-map GLB is static |
+| Ties | `ties/*.json` | All world-placed static props |
+| Details | `details/*.json` | RFOM debris clusters, routed through `kind: "detail"` |
+| Shrubs | `shrubs/*.json` | RFOM mesh vegetation, `kind: "shrub"` |
+| Foliage | `foliage/*.json` | RFOM branch meshes + sprite quads, `kind: "foliage"` |
+| UFrags (terrain) | `ufrags/*.json` | Each becomes its own asset+instance at its world position |
+| Skybox dome | (re-runs `read_skybox_rfom`) | Dome geometry with spherical UVs added in-place |
+| Textures | `textures/*.png` | Only those referenced by the baked submeshes |
+
+Foliage descriptors with TWO submeshes (branch + sprite) carry both
+through to the final GLB as separate primitives sharing one material.
+
+### Diagnostic line
+
+After the placement loop, the exporter logs:
+```
+[level-glb] placements baked: N mobys, N ties, N details, N shrubs, N foliage
+```
+Useful when a level looks "missing" something — confirms whether the
+issue is at extraction time (missing JSONs in cache) or export time
+(missing routing for a kind).

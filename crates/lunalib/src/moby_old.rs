@@ -52,14 +52,31 @@ where
     let vertices_dat_path = vertices_path.clone();
     let textures_dat_path = level_folder.join("textures.dat");
 
-    let vertices_geom_offset = vertices_ig
-        .section(SECT_LEVEL_VERTEX_BUFFER)
-        .map(|s| u64::from(s.offset));
-    let indices_geom_offset = vertices_ig
-        .section(SECT_LEVEL_INDEX_BUFFER)
-        .map(|s| u64::from(s.offset));
+    let vertex_section = vertices_ig.section(SECT_LEVEL_VERTEX_BUFFER);
+    let index_section = vertices_ig.section(SECT_LEVEL_INDEX_BUFFER);
+    let vertices_geom_offset = vertex_section.map(|s| u64::from(s.offset));
+    let indices_geom_offset = index_section.map(|s| u64::from(s.offset));
 
+    let log_probes = std::env::var("RECHIMERA_LOG_PROBES").is_ok();
     let count = moby_section.count as usize;
+    if log_probes {
+        eprintln!(
+            "[tod-moby] section 0xD100: count={} offset=0x{:X} length={} (stride 0x{:X})",
+            count, moby_section.offset, moby_section.length, OLD_MOBY_HEADER_SIZE
+        );
+        if let Some(s) = vertex_section {
+            eprintln!(
+                "[tod-moby] vertices.dat 0x9000: offset=0x{:X} length={} bytes",
+                s.offset, s.length
+            );
+        }
+        if let Some(s) = index_section {
+            eprintln!(
+                "[tod-moby] vertices.dat 0x9100: offset=0x{:X} length={} bytes",
+                s.offset, s.length
+            );
+        }
+    }
     for i in 0..count {
         let base = u64::from(moby_section.offset) + (i as u64) * OLD_MOBY_HEADER_SIZE;
         match parse_one(
@@ -71,6 +88,7 @@ where
             vertices_geom_offset,
             indices_geom_offset,
             &identity_shader_tuids,
+            log_probes,
         ) {
             Ok(asset) => on_each(asset),
             Err(e) => {
@@ -92,6 +110,7 @@ fn parse_one<R: Read + Seek>(
     vertices_geom_offset: Option<u64>,
     indices_geom_offset: Option<u64>,
     identity_shader_tuids: &[u64],
+    log_probes: bool,
 ) -> Result<MobyAsset> {
     main_ig.stream.seek_to(base + 0x00)?;
     let bsphere_position = main_ig.stream.read_vec3()?;
@@ -128,12 +147,42 @@ fn parse_one<R: Read + Seek>(
     let index_offset = u64::from(index_offset_raw & !FLAG_USE_VERTICES_DAT);
     let vertex_offset = u64::from(vertex_offset_raw & !FLAG_USE_VERTICES_DAT);
 
+    if log_probes && index < 5 {
+        eprintln!(
+            "[tod-moby] moby[{}] base=0x{:X} bsphere=({:.3},{:.3},{:.3} r={:.3}) bangles={} \
+             num_anims={} skel_ptr=0x{:X} anims_ptr=0x{:X} bangles_ptr=0x{:X} \
+             idx_off=0x{:X}{} v_off=0x{:X}{} scale={:.6}",
+            index,
+            base,
+            bsphere_position[0],
+            bsphere_position[1],
+            bsphere_position[2],
+            bsphere_radius,
+            bangle_count1,
+            num_animations,
+            skeleton_ptr,
+            animations_ptr,
+            bangles_ptr,
+            index_offset,
+            if index_use_vertices_dat { " (vertices.dat)" } else { " (textures.dat)" },
+            vertex_offset,
+            if vertex_use_vertices_dat { " (vertices.dat)" } else { " (textures.dat)" },
+            scale,
+        );
+    }
+
     let mut bangle_descriptors: Vec<(u64, u32)> = Vec::with_capacity(bangle_count1 as usize);
     for b in 0..bangle_count1 {
         let bangle_base = bangles_ptr + (b as u64) * OLD_MOBY_BANGLE_SIZE;
         main_ig.stream.seek_to(bangle_base + 0x00)?;
         let meshes_ptr = u64::from(main_ig.stream.read_u32()?);
         let mesh_count = main_ig.stream.read_u32()?;
+        if log_probes && index < 5 {
+            eprintln!(
+                "[tod-moby]   bangle[{}] meshes_ptr=0x{:X} mesh_count={}",
+                b, meshes_ptr, mesh_count
+            );
+        }
         bangle_descriptors.push((meshes_ptr, mesh_count));
     }
 
@@ -178,6 +227,21 @@ fn parse_one<R: Read + Seek>(
             }
             if index_end > max_index_end {
                 max_index_end = index_end;
+            }
+            if log_probes && index < 5 {
+                eprintln!(
+                    "[tod-moby]     mesh[{m}] idx_idx={} v_off=0x{:X} shader=0x{:X} v_cnt={} \
+                     v_type={} stride=0x{:X} bone_map_count={} idx_cnt={} bone_map_ptr=0x{:X}",
+                    index_index,
+                    mesh_vertex_offset,
+                    shader_index,
+                    vertex_count,
+                    vertex_type,
+                    stride,
+                    bone_map_count,
+                    index_count,
+                    bone_map_ptr,
+                );
             }
             bangle_meshes.push(MeshHeader {
                 index_index,

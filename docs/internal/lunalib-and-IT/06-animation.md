@@ -101,6 +101,18 @@ gltf-validator caught it as `ACCESSOR_INVALID_FLOAT`.
 We guard against shifts ≥ 15 to avoid `0x8000 >> 15 = 1` then divide-by-1
 producing huge multipliers; in practice valid skeletons have small shifts.
 
+**RFOM viseme rigs** (soldier / cartwright / Winters head rigs — 14 of
+them per typical level) ship with a raw `translationShift = 0x0103` that
+doesn't fit either the raw or byte-swapped 0..15 range. The recovery
+chain (in `skeleton.rs::recover_shift`) falls through to
+`swapped & 0x1F`, which mirrors what IT's effective behaviour on x86
+ends up being (the `SHR` instruction masks the count to 5 bits). For
+the viseme rigs this yields shift = 1 → `pos_scale = 1/16384`, giving
+sensible head-bone translation magnitudes. Without this mask the
+animations decoded with `pos_scale = 1/32768` (3× too small) and the
+viseme bones visibly collapsed to origin during playback. See chapter
+[03 — Skeleton & bind matrices](03-skeleton.md#the-byte-order-quirk).
+
 ## Decode flow
 
 ```rust

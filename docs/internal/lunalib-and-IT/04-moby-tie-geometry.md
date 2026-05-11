@@ -164,3 +164,25 @@ Ties are a strict subset:
 The cache and GLB pipeline treats ties as "single-bangle, no-skeleton
 mobys" via `tie_as_moby` (in `cache.rs`) so the rest of the pipeline
 doesn't have to branch.
+
+## RFOM-specific tie-likes
+
+Three more RFOM-only asset types reuse the tie data path because they
+share the same "static mesh + world transform" shape:
+
+- **`DetailCluster`** (`detail_rfom.rs`, sections `0xB200` / `0xB300` /
+  `0x9500`) — small static debris, signs, and props. Vertex format is
+  the same V1 `Vertex0` stride as ties, surfaced under `kind: "detail"`
+  so the hierarchy and Settings color treat them as their own family.
+- **`Shrub`** (`shrub_rfom.rs`, sections `0xC700` + `0xC650`) — mesh
+  vegetation. Different vertex format (`ShrubVertex`, 16 B with
+  half-float positions despite the IT struct's `int16[4]` declaration
+  — see [chapter 10](10-vegetation-and-sky.md) for the gotcha).
+- **`Foliage`** (`foliage_rfom.rs`, sections `0xC200` + `0x9700`) —
+  branch meshes (`BranchVertex`, 20 B half-float positions) and sprite
+  quads (`SpriteVertex`, 12 B) in one asset.
+
+All three flow through `tie_assets_for_glb` in the cache and pop out
+in the manifest as their own kinds (`detail`, `shrub`, `foliage`). See
+[chapter 10 — Vegetation & sky](10-vegetation-and-sky.md) for the
+struct layouts and the IT `ShrubsToGltf` / `FoliageToGltf` references.
