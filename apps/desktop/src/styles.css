@@ -36,6 +36,7 @@
   --asset-tie: #3dd0ff;
   --asset-detail: #b48cff;
   --asset-shrub: #6bd47b;
+  --asset-foliage: #9be572;
   --asset-light: #ffd83d;
   --asset-envsampler: #46e0c8;
   --asset-sky: #5d9bff;
@@ -1887,6 +1888,7 @@ textarea {
 .scene-badge-icon.kind-tie    { background: color-mix(in srgb, var(--asset-tie) 25%, transparent); color: var(--asset-tie); }
 .scene-badge-icon.kind-detail { background: color-mix(in srgb, var(--asset-detail) 25%, transparent); color: var(--asset-detail); }
 .scene-badge-icon.kind-shrub  { background: color-mix(in srgb, var(--asset-shrub) 25%, transparent); color: var(--asset-shrub); }
+.scene-badge-icon.kind-foliage { background: color-mix(in srgb, var(--asset-foliage) 25%, transparent); color: var(--asset-foliage); }
 .scene-badge-icon.kind-zone { background: rgba(157, 109, 255, 0.25); color: #9d6dff; }
 
 .scene-badge-name {
@@ -3972,6 +3974,7 @@ textarea {
 .tree-icon.kind-tie     { background: color-mix(in srgb, var(--asset-tie) 18%, transparent); color: var(--asset-tie); }
 .tree-icon.kind-detail  { background: color-mix(in srgb, var(--asset-detail) 18%, transparent); color: var(--asset-detail); }
 .tree-icon.kind-shrub   { background: color-mix(in srgb, var(--asset-shrub) 18%, transparent); color: var(--asset-shrub); }
+.tree-icon.kind-foliage { background: color-mix(in srgb, var(--asset-foliage) 18%, transparent); color: var(--asset-foliage); }
 .tree-icon.kind-light   { background: color-mix(in srgb, var(--asset-light) 18%, transparent); color: var(--asset-light); }
 .tree-icon.kind-envsampler { background: color-mix(in srgb, var(--asset-envsampler) 18%, transparent); color: var(--asset-envsampler); }
 .tree-icon.kind-sky     { background: color-mix(in srgb, var(--asset-sky) 18%, transparent); color: var(--asset-sky); }

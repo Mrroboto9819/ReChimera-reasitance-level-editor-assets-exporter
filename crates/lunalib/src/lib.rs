@@ -7,6 +7,7 @@ pub mod error;
 pub mod dds;
 pub mod detail_rfom;
 pub mod shrub_rfom;
+pub mod foliage_rfom;
 pub mod gltf_export;
 pub mod level_glb;
 pub mod lighting_rfom;
@@ -68,6 +69,7 @@ pub use gameplay_rfom::read_gameplay_rfom;
 pub use tie_inst_rfom::read_tie_instances_rfom;
 pub use detail_rfom::read_detail_clusters_rfom;
 pub use shrub_rfom::read_shrubs_rfom;
+pub use foliage_rfom::read_foliage_rfom;
 pub use lighting_rfom::{read_lights_rfom, LightInstance};
 pub use envsampler_rfom::{read_envsamplers_rfom, EnvSampler};
 pub use skybox_rfom::{

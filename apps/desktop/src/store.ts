@@ -27,6 +27,7 @@ export interface ViewSettingsState {
   showTies: boolean;
   showDetails: boolean;
   showShrubs: boolean;
+  showFoliage: boolean;
   showLights: boolean;
   showEnvSamplers: boolean;
   showUFrags: boolean;
@@ -55,6 +56,7 @@ const DEFAULT_VIEW: ViewSettingsState = {
   showTies: true,
   showDetails: true,
   showShrubs: true,
+  showFoliage: true,
   showLights: true,
   showEnvSamplers: false,
   showUFrags: true,
@@ -280,6 +282,8 @@ export interface AssetColors {
 
   shrub: string;
 
+  foliage: string;
+
   light: string;
 
   envsampler: string;
@@ -309,6 +313,7 @@ const DEFAULT_SETTINGS: SettingsState = {
     tie: "#3dd0ff",
     detail: "#b48cff",
     shrub: "#6bd47b",
+    foliage: "#9be572",
     light: "#ffd83d",
     envsampler: "#46e0c8",
     sky: "#5d9bff",

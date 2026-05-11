@@ -83,7 +83,12 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     {
       key: "shrub",
       label: "Shrubs",
-      hint: "Foliage / vegetation (RFOM only)",
+      hint: "Vegetation meshes (RFOM only)",
+    },
+    {
+      key: "foliage",
+      label: "Foliage",
+      hint: "Sprite foliage / grass (RFOM only)",
     },
     {
       key: "light",

@@ -72,6 +72,7 @@ export interface ViewSettings {
   showTies: boolean;
   showDetails: boolean;
   showShrubs: boolean;
+  showFoliage: boolean;
   showLights: boolean;
   showEnvSamplers: boolean;
   showCollision: boolean;
@@ -261,7 +262,9 @@ function ProxyPlacementGroup({
         ? assetColors.detail
         : kind === "shrub"
           ? assetColors.shrub
-          : assetColors.tie;
+          : kind === "foliage"
+            ? assetColors.foliage
+            : assetColors.tie;
   const selectionColor = assetColors.selection;
 
   useEffect(() => {
@@ -934,8 +937,13 @@ function AssetGroup({
               new THREE.Color("#ffffff"),
               0.55,
             )
-          : new THREE.Color("#ffffff"),
-    [kind, assetColorMap.detail, assetColorMap.shrub],
+          : kind === "foliage"
+            ? new THREE.Color(assetColorMap.foliage).lerp(
+                new THREE.Color("#ffffff"),
+                0.55,
+              )
+            : new THREE.Color("#ffffff"),
+    [kind, assetColorMap.detail, assetColorMap.shrub, assetColorMap.foliage],
   );
 
   if (!visible) return null;
@@ -2244,6 +2252,7 @@ export function Viewport({
     { key: "showTies", label: "Ties", Icon: Box, disabled: !hasLevel },
     { key: "showDetails", label: "Details", Icon: Box, disabled: !hasLevel },
     { key: "showShrubs", label: "Shrubs", Icon: Box, disabled: !hasLevel },
+    { key: "showFoliage", label: "Foliage", Icon: Box, disabled: !hasLevel },
     { key: "showLights", label: "Lights", Icon: Box, disabled: !hasLevel },
     {
       key: "showEnvSamplers",
@@ -2603,6 +2612,14 @@ export function Viewport({
               edits={edits.edits}
             />
             <ProxyPlacementGroup
+              kind="foliage"
+              instances={instances}
+              selectedIds={selection.ids}
+              onPick={onPick}
+              visible={view.showFoliage}
+              edits={edits.edits}
+            />
+            <ProxyPlacementGroup
               kind="moby"
               instances={instances}
               selectedIds={selection.ids}
@@ -2645,6 +2662,17 @@ export function Viewport({
               selectedIds={selection.ids}
               onPick={onPick}
               visible={view.showShrubs}
+              edits={edits.edits}
+              prioritizedAssetTuid={prioritizedAssetTuid}
+            />
+            <AssetGroup
+              kind="foliage"
+              meshes={meshes.foliage_assets ?? []}
+              textures={textureMap}
+              instances={instances}
+              selectedIds={selection.ids}
+              onPick={onPick}
+              visible={view.showFoliage}
               edits={edits.edits}
               prioritizedAssetTuid={prioritizedAssetTuid}
             />
