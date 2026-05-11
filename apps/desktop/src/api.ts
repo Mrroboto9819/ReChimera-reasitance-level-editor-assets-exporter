@@ -41,7 +41,12 @@ export type AssetKind =
   | "animset"
   | "cinematic"
   | "zone"
-  | "lighting";
+  | "lighting"
+  | "ufrag"
+  | "detail"
+  | "light"
+  | "envsampler"
+  | "sky";
 
 export interface Instance {
   
@@ -99,7 +104,7 @@ export const buildLevelManifest = (folder: string) =>
 
 
 export interface CacheManifestEntry {
-  kind: "moby" | "tie" | "texture" | "ufrag";
+  kind: "moby" | "tie" | "detail" | "shrub" | "foliage" | "texture" | "ufrag" | "sky";
   tuid: string;
   name: string;
   file: string;
@@ -135,7 +140,7 @@ export interface CacheStatus {
 }
 
 export type CacheEvent =
-  | { type: "phase"; phase: "mobys" | "ties" | "textures"; total: number }
+  | { type: "phase"; phase: "mobys" | "ties" | "materials" | "normalmaps" | "textures"; total: number }
   | { type: "item"; kind: "moby" | "tie" | "texture"; name: string }
   | { type: "progress"; current: number }
   | { type: "done"; entry_count: number }
@@ -254,6 +259,73 @@ export const exportMobyGlbWithOptions = (
     options,
   });
 
+export const writeBytes = (path: string, bytes: number[]) =>
+  invoke<void>("write_bytes", { path, bytes });
+
+export type SkyboxFormat = "glb" | "obj" | "ply" | "json";
+
+export interface SkyboxMeta {
+  vertex_count: number;
+  triangle_count: number;
+  aabb_min: [number, number, number];
+  aabb_max: [number, number, number];
+  texture_offset: number | null;
+}
+
+export const exportSkybox = (
+  levelFolder: string,
+  format: SkyboxFormat,
+  outPath: string,
+) =>
+  invoke<number>("export_skybox", { levelFolder, format, outPath });
+
+export const readCachedSkyboxMeta = (levelFolder: string) =>
+  invoke<SkyboxMeta>("read_cached_skybox_meta", { levelFolder });
+
+export const exportTexturePng = (
+  levelFolder: string,
+  texId: number,
+  outPath: string,
+) =>
+  invoke<number>("export_texture_png", {
+    levelFolder,
+    texId,
+    outPath,
+  });
+
+export const exportTextureDds = (
+  levelFolder: string,
+  texId: number,
+  outPath: string,
+) =>
+  invoke<number>("export_texture_dds", {
+    levelFolder,
+    texId,
+    outPath,
+  });
+
+export type LevelGlbExportEvent =
+  | { type: "phase"; label: string; total: number }
+  | { type: "progress"; current: number }
+  | {
+      type: "done";
+      bytes_written: number;
+      instance_count: number;
+      asset_count: number;
+    }
+  | { type: "error"; message: string };
+
+export const exportLevelGlb = (
+  levelFolder: string,
+  outPath: string,
+  onEvent: Channel<LevelGlbExportEvent>,
+) =>
+  invoke<void>("export_level_glb", {
+    levelFolder,
+    outPath,
+    onEvent,
+  });
+
 
 
 
@@ -292,6 +364,15 @@ export async function loadFromCache(
   const tieEntries = manifest.entries.filter(
     (e) => e.kind === "tie" && e.file.endsWith(".json"),
   );
+  const detailEntries = manifest.entries.filter(
+    (e) => e.kind === "detail" && e.file.endsWith(".json"),
+  );
+  const shrubEntries = manifest.entries.filter(
+    (e) => e.kind === "shrub" && e.file.endsWith(".json"),
+  );
+  const foliageEntries = manifest.entries.filter(
+    (e) => e.kind === "foliage" && e.file.endsWith(".json"),
+  );
   const ufragEntries = manifest.entries.filter((e) => e.kind === "ufrag");
   const textureEntries = manifest.entries.filter((e) => e.kind === "texture");
 
@@ -323,6 +404,36 @@ export async function loadFromCache(
     }
   }
 
+  const detail_assets: AssetMeshes[] = [];
+  for (let i = 0; i < detailEntries.length; i++) {
+    try {
+      const data = (await readCachedAsset(folder, detailEntries[i]!.file)) as AssetMeshes;
+      detail_assets.push(data);
+    } catch {
+      /* skip */
+    }
+  }
+
+  const shrub_assets: AssetMeshes[] = [];
+  for (let i = 0; i < shrubEntries.length; i++) {
+    try {
+      const data = (await readCachedAsset(folder, shrubEntries[i]!.file)) as AssetMeshes;
+      shrub_assets.push(data);
+    } catch {
+      /* skip */
+    }
+  }
+
+  const foliage_assets: AssetMeshes[] = [];
+  for (let i = 0; i < foliageEntries.length; i++) {
+    try {
+      const data = (await readCachedAsset(folder, foliageEntries[i]!.file)) as AssetMeshes;
+      foliage_assets.push(data);
+    } catch {
+      /* skip */
+    }
+  }
+
   const ufrag_meshes: UFragMesh[] = [];
   onProgress?.({ phase: "ufrags", current: 0, total: ufragEntries.length });
   for (let i = 0; i < ufragEntries.length; i++) {
@@ -344,7 +455,7 @@ export async function loadFromCache(
   }));
   onProgress?.({ phase: "textures", current: textures.length, total: textures.length });
 
-  return { moby_assets, tie_assets, ufrag_meshes, textures };
+  return { moby_assets, tie_assets, detail_assets, shrub_assets, foliage_assets, ufrag_meshes, textures };
 }
 
 export interface UFragBounds {
@@ -469,6 +580,9 @@ export type TextureBlobMap = Map<number, Blob>;
 export interface LevelMeshes {
   moby_assets: AssetMeshes[];
   tie_assets: AssetMeshes[];
+  detail_assets?: AssetMeshes[];
+  shrub_assets?: AssetMeshes[];
+  foliage_assets?: AssetMeshes[];
   ufrag_meshes: UFragMesh[];
   textures: TexturePayload[];
 }
@@ -730,11 +844,25 @@ export const findGlbTextures = (
 
 
 
+export type SoundCategory = "sfx" | "dialog" | "music";
+
+/// Classify a sound entry by its source filename. Works for all 4 supported
+/// games — Insomniac uses consistent naming:
+///   - `*dialogue*` / `*voice*` → dialog
+///   - `*music*`                → music
+///   - `*sound*` and everything else → sfx
+export function classifySound(source: string): SoundCategory {
+  const s = source.toLowerCase();
+  if (s.includes("dialogue") || s.includes("voice")) return "dialog";
+  if (s.includes("music")) return "music";
+  return "sfx";
+}
+
 export interface SoundEntry {
   name: string;
-  
+
   index: number;
-  
+
 
   
 
@@ -777,6 +905,28 @@ export const listLevelSounds = (level_folder: string) =>
 export const extractLevelSounds = (level_folder: string) =>
   invoke<ExtractedSound[]>("extract_level_sounds", {
     levelFolder: level_folder,
+  });
+
+export const extractOneSound = (
+  level_folder: string,
+  name: string,
+  source?: string,
+) =>
+  invoke<ExtractedSound>("extract_one_sound", {
+    levelFolder: level_folder,
+    name,
+    source,
+  });
+
+export const extractOneStreamSound = (
+  level_folder: string,
+  name: string,
+  source: string,
+) =>
+  invoke<ExtractedSound>("extract_one_stream_sound", {
+    levelFolder: level_folder,
+    name,
+    source,
   });
 
 

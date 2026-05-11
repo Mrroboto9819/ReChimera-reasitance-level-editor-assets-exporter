@@ -18,6 +18,18 @@ pub fn read_moby_assets_rfom<F>(level_folder: &Path, mut on_each: F) -> Result<(
 where
     F: FnMut(MobyAsset),
 {
+    read_moby_assets_rfom_with_total(level_folder, |_| {}, |a| on_each(a))
+}
+
+pub fn read_moby_assets_rfom_with_total<T, F>(
+    level_folder: &Path,
+    mut on_total: T,
+    mut on_each: F,
+) -> Result<()>
+where
+    T: FnMut(usize),
+    F: FnMut(MobyAsset),
+{
     let main_path = level_folder.join("ps3levelmain.dat");
     let mut main_ig = IgFile::open(BufReader::new(File::open(&main_path)?))?;
 
@@ -50,6 +62,7 @@ where
     let texs_size = std::fs::metadata(&texs_path).map(|m| m.len()).unwrap_or(0);
 
     let count = moby_section.count as usize;
+    on_total(count);
     let mut skipped_empty = 0usize;
     for i in 0..count {
         let header_off = u64::from(moby_section.offset) + (i as u64) * RFOM_MOBY_HEADER_SIZE;

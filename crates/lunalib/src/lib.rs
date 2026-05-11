@@ -4,7 +4,16 @@
 pub mod animation;
 pub mod assetlookup;
 pub mod error;
+pub mod dds;
+pub mod detail_rfom;
+pub mod shrub_rfom;
+pub mod foliage_rfom;
 pub mod gltf_export;
+pub mod level_glb;
+pub mod lighting_rfom;
+pub mod envsampler_rfom;
+pub mod skybox_rfom;
+pub mod rfom_probe;
 
 
 pub const MAX_ASSET_SIZE: u32 = 512 * 1024 * 1024;
@@ -58,23 +67,32 @@ pub use moby::{
 pub use gameplay_old::read_gameplay_old;
 pub use gameplay_rfom::read_gameplay_rfom;
 pub use tie_inst_rfom::read_tie_instances_rfom;
-pub use moby_old::read_moby_assets_old;
-pub use moby_rfom::read_moby_assets_rfom;
+pub use detail_rfom::read_detail_clusters_rfom;
+pub use shrub_rfom::read_shrubs_rfom;
+pub use foliage_rfom::read_foliage_rfom;
+pub use lighting_rfom::{read_lights_rfom, LightInstance};
+pub use envsampler_rfom::{read_envsamplers_rfom, EnvSampler};
+pub use skybox_rfom::{
+    read_skybox_rfom, write_skybox_glb, write_skybox_obj, write_skybox_ply, SkyboxMesh,
+};
+pub use rfom_probe::probe_rfom_unknowns;
+pub use moby_old::{read_moby_assets_old, read_moby_assets_old_with_total};
+pub use moby_rfom::{read_moby_assets_rfom, read_moby_assets_rfom_with_total};
 pub use shader_old::read_shaders_old;
 pub use shader_rfom::read_shaders_rfom;
 pub use texture::decode_format;
 pub use texture_old::{read_textures_old, texture_to_png};
 pub use texture_rfom::{read_textures_rfom, texture_rfom_to_png};
-pub use tie_old::read_tie_assets_old;
-pub use tie_rfom::read_tie_assets_rfom;
+pub use tie_old::{read_tie_assets_old, read_tie_assets_old_with_total};
+pub use tie_rfom::{read_tie_assets_rfom, read_tie_assets_rfom_with_total};
 pub use zone_old::read_zones_old;
 pub use region_rfom::read_regions_rfom;
 pub use shader::{read_shaders, ShaderInfo};
 pub use skeleton::{read_skeleton, read_skeleton_at, Bone, Skeleton};
 pub use sound::{
     bank_pair_for, decode_adpcm_block, decode_adpcm_stream, dump_sound_bank_info,
-    extract_bank_sounds, extract_raw_streaming, extract_stream_sounds, list_raw_streaming,
-    list_sounds, scan_raw_audio_offsets, streaming_sibling_for, write_wav_pcm16,
+    extract_bank_sounds, extract_bank_sounds_for_file, extract_raw_streaming, extract_stream_sounds, list_raw_streaming,
+    list_sounds, reset_scream_diag, scan_raw_audio_offsets, streaming_sibling_for, write_wav_pcm16,
     write_wav_pcm16_mono, ExtractedSound, SoundKind, SoundSummary,
 };
 pub use stream::{Endian, StreamHelper};

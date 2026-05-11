@@ -659,6 +659,14 @@ pub fn decode_animation_with_skeleton<R: Read + Seek>(
     let nf = h.num_frames as usize;
     let additive = h.is_additive();
 
+    if std::env::var("RECHIMERA_LOG_ANIM_DETAIL").is_ok() {
+        eprintln!(
+            "[anim-decode] name='{}' frames={} hdr_bones={} skel_bones={} flags=0x{:04X} additive={} fps={} stride={} 16bit={} 8bit={} ref_values={} pos_scale={:.6} scale_scale={:.6}",
+            h.name, nf, h.num_bones, nb, h.flags, additive, h.frame_rate, h.frame_stride,
+            h.num_16bit_tracks, h.num_8bit_tracks, h.num_reference_values, position_scale, scale_scale,
+        );
+    }
+
     let (ref_trans, ref_scale) = decompose_skeleton_ref_pose(skel);
 
     let mut pos_static_value: Vec<[i16; 3]> = vec![[0; 3]; nb];

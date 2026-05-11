@@ -14,7 +14,7 @@ interface OpenLevelModalProps {
   onOpen: (folderPath: string) => void;
 }
 
-type GameId = "r1" | "r2" | "r3" | "rc_tod" | "rc_ffa" | "rc_a4o";
+type GameId = "r1" | "r2" | "r3" | "rc_tod" | "rc_acit" | "rc_ffa" | "rc_a4o";
 type Step = "game" | "source" | "psarc" | "folder";
 
 interface PsarcExtractStatus {
@@ -55,7 +55,7 @@ const GAMES: GameSpec[] = [
     franchise: "resistance",
     supported: true,
     logoSrc: "/RFOM.webp",
-    byline: "Tested ✓ — meshes, textures, materials, skeletons, animations.",
+    byline: "Full pipeline: meshes, textures, skeletons, animations, ufrags, ties, foliage, shrubs, details, skybox dome, sounds, visemes.",
     entryFile: "ps3levelmain.dat",
     hint: "RFOM ships `game.psarc` archives — extract them first with PSARC tooling so you get the loose file tree (e.g. `extract_psarc.cmd` from the InsomniaToolset bundle, or any PSARC unpacker). Once unpacked, levels live in `<game>/PS3_GAME/USRDIR/packed/levels/<levelN>/`. Pick a folder that contains `ps3levelmain.dat` plus its siblings (`ps3leveltexs.dat`, `ps3levelverts.dat`, `ps3levelcoll.dat`, …). Note: some level folders (e.g. `level22`) only ship dialogue/sound and are NOT playable on their own.",
     capabilities: {
@@ -72,7 +72,7 @@ const GAMES: GameSpec[] = [
     franchise: "resistance",
     supported: true,
     logoSrc: "/Resistance_2.webp",
-    byline: "Tested ✓ — full support: meshes, textures, materials, skeletons, animations.",
+    byline: "Stable end-to-end: meshes, textures, materials, skeletons, animations, ufrags, sounds (SFX / Dialog / Music).",
     entryFile: "assetlookup.dat",
     hint: "R2 levels are V2 layout — assetlookup.dat plus mobys.dat / ties.dat / shaders.dat / textures.dat / highmips.dat / animsets.dat / zones.dat side-by-side.",
     capabilities: {
@@ -89,7 +89,7 @@ const GAMES: GameSpec[] = [
     franchise: "resistance",
     supported: true,
     logoSrc: "/Resistance_3.png",
-    byline: "Tested ✓ — full support: meshes, textures, materials, skeletons, animations.",
+    byline: "Stable end-to-end: meshes, textures, materials, skeletons, animations, ufrags, sounds (SFX / Dialog / Music).",
     entryFile: "assetlookup.dat",
     hint: "R3 levels are V2 layout — same sibling .dat set as R2.",
     capabilities: {
@@ -106,7 +106,7 @@ const GAMES: GameSpec[] = [
     franchise: "ratchet_clank",
     supported: true,
     logoSrc: "/R&C_FTD.webp",
-    byline: "Meshes, textures, materials and skeletons supported. Animations export in T-pose only — frame format unsolved.",
+    byline: "Meshes, textures, materials, skeletons, ufrags and tie instances load. Animations export in T-pose (complex frame format unsolved). No skybox — no IT/ReLunacy reference.",
     entryFile: "main.dat",
     hint: "ToD levels are TOD layout — main.dat embeds asset tables, with vertices.dat / textures.dat / texstream.dat / system.tp / system.tph as siblings. There is no assetlookup.dat.",
     capabilities: {
@@ -117,20 +117,37 @@ const GAMES: GameSpec[] = [
     },
   },
   {
+    id: "rc_acit",
+    label: "Ratchet & Clank Future: A Crack in Time",
+    short: "R&C ACiT",
+    franchise: "ratchet_clank",
+    supported: true,
+    logoSrc: "/R&Clank_A_Crack_in_Time.png",
+    byline: "Experimental — ACiT ships V2 layout (assetlookup.dat) so it routes through the R2/R3 parser. Skeletons read via the shift-recovery cascade; meshes / textures / ties may have ACiT-specific quirks still being investigated.",
+    entryFile: "assetlookup.dat",
+    hint: "A Crack in Time levels ship `assetlookup.dat` plus the standard V2 sibling set (mobys.dat / ties.dat / shaders.dat / textures.dat / highmips.dat / animsets.dat / zones.dat). Pick the folder that contains them. Some assets may not render correctly yet — please share the cache-build log if you hit issues.",
+    capabilities: {
+      meshes: "partial",
+      textures: "partial",
+      armatures: "partial",
+      animations: "partial",
+    },
+  },
+  {
     id: "rc_ffa",
     label: "Ratchet & Clank: Full Frontal Assault",
     short: "R&C FFA",
     franchise: "ratchet_clank",
-    supported: true,
+    supported: false,
     logoSrc: "/R&C_FA.png",
-    byline: "V2 layout (same family as R2/R3). Meshes, textures, skeletons and animations work; some textures may render as placeholders.",
+    byline: "Not yet supported. V2 layout but not validated end-to-end yet — pending a test pass against real FFA level data.",
     entryFile: "assetlookup.dat",
-    hint: "FFA levels are V2 layout — same sibling .dat set as R2 / R3.",
+    hint: "FFA levels are V2 layout — same sibling .dat set as R2 / R3. Once support is enabled this should route through the R2/R3 parser.",
     capabilities: {
-      meshes: "ok",
-      textures: "partial",
-      armatures: "ok",
-      animations: "ok",
+      meshes: "missing",
+      textures: "missing",
+      armatures: "missing",
+      animations: "missing",
     },
   },
   {
@@ -140,7 +157,7 @@ const GAMES: GameSpec[] = [
     franchise: "ratchet_clank",
     supported: true,
     logoSrc: "/maxresdefault.jpg",
-    byline: "V2 layout. Meshes, textures, materials, skeletons and animations all working.",
+    byline: "V2 layout. Meshes, textures, materials, skeletons, animations and sounds all working.",
     entryFile: "assetlookup.dat",
     hint: "All 4 One levels use V2 layout — assetlookup.dat plus mobys.dat / ties.dat / shaders.dat / textures.dat / highmips.dat / animsets.dat / zones.dat side-by-side. Same as R2/R3/FFA.",
     capabilities: {
@@ -250,6 +267,26 @@ function lastTwoSegments(path: string): string {
   return parts.slice(-2).join(" / ") || norm;
 }
 
+const FRANCHISE_TAB_KEY = "rechimera.wizardFranchiseTab";
+
+function loadFranchiseTab(): Franchise {
+  try {
+    const v = localStorage.getItem(FRANCHISE_TAB_KEY);
+    if (v === "resistance" || v === "ratchet_clank") return v;
+  } catch {
+    /* noop */
+  }
+  return "resistance";
+}
+
+function saveFranchiseTab(f: Franchise) {
+  try {
+    localStorage.setItem(FRANCHISE_TAB_KEY, f);
+  } catch {
+    /* noop */
+  }
+}
+
 export function OpenLevelModal({
   open,
   busy,
@@ -261,6 +298,7 @@ export function OpenLevelModal({
   const [path, setPath] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
   const [recent, setRecent] = useState<string[]>([]);
+  const [franchiseTab, setFranchiseTab] = useState<Franchise>(loadFranchiseTab);
 
   const [psarcInput, setPsarcInput] = useState("");
   const [psarcOutput, setPsarcOutput] = useState("");
@@ -284,6 +322,11 @@ export function OpenLevelModal({
       setPsarcDone(false);
     }
   }, [open]);
+
+  const pickFranchise = useCallback((f: Franchise) => {
+    setFranchiseTab(f);
+    saveFranchiseTab(f);
+  }, []);
 
   const pickGame = useCallback((id: GameId) => {
     setGame(id);
@@ -696,72 +739,89 @@ export function OpenLevelModal({
     >
       {step === "game" && (
         <div className="game-franchises">
-          {FRANCHISES.map((f) => {
-            const games = GAMES.filter((g) => g.franchise === f.id);
-            if (games.length === 0) return null;
-            return (
-              <section key={f.id} className="game-franchise">
-                <header className="game-franchise-header">
-                  <h3 className="game-franchise-title">{f.label}</h3>
-                  <span className="game-franchise-count small dim">
-                    {games.length} {games.length === 1 ? "game" : "games"}
+          <div
+            className="game-franchise-tabs"
+            role="tablist"
+            aria-label="Choose franchise"
+          >
+            {FRANCHISES.map((f) => {
+              const games = GAMES.filter((g) => g.franchise === f.id);
+              if (games.length === 0) return null;
+              const isActive = franchiseTab === f.id;
+              return (
+                <button
+                  key={f.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  className={`game-franchise-tab${isActive ? " active" : ""}`}
+                  onClick={() => pickFranchise(f.id)}
+                >
+                  <span className="game-franchise-tab-label">{f.label}</span>
+                  <span className="game-franchise-tab-count dim small">
+                    {games.length}
                   </span>
-                </header>
-                <div className="game-grid">
-                  {games.map((g) => (
-                    <button
-                      key={g.id}
-                      type="button"
-                      className={`game-tile${g.supported ? "" : " is-disabled"}`}
-                      onClick={() => g.supported && pickGame(g.id)}
-                      disabled={!g.supported}
-                      title={
-                        g.supported
-                          ? `Open ${g.label}`
-                          : `${g.short} — parser support is not implemented yet`
-                      }
-                    >
-                      <div className="game-tile-art">
-                        <img
-                          src={g.logoSrc}
-                          alt={g.label}
-                          draggable={false}
-                          onError={(e) => {
-                            (e.currentTarget as HTMLImageElement).style.opacity = "0";
-                          }}
-                        />
-                        {!g.supported && (
-                          <div className="game-tile-lockoverlay">
-                            <Lock size={20} strokeWidth={2} />
-                            <span className="small">Not yet supported</span>
-                          </div>
-                        )}
-                      </div>
-                      <div className="game-tile-meta">
-                        <div className="game-tile-name">{g.label}</div>
-                        <div className="game-tile-byline dim small">{g.byline}</div>
-                        <ul className="game-tile-caps" aria-label="Supported features">
-                          {CAPABILITY_LABELS.map(({ key, label }) => {
-                            const state = g.capabilities[key];
-                            return (
-                              <li
-                                key={key}
-                                className={`game-tile-cap is-${state}`}
-                                title={capTooltip(label, state)}
-                              >
-                                <span className="game-tile-cap-dot" aria-hidden />
-                                <span className="game-tile-cap-label">{label}</span>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </section>
+                </button>
+              );
+            })}
+          </div>
+          {(() => {
+            const games = GAMES.filter((g) => g.franchise === franchiseTab);
+            return (
+              <div className="game-grid">
+                {games.map((g) => (
+                  <button
+                    key={g.id}
+                    type="button"
+                    className={`game-tile${g.supported ? "" : " is-disabled"}`}
+                    onClick={() => g.supported && pickGame(g.id)}
+                    disabled={!g.supported}
+                    title={
+                      g.supported
+                        ? `Open ${g.label}`
+                        : `${g.short} — parser support is not implemented yet`
+                    }
+                  >
+                    <div className="game-tile-art">
+                      <img
+                        src={g.logoSrc}
+                        alt={g.label}
+                        draggable={false}
+                        onError={(e) => {
+                          (e.currentTarget as HTMLImageElement).style.opacity = "0";
+                        }}
+                      />
+                      {!g.supported && (
+                        <div className="game-tile-lockoverlay">
+                          <Lock size={20} strokeWidth={2} />
+                          <span className="small">Not yet supported</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="game-tile-meta">
+                      <div className="game-tile-name">{g.label}</div>
+                      <div className="game-tile-byline dim small">{g.byline}</div>
+                      <ul className="game-tile-caps" aria-label="Supported features">
+                        {CAPABILITY_LABELS.map(({ key, label }) => {
+                          const state = g.capabilities[key];
+                          return (
+                            <li
+                              key={key}
+                              className={`game-tile-cap is-${state}`}
+                              title={capTooltip(label, state)}
+                            >
+                              <span className="game-tile-cap-dot" aria-hidden />
+                              <span className="game-tile-cap-label">{label}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  </button>
+                ))}
+              </div>
             );
-          })}
+          })()}
         </div>
       )}
 

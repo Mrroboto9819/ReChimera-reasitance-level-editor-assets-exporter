@@ -27,6 +27,12 @@ use crate::zone::TieInstance;
 const SECT_TIE_INSTANCE: u32 = 0x9300;
 const TIE_INSTANCE_SIZE: u64 = 0xC0;
 
+/// Per IT `levelmain/extract.cpp` (lines 767, 847, 1021), RFOM tie
+/// instance transforms have their translation column scaled by
+/// `YARD_TO_M` to convert from raw yards to meters — matching the
+/// moby placement convention used elsewhere on this game.
+const YARD_TO_M: f32 = 0.9144;
+
 pub fn read_tie_instances_rfom(level_folder: &Path) -> Result<Vec<TieInstance>> {
     let main_path = level_folder.join("ps3levelmain.dat");
     let mut main_ig = IgFile::open(BufReader::new(File::open(&main_path)?))?;
@@ -45,6 +51,8 @@ pub fn read_tie_instances_rfom(level_folder: &Path) -> Result<Vec<TieInstance>> 
 
     let count = section.count as usize;
     let mut out: Vec<TieInstance> = Vec::with_capacity(count);
+    let mut sample_logged = 0usize;
+    let log_probes = std::env::var("RECHIMERA_LOG_PROBES").is_ok();
     for i in 0..count {
         let base = u64::from(section.offset) + (i as u64) * TIE_INSTANCE_SIZE;
 
@@ -53,7 +61,22 @@ pub fn read_tie_instances_rfom(level_folder: &Path) -> Result<Vec<TieInstance>> 
         for slot in matrix.iter_mut() {
             *slot = main_ig.stream.read_f32()?;
         }
-        let (position, scale, quaternion) = decompose_row_major(&matrix);
+        let (position_raw, scale, quaternion) = decompose_row_major(&matrix);
+        let position = [
+            position_raw[0] * YARD_TO_M,
+            position_raw[1] * YARD_TO_M,
+            position_raw[2] * YARD_TO_M,
+        ];
+
+        if sample_logged < 3 && log_probes {
+            eprintln!(
+                "[rfom-tie-inst] [{i}] raw_pos=({:.2}, {:.2}, {:.2}) → meters=({:.2}, {:.2}, {:.2}) scale=({:.3}, {:.3}, {:.3})",
+                position_raw[0], position_raw[1], position_raw[2],
+                position[0], position[1], position[2],
+                scale[0], scale[1], scale[2]
+            );
+            sample_logged += 1;
+        }
 
         main_ig.stream.seek_to(base + 0x8C)?;
         let tie_ptr = u64::from(main_ig.stream.read_u32()?);
@@ -67,6 +90,9 @@ pub fn read_tie_instances_rfom(level_folder: &Path) -> Result<Vec<TieInstance>> 
             scale,
             bounding_radius: 0.0,
         });
+    }
+    if log_probes {
+        eprintln!("[rfom-tie-inst] {} tie placements scaled to meters", out.len());
     }
     Ok(out)
 }

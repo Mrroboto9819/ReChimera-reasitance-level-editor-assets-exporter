@@ -2,11 +2,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use lunalib::{
     animation_section_offsets, decode_animation, decode_animation_with_skeleton, detect_layout,
-    read_animation_control, read_animation_header_at, read_moby_assets_old,
+    read_animation_control, read_animation_header_at,
     read_moby_assets_with_total, read_shaders, read_tie_assets_with_total, read_zones, AssetKind,
     AssetLookup, DecodedClip, IgFile, LevelLayout, ShaderInfo, Skeleton, UFrag, Zone,
 };
@@ -167,6 +169,145 @@ impl AnimsetIndex {
     }
 }
 
+// One-shot probe to dump the raw bytes of the first anim's first 3 frames
+// for byte-level comparison between layouts. Fires at most once per process
+// per layout. Gated on `RECHIMERA_LOG_PROBES=1`.
+static TOD_ANIM_BYTES_PROBE_FIRED: AtomicBool = AtomicBool::new(false);
+static RFOM_ANIM_BYTES_PROBE_FIRED: AtomicBool = AtomicBool::new(false);
+
+// Returns true if this anim's pair-frame decision should be logged.
+// Dedupe key is (moby_tuid, anim_name) so each moby gets to log all of
+// its anims even if the names appear on other mobys too. Cap at 250
+// rows to keep the audit large enough for a full level but not unbounded.
+fn should_log_tod_anim_decision(moby_tuid: u64, name: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<HashSet<(u64, String)>>> = Mutex::new(None);
+    let mut guard = SEEN.lock().unwrap();
+    let set = guard.get_or_insert_with(HashSet::new);
+    if set.len() >= 250 {
+        return false;
+    }
+    set.insert((moby_tuid, name.to_string()))
+}
+// Fires once for the first TOD anim that has at least one Position OR Scale
+// track (not pure rotation), so we can probe the suspected translation/scale
+// decode bug separately from the rotation-only animate_spin case.
+static TOD_TRANS_PROBE_FIRED: AtomicBool = AtomicBool::new(false);
+
+fn probe_anim_bytes<R: Read + Seek>(
+    ig: &mut IgFile<R>,
+    tag: &str,
+    anim_off: u64,
+) {
+    let header = match read_animation_header_at(ig, anim_off) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("[anim-bytes] {tag} header read failed: {e}");
+            return;
+        }
+    };
+    eprintln!(
+        "[anim-bytes] {tag} name='{}' frames={} bones={} flags=0x{:04X} stride={} n16={} n8={} nrv={} frames_ptr=0x{:08X} ctrl_ptr=0x{:08X}",
+        header.name,
+        header.num_frames,
+        header.num_bones,
+        header.flags,
+        header.frame_stride,
+        header.num_16bit_tracks,
+        header.num_8bit_tracks,
+        header.num_reference_values,
+        header.frames_ptr,
+        header.control_ptr,
+    );
+
+    // Dump the AnimationControl block to recover (bone_index, component,
+    // kind) for each track. Same parse our `read_animation_control` does.
+    if let Ok(ctrl) = read_animation_control(ig, &header) {
+        for (i, m) in ctrl.track16_masks.iter().enumerate() {
+            eprintln!(
+                "[anim-bytes] {tag} track16[{i}] bone={} comp={} kind={:?}",
+                m.bone_index, m.component, m.kind
+            );
+        }
+        for (i, m) in ctrl.track8_masks.iter().enumerate() {
+            eprintln!(
+                "[anim-bytes] {tag} track8[{i}] bone={} comp={} kind={:?} base={}",
+                m.bone_index,
+                m.component,
+                m.kind,
+                ctrl.track8_base_values.get(i).copied().unwrap_or(0)
+            );
+        }
+        for (i, m) in ctrl.ref_pose_masks.iter().enumerate() {
+            eprintln!(
+                "[anim-bytes] {tag} refpose[{i}] bone={} comp={} kind={:?} val={}",
+                m.bone_index,
+                m.component,
+                m.kind,
+                ctrl.ref_pose_values.get(i).copied().unwrap_or(0)
+            );
+        }
+    } else {
+        eprintln!("[anim-bytes] {tag} (control block read failed)");
+    }
+
+    if header.frames_ptr == 0 || header.frame_stride == 0 || header.num_frames == 0 {
+        eprintln!("[anim-bytes] {tag} (no frame data — skipping byte dump)");
+        return;
+    }
+    let stride = header.frame_stride as usize;
+    let n_frames_to_dump = header.num_frames.min(16) as usize;
+    for f in 0..n_frames_to_dump {
+        let off = u64::from(header.frames_ptr) + (f as u64) * (stride as u64);
+        if ig.stream.seek_to(off).is_err() {
+            eprintln!("[anim-bytes] {tag} frame[{f}] seek failed");
+            continue;
+        }
+        let bytes = match ig.stream.read_bytes(stride) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("[anim-bytes] {tag} frame[{f}] read failed: {e}");
+                continue;
+            }
+        };
+        // Hex dump
+        let hex: String = bytes
+            .iter()
+            .take(64)
+            .map(|b| format!("{:02X}", b))
+            .collect::<Vec<_>>()
+            .join("");
+        eprintln!(
+            "[anim-bytes] {tag} frame[{f}] @ 0x{:08X} hex(64)={}",
+            off, hex
+        );
+        // i16 BE view of the 16-bit track region (first 16 values)
+        let n16_dump = (header.num_16bit_tracks as usize).min(16);
+        let i16_view: Vec<i16> = (0..n16_dump)
+            .map(|k| {
+                let i = k * 2;
+                i16::from_be_bytes([bytes[i], bytes[i + 1]])
+            })
+            .collect();
+        eprintln!(
+            "[anim-bytes] {tag} frame[{f}] i16[{}..{}]={:?}",
+            0, n16_dump, i16_view
+        );
+        // i8 view of the 8-bit track region (first 16 values), starts after pad-to-16 of n16*2
+        let n16_bytes = (header.num_16bit_tracks as usize) * 2;
+        let off8 = (n16_bytes + 15) & !15;
+        let n8_dump = (header.num_8bit_tracks as usize).min(16);
+        if off8 + n8_dump <= bytes.len() {
+            let i8_view: Vec<i8> = (0..n8_dump).map(|k| bytes[off8 + k] as i8).collect();
+            eprintln!(
+                "[anim-bytes] {tag} frame[{f}] i8[off8=0x{:X} 0..{}]={:?}",
+                off8, n8_dump, i8_view
+            );
+        }
+    }
+}
+
 fn decode_clips_for_moby_inline(
     level_folder: &Path,
     main_dat_filename: &str,
@@ -175,15 +316,37 @@ fn decode_clips_for_moby_inline(
     scale_scale: f32,
     skeleton: &Skeleton,
     layout: LevelLayout,
+    moby_tuid: u64,
 ) -> Vec<DecodedClip> {
     if anim_offsets.is_empty() {
         return Vec::new();
     }
-    if matches!(layout, LevelLayout::Tod) {
-        eprintln!(
-            "[cache] TOD inline anim decode skipped — frame format unsolved (see project_tod_anim_format.md)"
-        );
-        return Vec::new();
+    let log_probes = std::env::var("RECHIMERA_LOG_PROBES").is_ok();
+    // Frame-bytes probe — fires once per process per layout, ahead of any
+    // decode so the TOD early-return still gets a dump. The probe needs to
+    // open main.dat itself since the TOD branch otherwise short-circuits.
+    if log_probes {
+        let probe_flag = match layout {
+            LevelLayout::Tod => &TOD_ANIM_BYTES_PROBE_FIRED,
+            LevelLayout::Rfom => &RFOM_ANIM_BYTES_PROBE_FIRED,
+            LevelLayout::V2 => return Vec::new(), // shouldn't reach inline path
+        };
+        if probe_flag
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            let probe_path = level_folder.join(main_dat_filename);
+            if let Ok(file) = std::fs::File::open(&probe_path) {
+                if let Ok(mut probe_ig) = IgFile::open(std::io::BufReader::new(file)) {
+                    let tag = match layout {
+                        LevelLayout::Tod => "tod",
+                        LevelLayout::Rfom => "rfom",
+                        _ => "?",
+                    };
+                    probe_anim_bytes(&mut probe_ig, tag, anim_offsets[0]);
+                }
+            }
+        }
     }
     let main_path = level_folder.join(main_dat_filename);
     let file = match std::fs::File::open(&main_path) {
@@ -202,24 +365,176 @@ fn decode_clips_for_moby_inline(
     };
     let skel_bones = skeleton.bones.len() as u16;
     let mut out = Vec::with_capacity(anim_offsets.len());
+    let probe_layout = matches!(layout, LevelLayout::Rfom)
+        && std::env::var("RECHIMERA_LOG_ANIM_DETAIL").is_ok();
     for (i, off) in anim_offsets.iter().enumerate() {
+        if probe_layout && i == 0 {
+            eprintln!("[rfom-anim-probe] anim[0] @ file_off=0x{:08X}", off);
+        }
         let mut header = match read_animation_header_at(&mut ig, *off) {
             Ok(h) => h,
             Err(e) => {
-                eprintln!("warn: inline anim[{i}] header read failed: {e}");
+                eprintln!(
+                    "warn: inline anim[{i}] header read failed @ 0x{:08X}: {e}",
+                    off
+                );
                 continue;
             }
         };
+        if probe_layout && i == 0 {
+            eprintln!(
+                "[rfom-anim-probe] header name='{}' frames={} bones={} flags=0x{:04X} fps={} stride={} 16bit={} 8bit={} ctrl_ptr=0x{:08X} frames_ptr=0x{:08X}",
+                header.name,
+                header.num_frames,
+                header.num_bones,
+                header.flags,
+                header.frame_rate,
+                header.frame_stride,
+                header.num_16bit_tracks,
+                header.num_8bit_tracks,
+                header.control_ptr,
+                header.frames_ptr
+            );
+        }
         if skel_bones > 0 {
             header.num_bones = skel_bones;
+        }
+        // TOD pair-frame encoding: each logical keyframe is stored as TWO
+        // consecutive frame_stride rows — even-index = zero filler,
+        // odd-index = real values. To consume with the standard IT decoder
+        // we halve the frame count, double the stride, and offset the
+        // frames_ptr by one stride so frame[0] lands on the first real
+        // keyframe. RE'd from `animate_spin` probe (see
+        // `project_tod_anim_format` memory). RFOM/V2 anims are left alone.
+        // TOD pair-frame transform — but ONLY for anims that actually
+        // need it. The encoding is: every other disk frame is zero-filler
+        // (real keyframes at odd indices). This shows up only when the
+        // disk frame_stride equals the minimum data-size required for
+        // the per-frame i16/i8 tracks. If the disk stride is larger than
+        // the data size (e.g. 192 stride for ~96 bytes of data), the
+        // anim already packs real keyframes into every disk frame and
+        // applying the pair-frame halving WRECKS it by dropping every
+        // other keyframe.
+        if matches!(layout, LevelLayout::Tod)
+            && header.num_frames >= 2
+            && header.frame_stride > 0
+            && header.frames_ptr != 0
+        {
+            let n16_bytes = (header.num_16bit_tracks as usize) * 2;
+            let padded_i16 = (n16_bytes + 15) & !15;
+            let n8_bytes = header.num_8bit_tracks as usize;
+            let min_data = ((padded_i16 + n8_bytes) + 15) & !15;
+            let stride_usize = header.frame_stride as usize;
+            // Pair-frame encoding only applies when (a) the disk stride
+            // equals the minimum data size AND (b) the anim has zero
+            // 8-bit delta tracks. Anims with n8 > 0 use the i8 delta
+            // tracks as their compression mechanism and store one real
+            // keyframe per disk frame regardless of stride/min_data ratio.
+            // RE'd from the [tod-anim] APPLIED/SKIPPED audit:
+            //   animate_spin (n8=0): pair-framed, smooth Y rotation in odd frames
+            //   pterodactyl_fly / wasp_idle / wasp_attack_full (n8 > 0):
+            //     NOT pair-framed; pair-frame transform produced distorted
+            //     bones radiating from origin.
+            // TOD animation decoding is disabled across the board until
+            // we RE the format properly. Neither IT nor ReLunacy supports
+            // TOD anims; our probes showed that pair-frame works for
+            // n8=0 anims but the n8>0 i8-delta encoding produces wild
+            // distortion. Rather than ship a mix of working + visibly
+            // broken anims, T-pose every TOD anim and surface bind-pose
+            // characters. Simple anims (animate_spin, doors, kerchu_roller_roll)
+            // can be re-enabled later by removing this guard once the
+            // full TOD decode path is solved.
+            if log_probes && should_log_tod_anim_decision(moby_tuid, &header.name) {
+                let kind = if min_data > 0
+                    && stride_usize == min_data
+                    && header.num_8bit_tracks == 0
+                {
+                    "n8=0 simple"
+                } else {
+                    "n8>0 complex"
+                };
+                eprintln!(
+                    "[tod-anim] T-POSE   moby_{:04X} '{}' n16={} n8={} stride={} min_data={} ({}) → skip decode",
+                    moby_tuid, header.name,
+                    header.num_16bit_tracks, header.num_8bit_tracks,
+                    stride_usize, min_data, kind,
+                );
+            }
+            continue;
         }
         let ctrl = match read_animation_control(&mut ig, &header) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("warn: inline anim[{i}] '{}' control read failed: {e}", header.name);
+                eprintln!(
+                    "warn: inline anim[{i}] '{}' control read failed: {e}",
+                    header.name
+                );
                 continue;
             }
         };
+
+        // One-shot diagnostic probe for the first TOD anim that has at
+        // least one Position OR Scale track. Dumps the actual scale
+        // values being applied + raw track[0..n] mask info + first 3
+        // frames of raw i16 values. This lets us see if pos_scale is
+        // amplifying the data to absurd levels.
+        if log_probes
+            && matches!(layout, LevelLayout::Tod)
+        {
+            let has_non_rotation = ctrl.track16_masks.iter().any(|m| {
+                !matches!(m.kind, lunalib::TrackKind::Rotation)
+            }) || ctrl.track8_masks.iter().any(|m| {
+                !matches!(m.kind, lunalib::TrackKind::Rotation)
+            });
+            if has_non_rotation
+                && TOD_TRANS_PROBE_FIRED
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                eprintln!(
+                    "[tod-trans-probe] moby_{:04X} '{}' has non-rotation tracks. nb={} nf={} stride={} n16={} n8={} pos_scale={:.8} scale_scale={:.8} skel.trans_shift={} skel.scale_shift={}",
+                    moby_tuid, header.name,
+                    header.num_bones,
+                    header.num_frames,
+                    header.frame_stride,
+                    header.num_16bit_tracks,
+                    header.num_8bit_tracks,
+                    position_scale,
+                    scale_scale,
+                    skeleton.translation_shift,
+                    skeleton.scale_shift,
+                );
+                // List the non-rotation track masks
+                for (idx, m) in ctrl.track16_masks.iter().enumerate() {
+                    if !matches!(m.kind, lunalib::TrackKind::Rotation) {
+                        eprintln!(
+                            "[tod-trans-probe]   t16[{}] bone={} comp={} kind={:?}",
+                            idx, m.bone_index, m.component, m.kind
+                        );
+                        if idx >= 20 { eprintln!("[tod-trans-probe]   …"); break; }
+                    }
+                }
+                // First 3 frames raw i16 values
+                for f in 0..(header.num_frames as usize).min(3) {
+                    let off = u64::from(header.frames_ptr)
+                        + (f as u64) * (header.frame_stride as u64);
+                    if ig.stream.seek_to(off).is_ok() {
+                        let take = (header.num_16bit_tracks as usize).min(20);
+                        let mut vals: Vec<i16> = Vec::with_capacity(take);
+                        for _ in 0..take {
+                            if let Ok(v) = ig.stream.read_i16() {
+                                vals.push(v);
+                            }
+                        }
+                        eprintln!(
+                            "[tod-trans-probe]   frame[{f}] @ 0x{:08X} i16[0..{}]={:?}",
+                            off, take, vals
+                        );
+                    }
+                }
+            }
+        }
+
         let result = decode_animation_with_skeleton(
             &mut ig,
             &header,
@@ -231,7 +546,10 @@ fn decode_clips_for_moby_inline(
         match result {
             Ok(clip) => out.push(clip),
             Err(e) => {
-                eprintln!("warn: inline anim[{i}] '{}' decode failed: {e}", header.name);
+                eprintln!(
+                    "warn: inline anim[{i}] '{}' decode failed: {e}",
+                    header.name
+                );
             }
         }
     }
@@ -334,6 +652,36 @@ pub fn extract_level_to_cache(
     }
 }
 
+/// When `RECHIMERA_DEBUG_MOBY=<hex>[,<hex>...]` is set, only mobys whose tuid hex
+/// ends with one of the given suffixes are processed (case-insensitive, accepts
+/// `0x` prefix per entry). All other extraction phases (ties, details, ufrags,
+/// sky, lights, env-samplers, gameplay) are skipped to make the iteration loop
+/// tight for debugging. Textures still run — they're filtered to whatever the
+/// matched mobys need.
+///
+/// Examples:
+///   `RECHIMERA_DEBUG_MOBY=0212`        — one moby
+///   `RECHIMERA_DEBUG_MOBY=0212,00CD`   — multiple
+///   `RECHIMERA_DEBUG_MOBY=0x0212,0326` — `0x` prefix allowed
+fn debug_moby_filter() -> Option<Vec<String>> {
+    let raw = std::env::var("RECHIMERA_DEBUG_MOBY").ok()?;
+    let suffixes: Vec<String> = raw
+        .split(',')
+        .map(|s| s.trim().trim_start_matches("0x").trim_start_matches("0X").to_ascii_uppercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if suffixes.is_empty() {
+        None
+    } else {
+        Some(suffixes)
+    }
+}
+
+fn debug_moby_match(tuid: u64, suffixes: &[String]) -> bool {
+    let hex = format!("{:016X}", tuid);
+    suffixes.iter().any(|s| hex.ends_with(s.as_str()))
+}
+
 fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, String> {
     let level_path = Path::new(folder);
     let root = cache_root(folder);
@@ -350,10 +698,18 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         layout.label()
     );
 
-    // RFOM probe — log every IGHW section in ps3levelmain.dat so we
-    // can keep porting structures off real bytes. Stage R.1 (mobys)
-    // is wired below; later stages reuse the same probe.
-    if matches!(layout, LevelLayout::Rfom) {
+    let debug_filter = debug_moby_filter();
+    if let Some(suffixes) = &debug_filter {
+        eprintln!(
+            "[cache] DEBUG MODE: RECHIMERA_DEBUG_MOBY={} — extracting only matching mobys, \
+             skipping ties/details/ufrags/sky/lights/envsamplers/gameplay phases.",
+            suffixes.join(","),
+        );
+    }
+
+    // RFOM section-list probe — only useful when investigating unknown
+    // section IDs. Gated behind RECHIMERA_LOG_PROBES=1.
+    if matches!(layout, LevelLayout::Rfom) && std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
         let entry_path = level_path.join("ps3levelmain.dat");
         match std::fs::File::open(&entry_path) {
             Ok(file) => match IgFile::open(std::io::BufReader::new(file)) {
@@ -371,9 +727,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         );
                     }
                 }
-                Err(e) => eprintln!("[probe-rfom] failed to parse ps3levelmain.dat: {e}"),
+                Err(e) => eprintln!("warn: [probe-rfom] parse ps3levelmain.dat: {e}"),
             },
-            Err(e) => eprintln!("[probe-rfom] failed to open ps3levelmain.dat: {e}"),
+            Err(e) => eprintln!("warn: [probe-rfom] open ps3levelmain.dat: {e}"),
         }
         let gp_path = level_path.join("ps3gameplay.dat");
         if gp_path.exists() {
@@ -393,12 +749,10 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                             );
                         }
                     }
-                    Err(e) => eprintln!("[probe-rfom-gp] failed to parse ps3gameplay.dat: {e}"),
+                    Err(e) => eprintln!("warn: [probe-rfom-gp] parse ps3gameplay.dat: {e}"),
                 },
-                Err(e) => eprintln!("[probe-rfom-gp] failed to open ps3gameplay.dat: {e}"),
+                Err(e) => eprintln!("warn: [probe-rfom-gp] open ps3gameplay.dat: {e}"),
             }
-        } else {
-            eprintln!("[probe-rfom-gp] ps3gameplay.dat not present in level folder");
         }
     }
 
@@ -461,6 +815,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                     "[cache] RFOM layout: read {} materials from ps3levelmain.dat",
                     map.len()
                 );
+                if std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+                    let _ = lunalib::probe_rfom_unknowns(level_path);
+                }
                 map
             }
             Err(e) => {
@@ -485,7 +842,13 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
     let mut animsets_file = std::fs::File::open(&animsets_path).ok();
 
     let mut entries: Vec<CacheManifestEntry> = Vec::new();
-    let mut needed_textures: HashSet<u32> = HashSet::new();
+    // Track texture IDs by role so the cache phase can be split into
+    // Materials (albedos) → Normal maps → Textures (emissive/other) for the
+    // progress UI. Same convention across V2 / RFOM / TOD since the
+    // categorisation happens here, not in the per-game decoders below.
+    let mut needed_albedos: HashSet<u32> = HashSet::new();
+    let mut needed_normals: HashSet<u32> = HashSet::new();
+    let mut needed_emissives: HashSet<u32> = HashSet::new();
 
     let mut moby_assets_for_glb: Vec<lunalib::MobyAsset> = Vec::new();
     let mut tie_assets_for_glb: Vec<lunalib::TieAsset> = Vec::new();
@@ -498,15 +861,20 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         });
     };
     if matches!(layout, LevelLayout::Tod) {
-        let mut tod_total_emitted = false;
         let mut tod_count = 0usize;
-        if let Err(e) = read_moby_assets_old(level_path, |asset| {
-            if !tod_total_emitted {
+        if let Err(e) = lunalib::read_moby_assets_old_with_total(
+            level_path,
+            |total| {
                 let _ = on_event.send(CacheEvent::Phase {
                     phase: "mobys",
-                    total: 1,
+                    total,
                 });
-                tod_total_emitted = true;
+            },
+            |asset| {
+            if let Some(suffixes) = &debug_filter {
+                if !debug_moby_match(asset.tuid, suffixes) {
+                    return;
+                }
             }
             tod_count += 1;
             moby_assets_for_glb.push(asset.clone());
@@ -519,9 +887,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         &asset.shader_tuids,
                         m.shader_index as usize,
                     );
-                    for id in [albedo, normal, emissive].into_iter().flatten() {
-                        needed_textures.insert(id);
-                    }
+                    if let Some(id) = albedo { needed_albedos.insert(id); }
+                    if let Some(id) = normal { needed_normals.insert(id); }
+                    if let Some(id) = emissive { needed_emissives.insert(id); }
                     submeshes.push(mesh_dto(
                         m.positions.clone(),
                         m.uvs.clone(),
@@ -559,7 +927,8 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 name: dto.name,
             });
             let _ = on_event.send(CacheEvent::Progress { current: tod_count });
-        }) {
+        },
+        ) {
             return Err(format!("TOD moby read failed: {e}"));
         }
         eprintln!("[cache] TOD layout: extracted {tod_count} mobys");
@@ -569,15 +938,20 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         // ps3levelverts.dat. Shaders/textures/skeleton are not ported
         // yet so submeshes carry None texture ids and the skeleton/
         // animset fields stay empty.
-        let mut rfom_total_emitted = false;
         let mut rfom_count = 0usize;
-        if let Err(e) = lunalib::read_moby_assets_rfom(level_path, |asset| {
-            if !rfom_total_emitted {
+        if let Err(e) = lunalib::read_moby_assets_rfom_with_total(
+            level_path,
+            |total| {
                 let _ = on_event.send(CacheEvent::Phase {
                     phase: "mobys",
-                    total: 1,
+                    total,
                 });
-                rfom_total_emitted = true;
+            },
+            |asset| {
+            if let Some(suffixes) = &debug_filter {
+                if !debug_moby_match(asset.tuid, suffixes) {
+                    return;
+                }
             }
             rfom_count += 1;
             moby_assets_for_glb.push(asset.clone());
@@ -590,9 +964,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         &asset.shader_tuids,
                         m.shader_index as usize,
                     );
-                    for id in [albedo, normal, emissive].into_iter().flatten() {
-                        needed_textures.insert(id);
-                    }
+                    if let Some(id) = albedo { needed_albedos.insert(id); }
+                    if let Some(id) = normal { needed_normals.insert(id); }
+                    if let Some(id) = emissive { needed_emissives.insert(id); }
                     submeshes.push(mesh_dto(
                         m.positions.clone(),
                         m.uvs.clone(),
@@ -630,7 +1004,8 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 name: dto.name,
             });
             let _ = on_event.send(CacheEvent::Progress { current: rfom_count });
-        }) {
+        },
+        ) {
             eprintln!("warn: RFOM moby read failed: {e}");
         }
         eprintln!("[cache] RFOM layout: extracted {rfom_count} mobys");
@@ -640,6 +1015,11 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
             None,
             phase_total_emit,
             |asset| {
+                if let Some(suffixes) = &debug_filter {
+                    if !debug_moby_match(asset.tuid, suffixes) {
+                        return;
+                    }
+                }
                 moby_assets_for_glb.push(asset.clone());
 
                 let mut submeshes = Vec::new();
@@ -650,9 +1030,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                             &asset.shader_tuids,
                             m.shader_index as usize,
                         );
-                        for id in [albedo, normal, emissive].into_iter().flatten() {
-                            needed_textures.insert(id);
-                        }
+                        if let Some(id) = albedo { needed_albedos.insert(id); }
+                        if let Some(id) = normal { needed_normals.insert(id); }
+                        if let Some(id) = emissive { needed_emissives.insert(id); }
                         submeshes.push(mesh_dto(
                             m.positions,
                             m.uvs,
@@ -696,17 +1076,20 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         .map_err(|e| e.to_string())?;
     }
 
+    eprintln!("[cache] -> phase ties (layout={})", layout.tag());
     let mut tie_done = 0usize;
-    if matches!(layout, LevelLayout::Tod) {
-        let mut tod_total_emitted = false;
-        if let Err(e) = lunalib::read_tie_assets_old(level_path, |asset| {
-            if !tod_total_emitted {
+    if debug_filter.is_some() {
+        eprintln!("[cache] debug mode: skipping ties / details / ufrags / sky / lights / envsamplers");
+    } else if matches!(layout, LevelLayout::Tod) {
+        if let Err(e) = lunalib::read_tie_assets_old_with_total(
+            level_path,
+            |total| {
                 let _ = on_event.send(CacheEvent::Phase {
                     phase: "ties",
-                    total: 1,
+                    total,
                 });
-                tod_total_emitted = true;
-            }
+            },
+            |asset| {
             tie_assets_for_glb.push(asset.clone());
 
             let submeshes: Vec<_> = asset
@@ -718,9 +1101,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         &asset.shader_tuids,
                         m.shader_index as usize,
                     );
-                    for id in [albedo, normal, emissive].into_iter().flatten() {
-                        needed_textures.insert(id);
-                    }
+                    if let Some(id) = albedo { needed_albedos.insert(id); }
+                    if let Some(id) = normal { needed_normals.insert(id); }
+                    if let Some(id) = emissive { needed_emissives.insert(id); }
                     mesh_dto(
                         m.positions,
                         m.uvs,
@@ -759,20 +1142,21 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 name: dto.name,
             });
             let _ = on_event.send(CacheEvent::Progress { current: tie_done });
-        }) {
+        },
+        ) {
             eprintln!("warn: TOD tie read failed: {e}");
         }
         eprintln!("[cache] TOD layout: extracted {tie_done} ties");
     } else if matches!(layout, LevelLayout::Rfom) {
-        let mut rfom_total_emitted = false;
-        if let Err(e) = lunalib::read_tie_assets_rfom(level_path, |asset| {
-            if !rfom_total_emitted {
+        if let Err(e) = lunalib::read_tie_assets_rfom_with_total(
+            level_path,
+            |total| {
                 let _ = on_event.send(CacheEvent::Phase {
                     phase: "ties",
-                    total: 1,
+                    total,
                 });
-                rfom_total_emitted = true;
-            }
+            },
+            |asset| {
             tie_assets_for_glb.push(asset.clone());
 
             let submeshes: Vec<_> = asset
@@ -784,9 +1168,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         &asset.shader_tuids,
                         m.shader_index as usize,
                     );
-                    for id in [albedo, normal, emissive].into_iter().flatten() {
-                        needed_textures.insert(id);
-                    }
+                    if let Some(id) = albedo { needed_albedos.insert(id); }
+                    if let Some(id) = normal { needed_normals.insert(id); }
+                    if let Some(id) = emissive { needed_emissives.insert(id); }
                     mesh_dto(
                         m.positions,
                         m.uvs,
@@ -825,10 +1209,275 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 name: dto.name,
             });
             let _ = on_event.send(CacheEvent::Progress { current: tie_done });
-        }) {
+        },
+        ) {
             eprintln!("warn: RFOM tie read failed: {e}");
         }
         eprintln!("[cache] RFOM layout: extracted {tie_done} ties");
+
+        // RFOM also has DetailCluster (0xB300) — small static props
+        // (debris, signs, etc.) that share the V1 Vertex0 stride and
+        // meshScale convention with regular ties. Surface them under
+        // their own `kind: "detail"` so the cache modal can filter
+        // them into a dedicated tab and the viewport can color them
+        // distinctly. Geometry pipeline is identical to ties — they
+        // still feed `tie_assets_for_glb` so the per-asset GLB +
+        // texture resolution work the same.
+        let _ = lunalib::read_detail_clusters_rfom(level_path)
+            .map(|(detail_assets, _)| {
+                let _ = fs::create_dir_all(root.join("details"));
+                let mut detail_done = 0usize;
+                for asset in detail_assets {
+                    tie_assets_for_glb.push(asset.clone());
+                    let submeshes: Vec<_> = asset
+                        .meshes
+                        .into_iter()
+                        .map(|m| {
+                            let (albedo, normal, emissive) = resolve_shader_textures(
+                                &shaders,
+                                &asset.shader_tuids,
+                                m.shader_index as usize,
+                            );
+                            if let Some(id) = albedo { needed_albedos.insert(id); }
+                            if let Some(id) = normal { needed_normals.insert(id); }
+                            if let Some(id) = emissive { needed_emissives.insert(id); }
+                            mesh_dto(
+                                m.positions,
+                                m.uvs,
+                                m.indices,
+                                albedo,
+                                normal,
+                                emissive,
+                                Vec::new(),
+                                Vec::new(),
+                            )
+                        })
+                        .collect();
+                    let dto = AssetMeshesDto {
+                        asset_tuid: format!("0x{:016X}", asset.tuid),
+                        name: format!("detail_{:016X}", asset.tuid),
+                        submeshes,
+                        skeleton: None,
+                        animset_hash: None,
+                        bind_pose_inverse_offset: 0,
+                        embedded_animation_count: 0,
+                    };
+                    let file_rel = format!("details/0x{:016X}.json", asset.tuid);
+                    let path = root.join(&file_rel);
+                    if let Ok(size_bytes) = write_json(&path, &dto) {
+                        entries.push(CacheManifestEntry {
+                            kind: "detail".into(),
+                            tuid: dto.asset_tuid.clone(),
+                            name: dto.name.clone(),
+                            file: file_rel,
+                            size_bytes,
+                        });
+                    }
+                    detail_done += 1;
+                    let _ = on_event.send(CacheEvent::Item {
+                        kind: "tie",
+                        name: dto.name,
+                    });
+                }
+                eprintln!("[cache] RFOM layout: extracted {detail_done} detail clusters");
+            })
+            .map_err(|e| eprintln!("warn: RFOM detail-cluster read failed: {e}"));
+
+        // RFOM Shrubs (0xC700 + 0xC650) — foliage / vegetation. IT calls
+        // these "shrubs" and emits them via gpu-instancing; we route the
+        // meshes through `tie_assets_for_glb` (same Vertex0 path as
+        // details) and expose individual placements as `kind: "shrub"`
+        // tie-instances so they show up in the viewport and exports.
+        let _ = lunalib::read_shrubs_rfom(level_path)
+            .map(|(shrub_assets, _)| {
+                let _ = fs::create_dir_all(root.join("shrubs"));
+                let mut shrub_done = 0usize;
+                for asset in shrub_assets {
+                    tie_assets_for_glb.push(asset.clone());
+                    let submeshes: Vec<_> = asset
+                        .meshes
+                        .into_iter()
+                        .map(|m| {
+                            let (albedo, normal, emissive) = resolve_shader_textures(
+                                &shaders,
+                                &asset.shader_tuids,
+                                m.shader_index as usize,
+                            );
+                            if let Some(id) = albedo { needed_albedos.insert(id); }
+                            if let Some(id) = normal { needed_normals.insert(id); }
+                            if let Some(id) = emissive { needed_emissives.insert(id); }
+                            mesh_dto(
+                                m.positions,
+                                m.uvs,
+                                m.indices,
+                                albedo,
+                                normal,
+                                emissive,
+                                Vec::new(),
+                                Vec::new(),
+                            )
+                        })
+                        .collect();
+                    let dto = AssetMeshesDto {
+                        asset_tuid: format!("0x{:016X}", asset.tuid),
+                        name: format!("shrub_{:016X}", asset.tuid),
+                        submeshes,
+                        skeleton: None,
+                        animset_hash: None,
+                        bind_pose_inverse_offset: 0,
+                        embedded_animation_count: 0,
+                    };
+                    let file_rel = format!("shrubs/0x{:016X}.json", asset.tuid);
+                    let path = root.join(&file_rel);
+                    if let Ok(size_bytes) = write_json(&path, &dto) {
+                        entries.push(CacheManifestEntry {
+                            kind: "shrub".into(),
+                            tuid: dto.asset_tuid.clone(),
+                            name: dto.name.clone(),
+                            file: file_rel,
+                            size_bytes,
+                        });
+                    }
+                    shrub_done += 1;
+                    let _ = on_event.send(CacheEvent::Item {
+                        kind: "tie",
+                        name: dto.name,
+                    });
+                }
+                eprintln!("[cache] RFOM layout: extracted {shrub_done} shrub meshes");
+            })
+            .map_err(|e| eprintln!("warn: RFOM shrub read failed: {e}"));
+
+        // RFOM Foliage (0xC200 Foliage + 0x9700 FoliageInstance) — sprite +
+        // branch vegetation. Branch-mesh path only for now; sprites are
+        // omitted (billboarded quads need viewport-side special handling).
+        // NOTE: 0xC200 and 0x9700 used to be mis-routed through
+        // read_lights_rfom / read_envsamplers_rfom — both readers now
+        // disabled in main.rs's level_layout.
+        let _ = lunalib::read_foliage_rfom(level_path)
+            .map(|(foliage_assets, _)| {
+                let _ = fs::create_dir_all(root.join("foliage"));
+                let mut foliage_done = 0usize;
+                for asset in foliage_assets {
+                    tie_assets_for_glb.push(asset.clone());
+                    let submeshes: Vec<_> = asset
+                        .meshes
+                        .into_iter()
+                        .map(|m| {
+                            let (albedo, normal, emissive) = resolve_shader_textures(
+                                &shaders,
+                                &asset.shader_tuids,
+                                m.shader_index as usize,
+                            );
+                            if let Some(id) = albedo { needed_albedos.insert(id); }
+                            if let Some(id) = normal { needed_normals.insert(id); }
+                            if let Some(id) = emissive { needed_emissives.insert(id); }
+                            mesh_dto(
+                                m.positions,
+                                m.uvs,
+                                m.indices,
+                                albedo,
+                                normal,
+                                emissive,
+                                Vec::new(),
+                                Vec::new(),
+                            )
+                        })
+                        .collect();
+                    let dto = AssetMeshesDto {
+                        asset_tuid: format!("0x{:016X}", asset.tuid),
+                        name: format!("foliage_{:016X}", asset.tuid),
+                        submeshes,
+                        skeleton: None,
+                        animset_hash: None,
+                        bind_pose_inverse_offset: 0,
+                        embedded_animation_count: 0,
+                    };
+                    let file_rel = format!("foliage/0x{:016X}.json", asset.tuid);
+                    let path = root.join(&file_rel);
+                    if let Ok(size_bytes) = write_json(&path, &dto) {
+                        entries.push(CacheManifestEntry {
+                            kind: "foliage".into(),
+                            tuid: dto.asset_tuid.clone(),
+                            name: dto.name.clone(),
+                            file: file_rel,
+                            size_bytes,
+                        });
+                    }
+                    foliage_done += 1;
+                    let _ = on_event.send(CacheEvent::Item {
+                        kind: "tie",
+                        name: dto.name,
+                    });
+                }
+                eprintln!("[cache] RFOM layout: extracted {foliage_done} foliage meshes");
+            })
+            .map_err(|e| eprintln!("warn: RFOM foliage read failed: {e}"));
+
+        match lunalib::read_skybox_rfom(level_path) {
+            Ok(Some(sky)) => {
+                let sky_dir = root.join("skybox");
+                let _ = fs::create_dir_all(&sky_dir);
+                let glb = lunalib::write_skybox_glb(&sky)
+                    .unwrap_or_default();
+                let obj = lunalib::write_skybox_obj(&sky);
+                let ply = lunalib::write_skybox_ply(&sky);
+                let json = serde_json::json!({
+                    "vertex_count": sky.vertices.len(),
+                    "triangle_count": sky.indices.len() / 3,
+                    "aabb_min": sky.aabb_min,
+                    "aabb_max": sky.aabb_max,
+                    "texture_offset": sky.texture_offset,
+                });
+
+                let glb_path = sky_dir.join("sky.glb");
+                let obj_path = sky_dir.join("sky.obj");
+                let ply_path = sky_dir.join("sky.ply");
+                let json_path = sky_dir.join("sky.json");
+                let _ = fs::write(&glb_path, &glb);
+                let _ = fs::write(&obj_path, obj.as_bytes());
+                let _ = fs::write(&ply_path, ply.as_bytes());
+                let _ = fs::write(
+                    &json_path,
+                    serde_json::to_vec_pretty(&json).unwrap_or_default(),
+                );
+
+                let glb_size = glb.len() as u64;
+                entries.push(CacheManifestEntry {
+                    kind: "sky".into(),
+                    tuid: format!("0x{:08X}", sky.texture_offset.unwrap_or(0)),
+                    name: "sky_dome".into(),
+                    file: "skybox/sky.glb".into(),
+                    size_bytes: glb_size,
+                });
+                eprintln!(
+                    "[cache] RFOM layout: wrote skybox GLB ({} verts, {} tris, {} bytes)",
+                    sky.vertices.len(),
+                    sky.indices.len() / 3,
+                    glb_size
+                );
+            }
+            Ok(None) => eprintln!("[cache] RFOM layout: no skybox sections found"),
+            Err(e) => eprintln!("warn: RFOM skybox read failed: {e}"),
+        }
+
+        // Gameplay placements (ps3gameplay.dat) — moby instance positions
+        // plus our raw-byte probe of GameplayInstances.other[6] (only when
+        // RECHIMERA_LOG_PROBES=1). Result discarded here — the level_layout
+        // Tauri command reads it again on demand for the viewport. We call
+        // it during cache extraction so the [rfom-gp]/[rfom-gp-other] logs
+        // fire on every full re-extract, not only when the level is opened.
+        match lunalib::read_gameplay_rfom(level_path) {
+            Ok(gp) => {
+                let placement_count: usize =
+                    gp.regions.iter().map(|r| r.moby_instances.len()).sum();
+                eprintln!(
+                    "[cache] RFOM layout: parsed {} gameplay placement(s) from ps3gameplay.dat",
+                    placement_count
+                );
+            }
+            Err(e) => eprintln!("warn: RFOM gameplay read failed: {e}"),
+        }
     } else {
     let tie_phase_emit = |total: usize| {
         let _ = on_event.send(CacheEvent::Phase {
@@ -836,6 +1485,7 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
             total,
         });
     };
+    eprintln!("[cache] -> V2 tie reader starting");
     read_tie_assets_with_total(
         level_path,
         None,
@@ -844,18 +1494,28 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
 
             tie_assets_for_glb.push(asset.clone());
 
+            let mut tie_meshes_total = 0usize;
+            let mut tie_meshes_with_albedo = 0usize;
+            let mut tie_first_st: Option<u64> = None;
             let submeshes: Vec<_> = asset
                 .meshes
                 .into_iter()
                 .map(|m| {
+                    tie_meshes_total += 1;
+                    if tie_first_st.is_none() {
+                        tie_first_st = asset.shader_tuids
+                            .get(m.shader_index as usize)
+                            .copied();
+                    }
                     let (albedo, normal, emissive) = resolve_shader_textures(
                         &shaders,
                         &asset.shader_tuids,
                         m.shader_index as usize,
                     );
-                    for id in [albedo, normal, emissive].into_iter().flatten() {
-                        needed_textures.insert(id);
-                    }
+                    if albedo.is_some() { tie_meshes_with_albedo += 1; }
+                    if let Some(id) = albedo { needed_albedos.insert(id); }
+                    if let Some(id) = normal { needed_normals.insert(id); }
+                    if let Some(id) = emissive { needed_emissives.insert(id); }
                     mesh_dto(
                         m.positions,
                         m.uvs,
@@ -868,6 +1528,28 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                     )
                 })
                 .collect();
+            if tie_meshes_total > 0 && tie_meshes_with_albedo == 0 {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                static TIE_NO_ALBEDO_FIRED: AtomicUsize = AtomicUsize::new(0);
+                let n = TIE_NO_ALBEDO_FIRED.fetch_add(1, Ordering::Relaxed);
+                if n < 4 {
+                    let st_label = tie_first_st
+                        .map(|s| format!("0x{:016X}", s))
+                        .unwrap_or_else(|| "(none)".to_string());
+                    let in_shaders = tie_first_st
+                        .map(|s| shaders.contains_key(&s))
+                        .unwrap_or(false);
+                    eprintln!(
+                        "warn: tie 0x{:016X} resolved 0/{} meshes to a shader. first shader_tuid={} (in shaders map: {}). shader_tuids.len={}, shaders.len={}",
+                        asset.tuid,
+                        tie_meshes_total,
+                        st_label,
+                        in_shaders,
+                        asset.shader_tuids.len(),
+                        shaders.len(),
+                    );
+                }
+            }
             let dto = AssetMeshesDto {
                 asset_tuid: format!("0x{:016X}", asset.tuid),
                 name: String::new(),
@@ -897,9 +1579,13 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         },
     )
     .map_err(|e| e.to_string())?;
+    eprintln!("[cache] V2 tie reader done — {} ties", tie_done);
     }
 
-    let zones: Vec<Zone> = match layout {
+    eprintln!("[cache] -> phase ufrags");
+    let zones: Vec<Zone> = if debug_filter.is_some() {
+        Vec::new()
+    } else { match layout {
         LevelLayout::V2 => match read_zones(level_path) {
             Ok(z) => z,
             Err(e) => {
@@ -907,10 +1593,21 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 Vec::new()
             }
         },
-        LevelLayout::Tod => {
-            eprintln!("[cache] TOD layout: zone reader not yet ported");
-            Vec::new()
-        }
+        LevelLayout::Tod => match lunalib::read_zones_old(level_path) {
+            Ok(z) => {
+                eprintln!(
+                    "[cache] TOD layout: read {} zone(s) with {} tie instances, {} ufrags",
+                    z.len(),
+                    z.iter().map(|x| x.tie_instances.len()).sum::<usize>(),
+                    z.iter().map(|x| x.ufrags.len()).sum::<usize>()
+                );
+                z
+            }
+            Err(e) => {
+                eprintln!("warn: TOD zone read failed ({e}); skipping ufrag/tie-instance phase");
+                Vec::new()
+            }
+        },
         LevelLayout::Rfom => {
             match lunalib::read_regions_rfom(level_path) {
                 Ok(z) => {
@@ -927,7 +1624,7 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 }
             }
         }
-    };
+    } };
 
     let mut total_ufrags = 0usize;
     for z in &zones {
@@ -966,9 +1663,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
             let albedo = shader_info.and_then(|s| s.albedo_tex_id);
             let normal = shader_info.and_then(|s| s.normal_tex_id);
             let emissive = shader_info.and_then(|s| s.expensive_tex_id);
-            for id in [albedo, normal, emissive].into_iter().flatten() {
-                needed_textures.insert(id);
-            }
+            if let Some(id) = albedo { needed_albedos.insert(id); }
+            if let Some(id) = normal { needed_normals.insert(id); }
+            if let Some(id) = emissive { needed_emissives.insert(id); }
             let dto = UFragMeshDto {
                 tuid: format!("0x{:016X}", tuid),
                 zone_tuid: zone_tuid_hex.clone(),
@@ -990,14 +1687,65 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         }
     }
 
-    let needed_ids: Vec<u32> = needed_textures.iter().copied().collect();
-    let _ = on_event.send(CacheEvent::Phase {
-        phase: "textures",
-        total: needed_ids.len(),
-    });
-    let pngs = match layout {
-        LevelLayout::V2 => lunalib::bulk_extract_pngs(level_path, Some(&needed_ids), TEXTURE_MAX_DIM)
-            .map_err(|e| e.to_string())?,
+    // Union of all roles — the actual set we decode from source files once.
+    let needed_union: HashSet<u32> = needed_albedos
+        .iter()
+        .chain(needed_normals.iter())
+        .chain(needed_emissives.iter())
+        .copied()
+        .collect();
+    let needed_ids: Vec<u32> = needed_union.iter().copied().collect();
+    // Treat "0", "false", "no", "" as off — `.is_ok()` alone would
+    // make any value (including "0") enable the skip.
+    let skip_textures = std::env::var("RECHIMERA_SKIP_TEXTURES")
+        .ok()
+        .map(|v| {
+            let lower = v.to_ascii_lowercase();
+            !lower.is_empty() && lower != "0" && lower != "false" && lower != "no"
+        })
+        .unwrap_or(false);
+
+    // Single decode pass from source (V2 / RFOM / TOD diverge only here).
+    // Categorised writes happen below in 3 progress phases.
+    let pngs: Vec<(u32, Vec<u8>)> = if skip_textures {
+        // Fast iteration mode for the anim probe — skip the slow decode and
+        // just re-use whatever PNG files are already on disk in the cache
+        // textures/ directory from a previous extraction.
+        let tex_dir = root.join("textures");
+        let mut reused: Vec<(u32, Vec<u8>)> = Vec::new();
+        if tex_dir.is_dir() {
+            let needed_set: HashSet<u32> = needed_ids.iter().copied().collect();
+            for entry in fs::read_dir(&tex_dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let Ok(id) = stem.parse::<u32>() else { continue };
+                if !needed_set.is_empty() && !needed_set.contains(&id) {
+                    continue;
+                }
+                if let Ok(bytes) = fs::read(&path) {
+                    reused.push((id, bytes));
+                }
+            }
+        }
+        eprintln!(
+            "[cache] RECHIMERA_SKIP_TEXTURES=1 — skipping texture decode, reused {} cached PNGs (needed={})",
+            reused.len(),
+            needed_ids.len()
+        );
+        reused
+    } else { match layout {
+        LevelLayout::V2 => {
+            eprintln!(
+                "[cache] -> V2 bulk_extract_pngs: needed={} textures",
+                needed_ids.len()
+            );
+            let r = lunalib::bulk_extract_pngs(level_path, Some(&needed_ids), TEXTURE_MAX_DIM)
+                .map_err(|e| e.to_string())?;
+            eprintln!("[cache] V2 textures done — encoded={} PNGs", r.len());
+            r
+        }
         LevelLayout::Tod => match lunalib::read_textures_old(level_path) {
             Ok(textures) => {
                 let needed: HashSet<u32> = needed_ids.iter().copied().collect();
@@ -1050,30 +1798,55 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 Vec::new()
             }
         },
-    };
-    let mut texture_pngs: HashMap<u32, Vec<u8>> = HashMap::with_capacity(pngs.len());
-    let mut tex_done = 0usize;
-    let progress_every = (pngs.len() / 50).max(1);
-    for (id, png) in pngs.into_iter() {
-        let file_rel = format!("textures/{id}.png");
-        let path = root.join(&file_rel);
-        let size_bytes = png.len() as u64;
-        if fs::write(&path, &png).is_ok() {
-            entries.push(CacheManifestEntry {
-                kind: "texture".into(),
-                tuid: id.to_string(),
-                name: String::new(),
-                file: file_rel,
-                size_bytes,
-            });
+    }};
+
+    // Write in 3 progress phases so the UI shows Materials → Normal maps →
+    // Textures. Each unique texture ID is written exactly once — IDs present
+    // in multiple roles land in the first phase they appear in.
+    let mut pngs_map: HashMap<u32, Vec<u8>> = pngs.into_iter().collect();
+    let mut texture_pngs: HashMap<u32, Vec<u8>> = HashMap::with_capacity(pngs_map.len());
+    let mut written: HashSet<u32> = HashSet::new();
+    let phases: [(&'static str, &HashSet<u32>); 3] = [
+        ("materials", &needed_albedos),
+        ("normalmaps", &needed_normals),
+        ("textures", &needed_emissives),
+    ];
+    for (phase_name, ids) in phases.iter() {
+        let pending: Vec<u32> = ids
+            .iter()
+            .filter(|id| !written.contains(id))
+            .copied()
+            .collect();
+        let _ = on_event.send(CacheEvent::Phase {
+            phase: phase_name,
+            total: pending.len(),
+        });
+        let progress_every = (pending.len() / 50).max(1);
+        let mut done = 0usize;
+        for id in pending {
+            written.insert(id);
+            if let Some(png) = pngs_map.remove(&id) {
+                let file_rel = format!("textures/{id}.png");
+                let path = root.join(&file_rel);
+                let size_bytes = png.len() as u64;
+                if fs::write(&path, &png).is_ok() {
+                    entries.push(CacheManifestEntry {
+                        kind: "texture".into(),
+                        tuid: id.to_string(),
+                        name: String::new(),
+                        file: file_rel,
+                        size_bytes,
+                    });
+                }
+                texture_pngs.insert(id, png);
+            }
+            done += 1;
+            if done % progress_every == 0 {
+                let _ = on_event.send(CacheEvent::Progress { current: done });
+            }
         }
-        texture_pngs.insert(id, png);
-        tex_done += 1;
-        if tex_done % progress_every == 0 {
-            let _ = on_event.send(CacheEvent::Progress { current: tex_done });
-        }
+        let _ = on_event.send(CacheEvent::Progress { current: done });
     }
-    let _ = on_event.send(CacheEvent::Progress { current: tex_done });
 
     let _ = on_event.send(CacheEvent::Phase {
         phase: "mobys",
@@ -1105,11 +1878,12 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         let clips: Vec<DecodedClip> = if !asset.rfom_anim_offsets.is_empty() {
             match asset.skeleton.as_ref() {
                 Some(skel) => {
+                    lunalib::skeleton::dump_skeleton_bind(asset.tuid, skel);
                     let main_dat = match layout {
                         LevelLayout::Tod => "main.dat",
                         _ => "ps3levelmain.dat",
                     };
-                    decode_clips_for_moby_inline(
+                    let decoded = decode_clips_for_moby_inline(
                         level_path,
                         main_dat,
                         &asset.rfom_anim_offsets,
@@ -1117,9 +1891,33 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         scale_scale,
                         skel,
                         layout,
-                    )
+                        asset.tuid,
+                    );
+                    if matches!(layout, LevelLayout::Rfom)
+                        && decoded.len() != asset.rfom_anim_offsets.len()
+                    {
+                        eprintln!(
+                            "warn: [rfom-anim] moby_{:04X}: {} offsets but only {} clips decoded (skel_bones={})",
+                            asset.tuid,
+                            asset.rfom_anim_offsets.len(),
+                            decoded.len(),
+                            skel.bones.len()
+                        );
+                    }
+                    decoded
                 }
-                None => Vec::new(),
+                None => {
+                    if matches!(layout, LevelLayout::Rfom)
+                        && !asset.rfom_anim_offsets.is_empty()
+                    {
+                        eprintln!(
+                            "warn: [rfom-anim] moby_{:04X}: {} offsets but no skeleton — skipping",
+                            asset.tuid,
+                            asset.rfom_anim_offsets.len()
+                        );
+                    }
+                    Vec::new()
+                }
             }
         } else {
             match (
@@ -1173,6 +1971,21 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                     clip.bones.len(), animated_bones, total_rot, total_trans
                 );
             }
+        }
+        let has_any_mesh = asset
+            .bangles
+            .iter()
+            .any(|b| b.meshes.iter().any(|m| m.vertex_count > 0));
+        if !has_any_mesh {
+            if probe {
+                eprintln!(
+                    "[probe-moby-{:04X}] no geometry — skipping GLB write",
+                    PROBE_TUID
+                );
+            }
+            glb_done += 1;
+            let _ = on_event.send(CacheEvent::Progress { current: glb_done });
+            continue;
         }
         match lunalib::write_moby_glb_full(&asset, &clips, &shaders, &texture_pngs) {
             Ok(glb_bytes) => {
@@ -1645,6 +2458,7 @@ pub fn export_moby_glb_with_options(
             && !asset.rfom_anim_offsets.is_empty()
         {
             if let Some(skel) = asset.skeleton.as_ref() {
+                lunalib::skeleton::dump_skeleton_bind(asset.tuid, skel);
                 let main_dat = match layout {
                     LevelLayout::Tod => "main.dat",
                     _ => "ps3levelmain.dat",
@@ -1657,6 +2471,7 @@ pub fn export_moby_glb_with_options(
                     scale_scale,
                     skel,
                     layout,
+                    asset.tuid,
                 ));
             }
         }
@@ -1730,6 +2545,42 @@ pub fn export_moby_glb_with_options(
 }
 
 #[tauri::command]
+pub fn export_skybox(
+    level_folder: String,
+    format: String,
+    out_path: String,
+) -> Result<u64, String> {
+    let root = cache_root(&level_folder);
+    let file = match format.as_str() {
+        "glb" => "skybox/sky.glb",
+        "obj" => "skybox/sky.obj",
+        "ply" => "skybox/sky.ply",
+        "json" => "skybox/sky.json",
+        other => return Err(format!("Unsupported skybox format: {other}")),
+    };
+    let src = root.join(file);
+    if !src.is_file() {
+        return Err(format!(
+            "Skybox not in cache yet ({}). Re-extract the level.",
+            file
+        ));
+    }
+    fs::copy(&src, &out_path)
+        .map_err(|e| format!("copy {} → {}: {e}", src.display(), out_path))
+}
+
+#[tauri::command]
+pub fn read_cached_skybox_meta(level_folder: String) -> Result<serde_json::Value, String> {
+    let root = cache_root(&level_folder);
+    let meta = root.join("skybox/sky.json");
+    if !meta.is_file() {
+        return Err("no skybox in cache".into());
+    }
+    let bytes = fs::read(&meta).map_err(|e| format!("read {}: {e}", meta.display()))?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("parse skybox meta: {e}"))
+}
+
+#[tauri::command]
 pub fn export_cached_moby_glb(
     level_folder: String,
     asset_tuid_hex: String,
@@ -1750,6 +2601,429 @@ pub fn export_cached_moby_glb(
     fs::copy(&cache_glb, &out_path).map_err(|e| {
         format!("copy {} → {}: {e}", cache_glb.display(), out_path)
     })
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LevelGlbExportEvent {
+    Phase { label: &'static str, total: usize },
+    Progress { current: usize },
+    Done { bytes_written: usize, instance_count: usize, asset_count: usize },
+    Error { message: String },
+}
+
+#[tauri::command]
+pub fn export_level_glb(
+    level_folder: String,
+    out_path: String,
+    on_event: Channel<LevelGlbExportEvent>,
+) -> Result<(), String> {
+    if let Err(message) = run_export_level_glb(&level_folder, &out_path, &on_event) {
+        let _ = on_event.send(LevelGlbExportEvent::Error { message: message.clone() });
+        return Err(message);
+    }
+    Ok(())
+}
+
+fn run_export_level_glb(
+    level_folder: &str,
+    out_path: &str,
+    on_event: &Channel<LevelGlbExportEvent>,
+) -> Result<(), String> {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+
+    let _ = on_event.send(LevelGlbExportEvent::Phase {
+        label: "Reading placements",
+        total: 1,
+    });
+
+    let mobys = crate::real_moby_layout(level_folder).unwrap_or_default();
+    let ties = crate::real_tie_layout(level_folder).unwrap_or_default();
+
+    if mobys.is_empty() && ties.is_empty() {
+        return Err("No placements found in this level. Open and extract the level cache first.".into());
+    }
+
+    let _ = on_event.send(LevelGlbExportEvent::Phase {
+        label: "Loading assets",
+        total: mobys.len() + ties.len(),
+    });
+
+    let cache_root = cache_root(level_folder);
+    let mut asset_idx_by_tuid: HashMap<(String, &'static str), usize> = HashMap::new();
+    let mut assets: Vec<lunalib::level_glb::LevelGlbAsset> = Vec::new();
+    let mut needed_textures: HashSet<u32> = HashSet::new();
+
+    let mut load_one = |kind_name: &'static str, asset_tuid: &str| -> Result<Option<usize>, String> {
+        let key = (asset_tuid.to_string(), kind_name);
+        if let Some(idx) = asset_idx_by_tuid.get(&key) {
+            return Ok(Some(*idx));
+        }
+        let folder = match kind_name {
+            "moby" => "mobys",
+            "detail" => "details",
+            "shrub" => "shrubs",
+            "foliage" => "foliage",
+            _ => "ties",
+        };
+        let primary = cache_root.join(folder).join(format!("{}.json", asset_tuid));
+        let bytes = match fs::read(&primary) {
+            Ok(b) => b,
+            Err(_) => {
+                // Fallback: detail JSONs may have been routed to ties/ in older
+                // caches, or vice versa.
+                let alt = if folder == "details" {
+                    cache_root.join("ties").join(format!("{}.json", asset_tuid))
+                } else if folder == "ties" {
+                    cache_root.join("details").join(format!("{}.json", asset_tuid))
+                } else {
+                    primary.clone()
+                };
+                match fs::read(&alt) {
+                    Ok(b) => b,
+                    Err(_) => return Ok(None),
+                }
+            }
+        };
+        let dto: AssetMeshesDto = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("parse {}: {e}", primary.display()))?;
+        let mut submeshes: Vec<lunalib::level_glb::LevelGlbSubmesh> =
+            Vec::with_capacity(dto.submeshes.len());
+        for m in &dto.submeshes {
+            let positions = decode_f32_b64(&m.positions_b64, &BASE64)?;
+            let uvs = decode_f32_b64(&m.uvs_b64, &BASE64)?;
+            let indices = decode_u32_b64(&m.indices_b64, &BASE64)?;
+            if let Some(id) = m.albedo_id {
+                needed_textures.insert(id);
+            }
+            submeshes.push(lunalib::level_glb::LevelGlbSubmesh {
+                positions,
+                uvs,
+                indices,
+                albedo_id: m.albedo_id,
+            });
+        }
+        let idx = assets.len();
+        assets.push(lunalib::level_glb::LevelGlbAsset {
+            name: if dto.name.is_empty() { asset_tuid.to_string() } else { dto.name.clone() },
+            submeshes,
+        });
+        asset_idx_by_tuid.insert(key, idx);
+        Ok(Some(idx))
+    };
+
+    let mut instances: Vec<lunalib::level_glb::LevelGlbInstance> = Vec::new();
+    let mut progress: usize = 0;
+    let mut moby_count = 0usize;
+    let mut tie_count = 0usize;
+    let mut detail_count = 0usize;
+    let mut shrub_count = 0usize;
+    let mut foliage_count = 0usize;
+
+    for inst in &mobys {
+        progress += 1;
+        if progress % 16 == 0 {
+            let _ = on_event.send(LevelGlbExportEvent::Progress { current: progress });
+        }
+        if let Some(idx) = load_one("moby", &inst.asset_tuid)? {
+            instances.push(lunalib::level_glb::LevelGlbInstance {
+                asset_idx: idx,
+                name: format!("moby:{}:{}", inst.name, inst.tuid),
+                translation: inst.position,
+                rotation: inst.quaternion,
+                scale: inst.scale,
+            });
+            moby_count += 1;
+        }
+    }
+    for inst in &ties {
+        progress += 1;
+        if progress % 16 == 0 {
+            let _ = on_event.send(LevelGlbExportEvent::Progress { current: progress });
+        }
+        let kind_name: &'static str = match inst.kind {
+            "detail" => "detail",
+            "shrub" => "shrub",
+            "foliage" => "foliage",
+            _ => "tie",
+        };
+        if let Some(idx) = load_one(kind_name, &inst.asset_tuid)? {
+            instances.push(lunalib::level_glb::LevelGlbInstance {
+                asset_idx: idx,
+                name: format!("{}:{}:{}", kind_name, inst.name, inst.tuid),
+                translation: inst.position,
+                rotation: inst.quaternion,
+                scale: inst.scale,
+            });
+            match kind_name {
+                "detail" => detail_count += 1,
+                "shrub" => shrub_count += 1,
+                "foliage" => foliage_count += 1,
+                _ => tie_count += 1,
+            }
+        }
+    }
+
+    let _ = on_event.send(LevelGlbExportEvent::Progress { current: progress });
+
+    eprintln!(
+        "[level-glb] placements baked: {} mobys, {} ties, {} details, {} shrubs, {} foliage",
+        moby_count, tie_count, detail_count, shrub_count, foliage_count
+    );
+
+    let ufrag_count = load_ufrags_into_level(
+        &cache_root,
+        &mut assets,
+        &mut instances,
+        &mut needed_textures,
+        on_event,
+    )?;
+    eprintln!("[level-glb] terrain baked: {} ufrags", ufrag_count);
+
+    let sky_added = load_skybox_into_level(
+        level_folder,
+        &mut assets,
+        &mut instances,
+        on_event,
+    );
+    eprintln!(
+        "[level-glb] skybox baked: {}",
+        if sky_added { "yes (dome geometry)" } else { "no" }
+    );
+
+    let _ = on_event.send(LevelGlbExportEvent::Phase {
+        label: "Loading textures",
+        total: needed_textures.len(),
+    });
+
+    let mut textures: HashMap<u32, Vec<u8>> = HashMap::new();
+    let textures_dir = cache_root.join("textures");
+    let mut tex_progress = 0usize;
+    for tex_id in &needed_textures {
+        tex_progress += 1;
+        if tex_progress % 16 == 0 {
+            let _ = on_event.send(LevelGlbExportEvent::Progress { current: tex_progress });
+        }
+        let path = textures_dir.join(format!("{}.png", tex_id));
+        if let Ok(b) = fs::read(&path) {
+            textures.insert(*tex_id, b);
+        }
+    }
+    let _ = on_event.send(LevelGlbExportEvent::Progress { current: tex_progress });
+
+    let _ = on_event.send(LevelGlbExportEvent::Phase {
+        label: "Writing GLB",
+        total: 1,
+    });
+
+    let glb_bytes = lunalib::level_glb::write_static_level_glb(&assets, &instances, &textures)
+        .map_err(|e| format!("write_static_level_glb: {e}"))?;
+
+    fs::write(out_path, &glb_bytes).map_err(|e| format!("write {out_path}: {e}"))?;
+
+    let _ = on_event.send(LevelGlbExportEvent::Done {
+        bytes_written: glb_bytes.len(),
+        instance_count: instances.len(),
+        asset_count: assets.len(),
+    });
+
+    Ok(())
+}
+
+fn load_ufrags_into_level(
+    cache_root: &Path,
+    assets: &mut Vec<lunalib::level_glb::LevelGlbAsset>,
+    instances: &mut Vec<lunalib::level_glb::LevelGlbInstance>,
+    needed_textures: &mut HashSet<u32>,
+    on_event: &Channel<LevelGlbExportEvent>,
+) -> Result<usize, String> {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+
+    let ufrags_dir = cache_root.join("ufrags");
+    if !ufrags_dir.is_dir() {
+        return Ok(0);
+    }
+
+    let entries: Vec<PathBuf> = match fs::read_dir(&ufrags_dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+            .collect(),
+        Err(_) => return Ok(0),
+    };
+
+    let _ = on_event.send(LevelGlbExportEvent::Phase {
+        label: "Loading terrain",
+        total: entries.len(),
+    });
+
+    let mut done = 0usize;
+    for path in entries {
+        done += 1;
+        if done % 32 == 0 {
+            let _ = on_event.send(LevelGlbExportEvent::Progress { current: done });
+        }
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let dto: crate::UFragMeshDto = match serde_json::from_slice(&bytes) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("warn: parse {}: {e}", path.display());
+                continue;
+            }
+        };
+        let positions = decode_f32_b64(&dto.mesh.positions_b64, &BASE64)?;
+        let uvs = decode_f32_b64(&dto.mesh.uvs_b64, &BASE64)?;
+        let indices = decode_u32_b64(&dto.mesh.indices_b64, &BASE64)?;
+        if positions.is_empty() || indices.is_empty() {
+            continue;
+        }
+        if let Some(id) = dto.mesh.albedo_id {
+            needed_textures.insert(id);
+        }
+        let asset_idx = assets.len();
+        assets.push(lunalib::level_glb::LevelGlbAsset {
+            name: format!("ufrag_{}", dto.tuid),
+            submeshes: vec![lunalib::level_glb::LevelGlbSubmesh {
+                positions,
+                uvs,
+                indices,
+                albedo_id: dto.mesh.albedo_id,
+            }],
+        });
+        instances.push(lunalib::level_glb::LevelGlbInstance {
+            asset_idx,
+            name: format!("ufrag:{}", dto.tuid),
+            translation: dto.position,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+        });
+    }
+    let _ = on_event.send(LevelGlbExportEvent::Progress { current: done });
+    Ok(done)
+}
+
+fn load_skybox_into_level(
+    level_folder: &str,
+    assets: &mut Vec<lunalib::level_glb::LevelGlbAsset>,
+    instances: &mut Vec<lunalib::level_glb::LevelGlbInstance>,
+    on_event: &Channel<LevelGlbExportEvent>,
+) -> bool {
+    let _ = on_event.send(LevelGlbExportEvent::Phase {
+        label: "Loading sky",
+        total: 1,
+    });
+
+    let sky = match lunalib::read_skybox_rfom(Path::new(level_folder)) {
+        Ok(Some(s)) => s,
+        Ok(None) => return false,
+        Err(e) => {
+            eprintln!("warn: skybox read for export: {e}");
+            return false;
+        }
+    };
+
+    if sky.vertices.is_empty() || sky.indices.is_empty() {
+        return false;
+    }
+
+    let mut positions: Vec<f32> = Vec::with_capacity(sky.vertices.len() * 3);
+    let mut uvs: Vec<f32> = Vec::with_capacity(sky.vertices.len() * 2);
+    for v in &sky.vertices {
+        positions.extend_from_slice(v);
+        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-6);
+        let nx = v[0] / len;
+        let ny = v[1] / len;
+        let nz = v[2] / len;
+        let u = 0.5 + nz.atan2(nx) / (2.0 * std::f32::consts::PI);
+        let vv = 0.5 - ny.asin() / std::f32::consts::PI;
+        uvs.push(u);
+        uvs.push(vv);
+    }
+
+    let asset_idx = assets.len();
+    assets.push(lunalib::level_glb::LevelGlbAsset {
+        name: "skybox_dome".into(),
+        submeshes: vec![lunalib::level_glb::LevelGlbSubmesh {
+            positions,
+            uvs,
+            indices: sky.indices.clone(),
+            albedo_id: None,
+        }],
+    });
+    instances.push(lunalib::level_glb::LevelGlbInstance {
+        asset_idx,
+        name: "skybox".into(),
+        translation: [0.0, 0.0, 0.0],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        scale: [1.0, 1.0, 1.0],
+    });
+    let _ = on_event.send(LevelGlbExportEvent::Progress { current: 1 });
+    true
+}
+
+fn decode_f32_b64(
+    s: &str,
+    engine: &base64::engine::general_purpose::GeneralPurpose,
+) -> Result<Vec<f32>, String> {
+    use base64::Engine as _;
+    let bytes = engine.decode(s).map_err(|e| format!("base64: {e}"))?;
+    if bytes.len() % 4 != 0 {
+        return Err(format!("f32 buffer length {} not /4", bytes.len()));
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4);
+    for chunk in bytes.chunks_exact(4) {
+        out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(out)
+}
+
+fn decode_u32_b64(
+    s: &str,
+    engine: &base64::engine::general_purpose::GeneralPurpose,
+) -> Result<Vec<u32>, String> {
+    use base64::Engine as _;
+    let bytes = engine.decode(s).map_err(|e| format!("base64: {e}"))?;
+    if bytes.len() % 4 != 0 {
+        return Err(format!("u32 buffer length {} not /4", bytes.len()));
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4);
+    for chunk in bytes.chunks_exact(4) {
+        out.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn export_texture_png(
+    level_folder: String,
+    tex_id: u32,
+    out_path: String,
+) -> Result<u64, String> {
+    let cache_root = cache_root(&level_folder);
+    let src = cache_root.join("textures").join(format!("{}.png", tex_id));
+    fs::copy(&src, &out_path)
+        .map_err(|e| format!("copy {} → {}: {e}", src.display(), out_path))
+}
+
+#[tauri::command]
+pub fn export_texture_dds(
+    level_folder: String,
+    tex_id: u32,
+    out_path: String,
+) -> Result<u64, String> {
+    let cache_root = cache_root(&level_folder);
+    let src = cache_root.join("textures").join(format!("{}.png", tex_id));
+    let png_bytes =
+        fs::read(&src).map_err(|e| format!("read {}: {e}", src.display()))?;
+    let dds_bytes = lunalib::dds::png_to_uncompressed_dds(&png_bytes)
+        .map_err(|e| format!("png→dds: {e}"))?;
+    fs::write(&out_path, &dds_bytes)
+        .map_err(|e| format!("write {}: {e}", out_path))?;
+    Ok(dds_bytes.len() as u64)
 }
 
 #[tauri::command]

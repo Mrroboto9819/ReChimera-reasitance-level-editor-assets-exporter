@@ -172,6 +172,38 @@ All bangle nodes share `skin: Some(0)`. The single Skin references every
 bone Node as a joint. Blender imports this as **multiple Mesh Objects
 parented to a single Armature** — the standard skinned-character layout.
 
+The same multi-submesh pattern is used by **foliage** assets, except
+unskinned: each `Foliage` descriptor emits two submeshes inside a single
+`TieAsset` — the branch geometry (decoded `BranchVertex` triangles) and
+the sprite quads (flat XY-plane quads at sprite centres). Both share the
+same material slot since they reference the same `Foliage.textureIndex`.
+The viewport / GLB writer treats them as two primitives on one mesh and
+neither needs a skin reference.
+
+## Static level-scope writer (`level_glb.rs`)
+
+`gltf_export.rs` covers **per-asset** GLB writes (one moby or tie at a
+time, skinned + animated). For the toolbar's *Export Level GLB* button
+we use a separate writer, `level_glb::write_static_level_glb`, that
+packs the entire scene into a single static GLB:
+
+- Each unique `(asset_tuid, kind)` becomes one `LevelGlbAsset` with
+  its submeshes' positions / UVs / indices flattened into one binary
+  blob.
+- Each placement becomes a `LevelGlbInstance` referencing the asset
+  index plus its world transform (translation + rotation quaternion +
+  scale).
+- Textures land as PNG-embedded glTF images shared across instances.
+
+There is **no skeleton, no skinning, no animation** in the level-scope
+writer — it's pure static geometry suitable for drag-into-Godot /
+Blender level dressings. Skinned characters belong in their own
+per-moby GLB (the per-asset writer above) and are loaded separately by
+the consumer game engine.
+
+For full call flow + the list of asset kinds the level writer accepts,
+see [`app/05-export-pipeline.md`](../app/05-export-pipeline.md#full-map-glb-export-export_level_glb).
+
 ## Coordinates
 
 - We emit raw yards (`int16 * meshScale`). IT additionally multiplies

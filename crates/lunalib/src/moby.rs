@@ -144,13 +144,35 @@ where
 
         for (_i, result) in parsed {
             let asset = result?;
+            let has_geom = asset
+                .bangles
+                .iter()
+                .any(|b| b.meshes.iter().any(|m| m.vertex_count > 0));
+            if has_geom {
+                MOBY_STATS_WITH_GEOM.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            } else {
+                MOBY_STATS_NO_GEOM.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             on_each(asset);
         }
 
         next_index = end;
     }
+    let with_geom = MOBY_STATS_WITH_GEOM.swap(0, std::sync::atomic::Ordering::Relaxed);
+    let no_geom = MOBY_STATS_NO_GEOM.swap(0, std::sync::atomic::Ordering::Relaxed);
+    eprintln!(
+        "[cache] mobys: total={} with_geometry={} logic_only={} (logic_only = missing 0xE100/0xE200)",
+        with_geom + no_geom,
+        with_geom,
+        no_geom
+    );
     Ok(())
 }
+
+static MOBY_STATS_WITH_GEOM: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+static MOBY_STATS_NO_GEOM: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 fn parse_moby<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<MobyAsset> {
     let header_section = ig.require_section(SECT_MOBY_HEADER)?;
@@ -194,18 +216,76 @@ fn parse_moby<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<Moby
         None => format!("moby_{:016X}", tuid),
     };
 
-    let isect = ig.require_section(SECT_MOBY_INDICES)?;
-    ig.stream.seek_to(u64::from(isect.offset))?;
-    let index_buf = ig.stream.read_bytes(isect.length as usize)?;
+    let index_buf = match ig.section(SECT_MOBY_INDICES) {
+        Some(isect) => {
+            ig.stream.seek_to(u64::from(isect.offset))?;
+            ig.stream.read_bytes(isect.length as usize)?
+        }
+        None => Vec::new(),
+    };
+    let vertex_buf = match ig.section(SECT_MOBY_VERTICES) {
+        Some(vsect) => {
+            ig.stream.seek_to(u64::from(vsect.offset))?;
+            ig.stream.read_bytes(vsect.length as usize)?
+        }
+        None => Vec::new(),
+    };
 
-    let vsect = ig.require_section(SECT_MOBY_VERTICES)?;
-    ig.stream.seek_to(u64::from(vsect.offset))?;
-    let vertex_buf = ig.stream.read_bytes(vsect.length as usize)?;
+    let has_geometry = !index_buf.is_empty() && !vertex_buf.is_empty();
+    if !has_geometry {
+        use std::sync::Mutex;
+        static SEEN_LAYOUTS: Mutex<Option<std::collections::HashSet<u64>>> = Mutex::new(None);
+        let mut sorted_ids: Vec<u32> = ig.sections.iter().map(|s| s.id).collect();
+        sorted_ids.sort_unstable();
+        let mut hasher: u64 = 0xCBF29CE484222325;
+        for id in &sorted_ids {
+            hasher ^= u64::from(*id);
+            hasher = hasher.wrapping_mul(0x100000001B3);
+        }
+        let mut guard = SEEN_LAYOUTS.lock().unwrap();
+        let set = guard.get_or_insert_with(std::collections::HashSet::new);
+        let first_for_layout = set.insert(hasher);
+        let allow_full_dump = first_for_layout && set.len() == 1;
+        if first_for_layout && set.len() <= 8 {
+            drop(guard);
+            let mut sections_sorted: Vec<crate::igfile::SectionHeader> = ig.sections.clone();
+            sections_sorted.sort_by_key(|s| s.id);
+            let summary: Vec<String> = sections_sorted
+                .iter()
+                .map(|s| format!("0x{:X}(len={},cnt={})", s.id, s.length, s.count))
+                .collect();
+            eprintln!(
+                "warn: moby 0x{:016X} missing 0xE100/0xE200 — emitting empty mesh. sections: [{}]",
+                tuid,
+                summary.join(", ")
+            );
+            if allow_full_dump {
+                eprintln!("[acit-probe] === multi-interp dump for moby 0x{:016X} ===", tuid);
+                let candidates: &[(u32, &str)] = &[
+                    (0xD000, "u32-flag?"),
+                    (0xD100, "NewMoby-header?"),
+                    (0xD700, "?"),
+                    (0xD900, "bsphere+matrix?"),
+                    (0xE900, "?"),
+                    (0x10200, "?"),
+                    (0x10400, "?"),
+                    (0x10600, "?"),
+                    (0x10700, "?"),
+                    (0x10900, "?"),
+                    (0x35000, "?"),
+                ];
+                for (id, label) in candidates {
+                    dump_section_for_probe(ig, *id, label);
+                }
+            }
+        }
+    }
 
     let shader_tuids = read_shader_table(ig, SECT_MOBY_SHADER_TABLE)?;
 
     let mut bangles = Vec::with_capacity(bangle_count as usize);
-    for _b in 0..bangle_count {
+    let effective_bangle_count = if has_geometry { bangle_count } else { 0 };
+    for _b in 0..effective_bangle_count {
         let bangle_base = bangles_ptr + (_b as u64) * BANGLE_SIZE;
         ig.stream.seek_to(bangle_base + 0x00)?;
         let meshes_ptr = u64::from(ig.stream.read_u32()?);
@@ -400,6 +480,21 @@ pub(crate) fn decode_moby_mesh(
 
     }
 
+    if !bone_indices.is_empty() && std::env::var("RECHIMERA_LOG_WEIGHTS").is_ok() {
+        let verts = vertex_count as usize;
+        let max_bone = bone_indices.iter().copied().max().unwrap_or(0);
+        let oversize = bone_indices.iter().filter(|&&v| v > 255).count();
+        let zero_weight_first_slot = bone_weights.iter().step_by(4).filter(|&&w| w == 0).count();
+        let unnormalized = (0..verts).filter(|&v| {
+            let s: u32 = (0..4).map(|i| bone_weights[v * 4 + i] as u32).sum();
+            s == 0 || (s as i32 - 255).abs() > 4
+        }).count();
+        eprintln!(
+            "[mesh-weights] stride=0x{:02X} verts={} max_bone_idx={} oversize_u8={} zero_first_slot={} unnormalized={} bone_map_len={}",
+            stride, verts, max_bone, oversize, zero_weight_first_slot, unnormalized, bone_map.len(),
+        );
+    }
+
     Ok(MobyMesh {
         shader_index,
         vertex_count,
@@ -455,4 +550,78 @@ pub fn half_to_f32(half: u16) -> f32 {
         (sign << 31) | (((exp - 15 + 127) as u32) << 23) | (mantissa << 13)
     };
     f32::from_bits(bits)
+}
+
+const ACIT_PROBE_BYTES: usize = 256;
+
+fn dump_section_for_probe<R: Read + Seek>(ig: &mut IgFile<R>, id: u32, label: &str) {
+    let section = match ig.section(id) {
+        Some(s) => s,
+        None => {
+            eprintln!("[acit-probe] 0x{:X} ({}) — absent", id, label);
+            return;
+        }
+    };
+    let take = (section.length as usize).min(ACIT_PROBE_BYTES);
+    eprintln!(
+        "[acit-probe] 0x{:X} ({}) length={} count={} take={}",
+        id, label, section.length, section.count, take
+    );
+    if take == 0 {
+        return;
+    }
+    if ig.stream.seek_to(u64::from(section.offset)).is_err() {
+        eprintln!("[acit-probe]   <seek failed>");
+        return;
+    }
+    let mut bytes = vec![0u8; take];
+    for b in bytes.iter_mut() {
+        *b = ig.stream.read_u8().unwrap_or(0);
+    }
+    for row in 0..((take + 15) / 16) {
+        let row_off = row * 16;
+        let row_count = (take - row_off).min(16);
+        let mut hex = String::new();
+        let mut ascii = String::new();
+        for col in 0..row_count {
+            let b = bytes[row_off + col];
+            hex.push_str(&format!("{:02X} ", b));
+            ascii.push(if (0x20..0x7F).contains(&b) {
+                b as char
+            } else {
+                '.'
+            });
+        }
+        eprintln!(
+            "[acit-probe]   +0x{:03X}: {:<48}  {}",
+            row_off,
+            hex.trim_end(),
+            ascii
+        );
+    }
+    let nf = (bytes.len() / 4).min(32);
+    let mut buf = String::new();
+    for i in 0..nf {
+        let off = i * 4;
+        let bits = u32::from_be_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
+        let as_f32 = f32::from_bits(bits);
+        let f_disp = if as_f32.is_finite() && as_f32.abs() < 1.0e9 && as_f32.abs() > 1e-6 {
+            format!("{:>10.3}", as_f32)
+        } else if as_f32 == 0.0 {
+            "         0".into()
+        } else {
+            "         ·".into()
+        };
+        let u_disp = format!("{:>11}", bits);
+        if i % 4 == 0 {
+            if !buf.is_empty() {
+                eprintln!("{}", buf);
+            }
+            buf = format!("[acit-probe]   +0x{:03X}: ", off);
+        }
+        buf.push_str(&format!("u32={} f32={} ", u_disp, f_disp));
+    }
+    if !buf.is_empty() {
+        eprintln!("{}", buf);
+    }
 }

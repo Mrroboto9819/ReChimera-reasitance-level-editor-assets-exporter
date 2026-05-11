@@ -1,10 +1,17 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   AssetKind,
   AssetMeshes,
   CacheManifest,
   CacheManifestEntry,
   Instance,
+  SoundEntry,
 } from "../api";
 import { clickMods, type useSelection } from "../selection";
 
@@ -13,10 +20,11 @@ type Selection = ReturnType<typeof useSelection>;
 interface HierarchyProps {
   instances: Instance[];
   selection: Selection;
-  mobyAssets?: AssetMeshes[];
-  tieAssets?: AssetMeshes[];
   cacheManifest?: CacheManifest | null;
+  sounds?: SoundEntry[];
   onPreviewRawAsset?: (assetTuid: string) => void;
+  onSelectCacheSound?: (key: string) => void;
+  onSelectCacheTexture?: (texId: string) => void;
 }
 
 
@@ -139,11 +147,23 @@ interface Group {
 const KIND_LABELS: Partial<Record<AssetKind, string>> = {
   moby: "Mobys",
   tie: "Ties",
+  detail: "Details",
+  shrub: "Shrubs",
+  foliage: "Foliage",
+  light: "Lights",
+  envsampler: "Env Probes",
+  sky: "Skybox",
 };
 
 const KIND_GLYPHS: Partial<Record<AssetKind, string>> = {
   moby: "M",
   tie: "T",
+  detail: "D",
+  shrub: "F",
+  foliage: "G",
+  light: "L",
+  envsampler: "E",
+  sky: "S",
 };
 
 
@@ -158,11 +178,16 @@ const KIND_GLYPHS: Partial<Record<AssetKind, string>> = {
 export function Hierarchy({
   instances,
   selection,
-  mobyAssets,
-  tieAssets,
   cacheManifest,
+  sounds,
   onPreviewRawAsset,
+  onSelectCacheSound,
+  onSelectCacheTexture,
 }: HierarchyProps) {
+  const [cacheGroupCollapsed, setCacheGroupCollapsed] = useState<{
+    sounds: boolean;
+    textures: boolean;
+  }>({ sounds: true, textures: true });
   
   
   
@@ -173,10 +198,10 @@ export function Hierarchy({
     Record<string, boolean>
   >({});
   const [filter, setFilter] = useState("");
-  const [section, setSection] = useState<"map" | "library" | "cache">(() => {
+  const [section, setSection] = useState<"map" | "cache">(() => {
     try {
       const v = localStorage.getItem("rechimera.hierarchySection");
-      if (v === "map" || v === "library" || v === "cache") return v;
+      if (v === "map" || v === "cache") return v;
     } catch {
       /* ignore */
     }
@@ -198,17 +223,6 @@ export function Hierarchy({
   // while the tree catches up. Combined with the O(n) Map-backed
   // `buildAssetTree`, this drops dense-level loads from 50-500ms of
   // cumulative jank to "barely measurable".
-  const deferredMobyAssets = useDeferredValue(mobyAssets);
-  const deferredTieAssets = useDeferredValue(tieAssets);
-  const assetTree = useMemo(() => {
-    const mobys = deferredMobyAssets ?? [];
-    const ties = deferredTieAssets ?? [];
-    if (mobys.length === 0 && ties.length === 0) return null;
-    const roots: AssetTreeNode[] = [];
-    if (mobys.length > 0) roots.push(buildAssetTree("Mobys", "moby", mobys));
-    if (ties.length > 0) roots.push(buildAssetTree("Ties", "tie", ties));
-    return roots;
-  }, [deferredMobyAssets, deferredTieAssets]);
 
   
   
@@ -220,6 +234,8 @@ export function Hierarchy({
     if (!cacheManifest || cacheManifest.entries.length === 0) return null;
     const cacheMobys: AssetMeshes[] = [];
     const cacheTies: AssetMeshes[] = [];
+    const cacheDetails: AssetMeshes[] = [];
+    const cacheSkies: AssetMeshes[] = [];
     const shellOf = (e: CacheManifestEntry): AssetMeshes => ({
       asset_tuid: e.tuid,
       name: e.name,
@@ -237,14 +253,32 @@ export function Hierarchy({
         if (!cacheTies.some((t) => t.asset_tuid === entry.tuid)) {
           cacheTies.push(shellOf(entry));
         }
+      } else if (entry.kind === "detail") {
+        if (!cacheDetails.some((t) => t.asset_tuid === entry.tuid)) {
+          cacheDetails.push(shellOf(entry));
+        }
+      } else if (entry.kind === "sky") {
+        if (!cacheSkies.some((s) => s.asset_tuid === entry.tuid)) {
+          cacheSkies.push(shellOf(entry));
+        }
       }
     }
-    if (cacheMobys.length === 0 && cacheTies.length === 0) return null;
+    if (
+      cacheMobys.length === 0 &&
+      cacheTies.length === 0 &&
+      cacheDetails.length === 0 &&
+      cacheSkies.length === 0
+    )
+      return null;
     const roots: AssetTreeNode[] = [];
     if (cacheMobys.length > 0)
       roots.push(buildAssetTree("Cache · Mobys", "moby", cacheMobys));
     if (cacheTies.length > 0)
       roots.push(buildAssetTree("Cache · Ties", "tie", cacheTies));
+    if (cacheDetails.length > 0)
+      roots.push(buildAssetTree("Cache · Details", "detail", cacheDetails));
+    if (cacheSkies.length > 0)
+      roots.push(buildAssetTree("Cache · Sky", "sky", cacheSkies));
     return roots;
   }, [cacheManifest]);
 
@@ -303,6 +337,75 @@ export function Hierarchy({
     return out;
   }, [instances]);
 
+  const filterLowerForFlat = filter.trim().toLowerCase();
+  const flatVisibleInstances = useMemo(() => {
+    if (section !== "map") return [];
+    const out: Instance[] = [];
+    for (const g of groups) {
+      if (!expandedKinds.has(g.kind)) continue;
+      const list = filterLowerForFlat
+        ? g.instances.filter((i) =>
+            i.name.toLowerCase().includes(filterLowerForFlat),
+          )
+        : g.instances;
+      for (const inst of list) out.push(inst);
+    }
+    return out;
+  }, [section, groups, expandedKinds, filterLowerForFlat]);
+
+  const moveSelection = useCallback(
+    (direction: 1 | -1) => {
+      if (flatVisibleInstances.length === 0) return;
+      const currentIdx = selection.primary
+        ? flatVisibleInstances.findIndex((i) => i.tuid === selection.primary)
+        : -1;
+      let nextIdx: number;
+      if (currentIdx === -1) {
+        nextIdx = direction === 1 ? 0 : flatVisibleInstances.length - 1;
+      } else {
+        nextIdx = Math.max(
+          0,
+          Math.min(flatVisibleInstances.length - 1, currentIdx + direction),
+        );
+      }
+      const target = flatVisibleInstances[nextIdx];
+      if (target && target.tuid !== selection.primary) {
+        selection.select(target, { ctrl: false, shift: false });
+      }
+    },
+    [flatVisibleInstances, selection],
+  );
+
+  useEffect(() => {
+    if (section !== "map") return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          tag === "SELECT" ||
+          target.isContentEditable
+        ) {
+          return;
+        }
+      }
+      const treeEl = treeRef.current;
+      if (!treeEl) return;
+      const root = treeEl.closest(".panel") ?? treeEl;
+      if (!(root instanceof HTMLElement)) return;
+      if (!root.matches(":hover") && !root.contains(document.activeElement)) {
+        return;
+      }
+      event.preventDefault();
+      moveSelection(event.key === "ArrowDown" ? 1 : -1);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [section, moveSelection]);
+
   const toggle = (kind: AssetKind) =>
     setExpandedKinds((prev) => {
       const next = new Set(prev);
@@ -313,13 +416,12 @@ export function Hierarchy({
 
   const filterLower = filter.trim().toLowerCase();
 
-  const sections: { id: "map" | "library" | "cache"; label: string; count: number }[] = [
+  const sections: {
+    id: "map" | "cache";
+    label: string;
+    count: number;
+  }[] = [
     { id: "map", label: "Map", count: instances.length },
-    {
-      id: "library",
-      label: "Library",
-      count: (mobyAssets?.length ?? 0) + (tieAssets?.length ?? 0),
-    },
     {
       id: "cache",
       label: "Cache",
@@ -421,53 +523,171 @@ export function Hierarchy({
           )
         )}
 
-        {section === "library" && (
-          assetTree && assetTree.length > 0 ? (
-            <div className="hierarchy-tree">
-              {assetTree.map((root) => (
-                <AssetLibraryTree
-                  key={root.path}
-                  node={root}
-                  depth={0}
-                  collapsed={assetLibCollapsed}
-                  setCollapsed={setAssetLibCollapsed}
-                  filter={filterLower}
-                  instances={instances}
-                  selection={selection}
-                  onPreviewRawAsset={onPreviewRawAsset}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="tree-empty">
-              Library populates as the level streams its assetlookup data.
-            </div>
-          )
+        {section === "cache" && (
+          <>
+            {cacheTree && cacheTree.length > 0 ? (
+              <div className="hierarchy-tree">
+                {cacheTree.map((root) => (
+                  <AssetLibraryTree
+                    key={`cache-${root.path}`}
+                    node={root}
+                    depth={0}
+                    collapsed={assetLibCollapsed}
+                    setCollapsed={setAssetLibCollapsed}
+                    filter={filterLower}
+                    instances={instances}
+                    selection={selection}
+                    onPreviewRawAsset={onPreviewRawAsset}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="tree-empty">
+                No cached assets yet — extract a level into _rechimera_cache/ to populate this list.
+              </div>
+            )}
+
+            {(() => {
+              const textureEntries = cacheManifest
+                ? cacheManifest.entries.filter((e) => e.kind === "texture")
+                : [];
+              const filtered = filterLower
+                ? textureEntries.filter(
+                    (e) =>
+                      e.tuid.toLowerCase().includes(filterLower) ||
+                      e.file.toLowerCase().includes(filterLower),
+                  )
+                : textureEntries;
+              if (textureEntries.length === 0) return null;
+              const isCollapsed = cacheGroupCollapsed.textures;
+              return (
+                <div className="hierarchy-tree">
+                  <div
+                    className="tree-node"
+                    onClick={() =>
+                      setCacheGroupCollapsed((p) => ({
+                        ...p,
+                        textures: !p.textures,
+                      }))
+                    }
+                  >
+                    <span className="tree-toggle">
+                      {isCollapsed ? "▸" : "▾"}
+                    </span>
+                    <span className="tree-icon kind-texture">▦</span>
+                    <span className="tree-label">Cache · Textures</span>
+                    <span className="tree-count">
+                      {filtered.length === textureEntries.length
+                        ? textureEntries.length.toLocaleString()
+                        : `${filtered.length}/${textureEntries.length}`}
+                    </span>
+                  </div>
+                  {!isCollapsed && (
+                    <div className="tree-children">
+                      {filtered.slice(0, 500).map((e) => {
+                        const idMatch = e.file.match(/textures\/(\d+)\.png$/);
+                        const texId = idMatch ? idMatch[1] : e.tuid;
+                        return (
+                          <div
+                            key={e.file}
+                            className="tree-node is-clickable"
+                            onClick={() => {
+                              const idMatch = e.file.match(
+                                /textures\/(\d+)\.png$/,
+                              );
+                              const texId = idMatch ? idMatch[1] : e.tuid;
+                              onSelectCacheTexture?.(texId!);
+                            }}
+                            title={`${(e.size_bytes / 1024).toFixed(0)} KB · click to preview / download`}
+                          >
+                            <span className="tree-toggle" />
+                            <span className="tree-icon kind-texture">▦</span>
+                            <span className="tree-label mono">{texId}</span>
+                          </div>
+                        );
+                      })}
+                      {filtered.length > 500 && (
+                        <div className="tree-empty small dim">
+                          + {filtered.length - 500} more — narrow with the filter
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {(() => {
+              if (!sounds || sounds.length === 0) return null;
+              const filtered = filterLower
+                ? sounds.filter(
+                    (s) =>
+                      s.name.toLowerCase().includes(filterLower) ||
+                      s.source.toLowerCase().includes(filterLower),
+                  )
+                : sounds;
+              const isCollapsed = cacheGroupCollapsed.sounds;
+              return (
+                <div className="hierarchy-tree">
+                  <div
+                    className="tree-node"
+                    onClick={() =>
+                      setCacheGroupCollapsed((p) => ({
+                        ...p,
+                        sounds: !p.sounds,
+                      }))
+                    }
+                  >
+                    <span className="tree-toggle">
+                      {isCollapsed ? "▸" : "▾"}
+                    </span>
+                    <span className="tree-icon">♪</span>
+                    <span className="tree-label">Cache · Sounds</span>
+                    <span className="tree-count">
+                      {filtered.length === sounds.length
+                        ? sounds.length.toLocaleString()
+                        : `${filtered.length}/${sounds.length}`}
+                    </span>
+                  </div>
+                  {!isCollapsed && (
+                    <div className="tree-children">
+                      {filtered.slice(0, 500).map((s) => {
+                        const key = `${s.source}-${s.index}-${s.name}`;
+                        return (
+                        <div
+                          key={key}
+                          className="tree-node is-clickable"
+                          onClick={() => onSelectCacheSound?.(key)}
+                          title={`${s.kind} · ${s.source}`}
+                        >
+                          <span className="tree-toggle">▶</span>
+                          <span className="tree-icon">
+                            {s.kind === "stream"
+                              ? "≋"
+                              : s.kind === "stream-missing"
+                                ? "?"
+                                : s.kind === "raw"
+                                  ? "·"
+                                  : "♪"}
+                          </span>
+                          <span className="tree-label">{s.name}</span>
+                          <span className="tree-count dim mono">#{s.index}</span>
+                        </div>
+                        );
+                      })}
+                      {filtered.length > 500 && (
+                        <div className="tree-empty small dim">
+                          + {filtered.length - 500} more — narrow with the filter
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </>
         )}
 
-        {section === "cache" && (
-          cacheTree && cacheTree.length > 0 ? (
-            <div className="hierarchy-tree">
-              {cacheTree.map((root) => (
-                <AssetLibraryTree
-                  key={`cache-${root.path}`}
-                  node={root}
-                  depth={0}
-                  collapsed={assetLibCollapsed}
-                  setCollapsed={setAssetLibCollapsed}
-                  filter={filterLower}
-                  instances={instances}
-                  selection={selection}
-                  onPreviewRawAsset={onPreviewRawAsset}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="tree-empty">
-              No cached assets yet — extract a level into _rechimera_cache/ to populate this list.
-            </div>
-          )
-        )}
       </div>
     </div>
   );

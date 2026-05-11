@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Bone,
   Box,
   Compass,
+  Download,
   Grid3x3,
   type LucideIcon,
   Mountain,
@@ -11,6 +12,8 @@ import {
   Square,
   Users,
 } from "lucide-react";
+import { Channel } from "@tauri-apps/api/core";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { Canvas, type ThreeEvent, useFrame, useThree } from "@react-three/fiber";
 import {
@@ -35,7 +38,13 @@ import type {
   UFragBounds,
   UFragMesh,
 } from "../api";
-import { decodeMeshGeom, fetchAnimsetClip } from "../api";
+import {
+  decodeMeshGeom,
+  exportLevelGlb,
+  fetchAnimsetClip,
+  readCachedBytes,
+  type LevelGlbExportEvent,
+} from "../api";
 import { buildAnimationClipFromDecoded, buildSkinnedAsset } from "../skinning";
 import { FpsOverlay, FpsSampler } from "../components/FpsOverlay";
 import type { LoadPhaseState } from "../components/LoadProgress";
@@ -54,16 +63,28 @@ const EMPTY_TEXTURE_BLOBS: TextureBlobMap = new Map();
 
 const EMISSIVE_TINT_WHITE = new THREE.Color(0xffffff);
 
+export type BooleanViewSetting = {
+  [K in keyof ViewSettings]: ViewSettings[K] extends boolean ? K : never;
+}[keyof ViewSettings];
+
 export interface ViewSettings {
   showMobys: boolean;
   showTies: boolean;
+  showDetails: boolean;
+  showShrubs: boolean;
+  showFoliage: boolean;
+  showLights: boolean;
+  showEnvSamplers: boolean;
+  showCollision: boolean;
+  showSkyDome: boolean;
   showUFrags: boolean;
+  skyboxTextureId: number | null;
   showUFragBounds: boolean;
   showGrid: boolean;
   showAxes: boolean;
   showStats: boolean;
   showBones: boolean;
-  
+
 
   playAnimation: boolean;
 }
@@ -234,7 +255,16 @@ function ProxyPlacementGroup({
     [instances, kind],
   );
   const assetColors = useAssetColors();
-  const color = kind === "moby" ? assetColors.moby : assetColors.tie;
+  const color =
+    kind === "moby"
+      ? assetColors.moby
+      : kind === "detail"
+        ? assetColors.detail
+        : kind === "shrub"
+          ? assetColors.shrub
+          : kind === "foliage"
+            ? assetColors.foliage
+            : assetColors.tie;
   const selectionColor = assetColors.selection;
 
   useEffect(() => {
@@ -294,6 +324,214 @@ function ProxyPlacementGroup({
     >
       <boxGeometry args={[1, 1, 1]} />
       <meshBasicMaterial wireframe transparent opacity={0.45} color={color} />
+    </instancedMesh>
+  );
+}
+
+function LightGizmoGroup({
+  instances,
+  selectedIds,
+  onPick,
+  visible,
+}: {
+  instances: InstanceData[];
+  selectedIds: Set<string>;
+  onPick: (instance: InstanceData, e: ThreeEvent<MouseEvent>) => void;
+  visible: boolean;
+}) {
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+  const filtered = useMemo(
+    () => instances.filter((i) => i.kind === "light"),
+    [instances],
+  );
+  const assetColors = useAssetColors();
+  const baseColor = useMemo(
+    () => new THREE.Color(assetColors.light),
+    [assetColors.light],
+  );
+  const selColor = useMemo(
+    () => new THREE.Color(assetColors.selection),
+    [assetColors.selection],
+  );
+
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    const m = new THREE.Matrix4();
+    const pos = new THREE.Vector3();
+    const quat = new THREE.Quaternion(0, 0, 0, 1);
+    const scl = new THREE.Vector3(1, 1, 1);
+    const tint = new THREE.Color();
+    for (let i = 0; i < filtered.length; i++) {
+      const inst = filtered[i]!;
+      pos.set(inst.position[0]!, inst.position[1]!, inst.position[2]!);
+      const r = Math.max(0.05, inst.scale[0] ?? 0.1);
+      const g = Math.max(0.05, inst.scale[1] ?? 0.1);
+      const b = Math.max(0.05, inst.scale[2] ?? 0.1);
+      tint.setRGB(r, g, b);
+      const max = Math.max(tint.r, tint.g, tint.b, 1);
+      tint.r /= max;
+      tint.g /= max;
+      tint.b /= max;
+      tint.lerp(baseColor, 0.5);
+      scl.set(0.6, 0.6, 0.6);
+      m.compose(pos, quat, scl);
+      mesh.setMatrixAt(i, m);
+      mesh.setColorAt(i, selectedIds.has(inst.tuid) ? selColor : tint);
+    }
+    mesh.count = filtered.length;
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.computeBoundingSphere();
+  }, [filtered, selectedIds, baseColor, selColor]);
+
+  if (!visible || filtered.length === 0) return null;
+
+  return (
+    <instancedMesh
+      ref={meshRef}
+      args={[undefined, undefined, filtered.length]}
+      onClick={(e: ThreeEvent<MouseEvent>) => {
+        e.stopPropagation();
+        const id = e.instanceId;
+        if (id != null) {
+          const inst = filtered[id];
+          if (inst) onPick(inst, e);
+        }
+      }}
+    >
+      <icosahedronGeometry args={[1, 1]} />
+      <meshBasicMaterial wireframe transparent opacity={0.85} />
+    </instancedMesh>
+  );
+}
+
+function SkyboxBackground({
+  textureId,
+  levelFolder,
+}: {
+  textureId: number | null;
+  levelFolder: string | null;
+}) {
+  const { scene } = useThree();
+  const [tex, setTex] = useState<THREE.Texture | null>(null);
+
+  useEffect(() => {
+    if (textureId == null || !levelFolder) {
+      setTex(null);
+      return;
+    }
+    let cancelled = false;
+    let url: string | null = null;
+    let loadedTex: THREE.Texture | null = null;
+    void (async () => {
+      try {
+        const bytes = await readCachedBytes(
+          levelFolder,
+          `textures/${textureId}.png`,
+        );
+        if (cancelled) return;
+        const blob = new Blob([bytes as ArrayBuffer], { type: "image/png" });
+        url = URL.createObjectURL(blob);
+        const loader = new THREE.TextureLoader();
+        loader.load(url, (t) => {
+          if (cancelled) {
+            t.dispose();
+            return;
+          }
+          t.colorSpace = THREE.SRGBColorSpace;
+          t.mapping = THREE.EquirectangularReflectionMapping;
+          loadedTex = t;
+          setTex(t);
+        });
+      } catch {
+        if (!cancelled) setTex(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+      if (loadedTex) loadedTex.dispose();
+    };
+  }, [textureId, levelFolder]);
+
+  useEffect(() => {
+    scene.background = tex;
+    return () => {
+      if (scene.background === tex) scene.background = null;
+    };
+  }, [scene, tex]);
+
+  return null;
+}
+
+function EnvSamplerGizmoGroup({
+  instances,
+  selectedIds,
+  onPick,
+  visible,
+}: {
+  instances: InstanceData[];
+  selectedIds: Set<string>;
+  onPick: (instance: InstanceData, e: ThreeEvent<MouseEvent>) => void;
+  visible: boolean;
+}) {
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+  const filtered = useMemo(
+    () => instances.filter((i) => i.kind === "envsampler"),
+    [instances],
+  );
+  const assetColors = useAssetColors();
+  const baseColor = useMemo(
+    () => new THREE.Color(assetColors.envsampler),
+    [assetColors.envsampler],
+  );
+  const selColor = useMemo(
+    () => new THREE.Color(assetColors.selection),
+    [assetColors.selection],
+  );
+
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    const m = new THREE.Matrix4();
+    const pos = new THREE.Vector3();
+    const quat = new THREE.Quaternion(0, 0, 0, 1);
+    const scl = new THREE.Vector3();
+    for (let i = 0; i < filtered.length; i++) {
+      const inst = filtered[i]!;
+      pos.set(inst.position[0]!, inst.position[1]!, inst.position[2]!);
+      const sx = Math.max(0.1, (inst.scale[0] ?? 1) * 2);
+      const sy = Math.max(0.1, (inst.scale[1] ?? 1) * 2);
+      const sz = Math.max(0.1, (inst.scale[2] ?? 1) * 2);
+      scl.set(sx, sy, sz);
+      m.compose(pos, quat, scl);
+      mesh.setMatrixAt(i, m);
+      mesh.setColorAt(i, selectedIds.has(inst.tuid) ? selColor : baseColor);
+    }
+    mesh.count = filtered.length;
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.computeBoundingSphere();
+  }, [filtered, selectedIds, baseColor, selColor]);
+
+  if (!visible || filtered.length === 0) return null;
+
+  return (
+    <instancedMesh
+      ref={meshRef}
+      args={[undefined, undefined, filtered.length]}
+      onClick={(e: ThreeEvent<MouseEvent>) => {
+        e.stopPropagation();
+        const id = e.instanceId;
+        if (id != null) {
+          const inst = filtered[id];
+          if (inst) onPick(inst, e);
+        }
+      }}
+    >
+      <boxGeometry args={[1, 1, 1]} />
+      <meshBasicMaterial wireframe transparent opacity={0.55} />
     </instancedMesh>
   );
 }
@@ -675,7 +913,27 @@ function AssetGroup({
     };
   }, [cache]);
 
-  const baseColor = useMemo(() => new THREE.Color("#ffffff"), []);
+  const assetColorMap = useAssetColors();
+  const baseColor = useMemo(
+    () =>
+      kind === "detail"
+        ? new THREE.Color(assetColorMap.detail).lerp(
+            new THREE.Color("#ffffff"),
+            0.55,
+          )
+        : kind === "shrub"
+          ? new THREE.Color(assetColorMap.shrub).lerp(
+              new THREE.Color("#ffffff"),
+              0.55,
+            )
+          : kind === "foliage"
+            ? new THREE.Color(assetColorMap.foliage).lerp(
+                new THREE.Color("#ffffff"),
+                0.55,
+              )
+            : new THREE.Color("#ffffff"),
+    [kind, assetColorMap.detail, assetColorMap.shrub, assetColorMap.foliage],
+  );
 
   if (!visible) return null;
 
@@ -713,10 +971,14 @@ function UFragMeshNode({
   ufrag,
   texture,
   fallbackColor,
+  selected,
+  onClick,
 }: {
   ufrag: UFragMesh;
   texture: THREE.Texture | null;
   fallbackColor: THREE.Color;
+  selected: boolean;
+  onClick: (ufrag: UFragMesh, e: ThreeEvent<MouseEvent>) => void;
 }) {
   const geom = useMemo(
     () =>
@@ -726,11 +988,27 @@ function UFragMeshNode({
   useEffect(() => () => geom.dispose(), [geom]);
 
   return (
-    <mesh position={ufrag.position} geometry={geom}>
+    <mesh
+      position={ufrag.position}
+      geometry={geom}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick(ufrag, e);
+      }}
+    >
       {texture ? (
-        <meshStandardMaterial map={texture} color={0xffffff} roughness={0.9} metalness={0} />
+        <meshStandardMaterial
+          map={texture}
+          color={selected ? 0xff8855 : 0xffffff}
+          roughness={0.9}
+          metalness={0}
+        />
       ) : (
-        <meshStandardMaterial color={fallbackColor} roughness={0.9} metalness={0} />
+        <meshStandardMaterial
+          color={selected ? 0xff8855 : fallbackColor}
+          roughness={0.9}
+          metalness={0}
+        />
       )}
     </mesh>
   );
@@ -746,10 +1024,14 @@ function UFragMeshGroup({
   meshes,
   textures,
   visible,
+  selectedTuid,
+  onPickUFrag,
 }: {
   meshes: UFragMesh[];
   textures: Map<number, THREE.Texture>;
   visible: boolean;
+  selectedTuid: string | null;
+  onPickUFrag: (ufrag: UFragMesh, e: ThreeEvent<MouseEvent>) => void;
 }) {
   const colorByZone = useMemo(() => {
     const m = new Map<string, THREE.Color>();
@@ -765,15 +1047,12 @@ function UFragMeshGroup({
     <group>
       {meshes.map((u, idx) => (
         <UFragMeshNode
-          
-          
-          
-          
-          
           key={`${u.tuid}-${idx}`}
           ufrag={u}
           texture={u.mesh.albedo_id != null ? textures.get(u.mesh.albedo_id) ?? null : null}
           fallbackColor={colorByZone.get(u.zone_tuid)!}
+          selected={selectedTuid === u.tuid}
+          onClick={onPickUFrag}
         />
       ))}
     </group>
@@ -1690,7 +1969,7 @@ interface ViewportProps {
   textureBlobs: TextureBlobMap | null;
   selection: Selection;
   view: ViewSettings;
-  onToggle: (key: keyof ViewSettings) => void;
+  onToggle: (key: BooleanViewSetting) => void;
   focusVersion: number;
   viewSnap: {
     direction: "front" | "right" | "top" | null;
@@ -1702,11 +1981,14 @@ interface ViewportProps {
 
 
   levelFolder: string | null;
-  
+
 
 
 
   overrideAnimsetHash: string | null;
+
+  hasCachedSky?: boolean;
+  cacheVersion?: number;
 }
 
 function computeBounds(positions: Iterable<[number, number, number]>) {
@@ -1752,12 +2034,144 @@ export function Viewport({
   levelFolder,
   overrideAnimsetHash,
 }: ViewportProps) {
+  const [mapExportPhase, setMapExportPhase] = useState<{
+    label: string;
+    current: number;
+    total: number;
+  } | null>(null);
+  const [mapExportError, setMapExportError] = useState<string | null>(null);
+  const [mapExportStatus, setMapExportStatus] = useState<string | null>(null);
+
+  const headerRef = useRef<HTMLDivElement>(null);
+  const ghostRef = useRef<HTMLDivElement>(null);
+  const ghostBtnWidths = useRef<number[]>([]);
+  const ghostDividerWidth = useRef<number>(0);
+  const moreBtnWidth = useRef<number>(72);
+  const [visibleToggleCount, setVisibleToggleCount] = useState<number>(99);
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
+
+  const recomputeCollapse = useCallback(() => {
+    const headerEl = headerRef.current;
+    const ghostEl = ghostRef.current;
+    if (!headerEl || !ghostEl) return;
+    const buttons = Array.from(
+      ghostEl.querySelectorAll<HTMLElement>("[data-toggle-key]"),
+    );
+    const widths = buttons.map((b) => b.getBoundingClientRect().width + 2);
+    ghostBtnWidths.current = widths;
+    const dividerEl = ghostEl.querySelector<HTMLElement>(".viewport-header-divider");
+    if (dividerEl) {
+      ghostDividerWidth.current = dividerEl.getBoundingClientRect().width + 12;
+    }
+    if (widths.length === 0) return;
+
+    const exportSlot = 200;
+    const moreSlot = moreBtnWidth.current + 6;
+    const headerW = headerEl.clientWidth;
+
+    let total = ghostDividerWidth.current;
+    for (const w of widths) total += w;
+    if (total + exportSlot <= headerW) {
+      setVisibleToggleCount(widths.length);
+      return;
+    }
+
+    let used = exportSlot + moreSlot + ghostDividerWidth.current;
+    let count = 0;
+    for (let i = 0; i < widths.length; i++) {
+      const w = widths[i]!;
+      if (used + w > headerW) break;
+      used += w;
+      count = i + 1;
+    }
+    setVisibleToggleCount(count);
+  }, []);
+
+  useEffect(() => {
+    const headerEl = headerRef.current;
+    if (!headerEl) return;
+    const ro = new ResizeObserver(() => recomputeCollapse());
+    ro.observe(headerEl);
+    recomputeCollapse();
+    return () => ro.disconnect();
+  }, [recomputeCollapse]);
+
+  useEffect(() => {
+    if (!viewMenuOpen) return;
+    const close = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.(".viewport-view-menu") || target?.closest?.(".viewport-view-trigger")) {
+        return;
+      }
+      setViewMenuOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [viewMenuOpen]);
+
+  const handleExportMap = useCallback(async () => {
+    if (!levelFolder || mapExportPhase) return;
+    let outPath: string | null = null;
+    try {
+      outPath = (await saveDialog({
+        title: "Export full map to GLB",
+        defaultPath: "level.glb",
+        filters: [{ name: "glTF binary", extensions: ["glb"] }],
+      })) as string | null;
+    } catch (err) {
+      setMapExportError(String(err));
+      return;
+    }
+    if (!outPath) return;
+
+    setMapExportError(null);
+    setMapExportStatus(null);
+    setMapExportPhase({ label: "Starting…", current: 0, total: 1 });
+
+    const channel = new Channel<LevelGlbExportEvent>();
+    let phaseTotal = 1;
+    let phaseLabel = "Starting…";
+    channel.onmessage = (e) => {
+      switch (e.type) {
+        case "phase":
+          phaseLabel = e.label;
+          phaseTotal = Math.max(1, e.total);
+          setMapExportPhase({ label: phaseLabel, current: 0, total: phaseTotal });
+          break;
+        case "progress":
+          setMapExportPhase({
+            label: phaseLabel,
+            current: e.current,
+            total: phaseTotal,
+          });
+          break;
+        case "done":
+          setMapExportPhase(null);
+          setMapExportStatus(
+            `Exported ${e.instance_count} instances across ${e.asset_count} assets · ${(e.bytes_written / 1024 / 1024).toFixed(1)} MB`,
+          );
+          break;
+        case "error":
+          setMapExportPhase(null);
+          setMapExportError(e.message);
+          break;
+      }
+    };
+
+    try {
+      await exportLevelGlb(levelFolder, outPath, channel);
+    } catch (err) {
+      setMapExportPhase(null);
+      setMapExportError(String(err));
+    }
+  }, [levelFolder, mapExportPhase]);
+
   const onPick = (inst: InstanceData, e: ThreeEvent<MouseEvent>) =>
-    
-    
-    
-    
-    
+
+
+
+
+
     selection.select(inst, clickMods(e.nativeEvent));
   const { center, extent } = useMemo(() => {
     function* positions(): Generator<[number, number, number]> {
@@ -1816,7 +2230,7 @@ export function Viewport({
   const hasLevel = instances.length > 0;
 
   type HeaderToggle = {
-    key: keyof ViewSettings;
+    key: BooleanViewSetting;
     label: string;
     Icon: LucideIcon;
     title?: string;
@@ -1825,6 +2239,16 @@ export function Viewport({
   const renderLayerToggles: HeaderToggle[] = [
     { key: "showMobys", label: "Mobys", Icon: Users, disabled: !hasLevel },
     { key: "showTies", label: "Ties", Icon: Box, disabled: !hasLevel },
+    { key: "showDetails", label: "Details", Icon: Box, disabled: !hasLevel },
+    { key: "showShrubs", label: "Shrubs", Icon: Box, disabled: !hasLevel },
+    { key: "showFoliage", label: "Foliage", Icon: Box, disabled: !hasLevel },
+    { key: "showLights", label: "Lights", Icon: Box, disabled: !hasLevel },
+    {
+      key: "showEnvSamplers",
+      label: "Env probes",
+      Icon: Box,
+      disabled: !hasLevel,
+    },
     {
       key: "showUFrags",
       label: tr("toolbar.terrain"),
@@ -1845,47 +2269,217 @@ export function Viewport({
     { key: "playAnimation", label: tr("toolbar.play"), Icon: Play },
   ];
 
+  useLayoutEffect(() => {
+    recomputeCollapse();
+  });
+
   return (
     <div className="viewport">
-      <div className="viewport-header">
-        {renderLayerToggles.map((tg) => {
-          const Icon = tg.Icon;
+      <div className="viewport-header" ref={headerRef}>
+        <div className="viewport-header-ghost" ref={ghostRef} aria-hidden>
+          {renderLayerToggles.map((tg) => {
+            const Icon = tg.Icon;
+            return (
+              <span
+                key={`g-${tg.key}`}
+                className="viewport-header-btn"
+                data-toggle-key={tg.key}
+              >
+                <Icon size={13} aria-hidden />
+                <span>{tg.label}</span>
+              </span>
+            );
+          })}
+          <span className="viewport-header-divider" />
+          {overlayToggles.map((tg) => {
+            const Icon = tg.Icon;
+            return (
+              <span
+                key={`g-${tg.key}`}
+                className="viewport-header-btn"
+                data-toggle-key={tg.key}
+              >
+                <Icon size={13} aria-hidden />
+                <span>{tg.label}</span>
+              </span>
+            );
+          })}
+        </div>
+        {(() => {
+          const allToggles: HeaderToggle[] = [];
+          for (const tg of renderLayerToggles) allToggles.push(tg);
+          for (const tg of overlayToggles) allToggles.push(tg);
+          const layerCount = renderLayerToggles.length;
+          const visible = allToggles.slice(0, visibleToggleCount);
+          const overflow = allToggles.slice(visibleToggleCount);
+          const dividerStillInline =
+            visibleToggleCount > layerCount && visibleToggleCount <= allToggles.length;
           return (
-            <button
-              key={tg.key}
-              type="button"
-              className={`viewport-header-btn ${view[tg.key] ? "active" : ""}`}
-              onClick={() => onToggle(tg.key)}
-              title={tg.title ?? tg.label}
-              disabled={tg.disabled}
-            >
-              <Icon size={13} aria-hidden />
-              <span>{tg.label}</span>
-            </button>
+            <>
+              {visible.map((tg, i) => {
+                const Icon = tg.Icon;
+                const showDivider = dividerStillInline && i === layerCount;
+                return (
+                  <span key={tg.key} style={{ display: "inline-flex", alignItems: "center" }}>
+                    {showDivider && <span className="viewport-header-divider" />}
+                    <button
+                      type="button"
+                      className={`viewport-header-btn ${view[tg.key] ? "active" : ""}`}
+                      onClick={() => onToggle(tg.key)}
+                      title={tg.title ?? tg.label}
+                      disabled={tg.disabled}
+                    >
+                      <Icon size={13} aria-hidden />
+                      <span>{tg.label}</span>
+                    </button>
+                  </span>
+                );
+              })}
+              {overflow.length > 0 && (
+                <div className="viewport-view-trigger-wrap">
+                  <button
+                    type="button"
+                    className="viewport-header-btn viewport-view-trigger"
+                    onClick={() => setViewMenuOpen((p) => !p)}
+                    aria-expanded={viewMenuOpen}
+                    title="More view options"
+                  >
+                    <span>More</span>
+                    <span className="viewport-view-trigger-caret" aria-hidden>
+                      ▾
+                    </span>
+                    <span className="viewport-view-trigger-count">
+                      {overflow.length}
+                    </span>
+                  </button>
+                  {viewMenuOpen && (
+                    <div className="viewport-view-menu" role="menu">
+                      {(() => {
+                        const overflowLayerCount = Math.max(
+                          0,
+                          layerCount - visibleToggleCount,
+                        );
+                        const overflowLayers = overflow.slice(0, overflowLayerCount);
+                        const overflowOverlay = overflow.slice(overflowLayerCount);
+                        return (
+                          <>
+                            {overflowLayers.length > 0 && (
+                              <>
+                                <div className="viewport-view-menu-section-label">
+                                  Layers
+                                </div>
+                                {overflowLayers.map((tg) => {
+                                  const Icon = tg.Icon;
+                                  return (
+                                    <button
+                                      key={tg.key}
+                                      type="button"
+                                      className={`viewport-view-menu-item ${view[tg.key] ? "active" : ""}`}
+                                      onClick={() => onToggle(tg.key)}
+                                      disabled={tg.disabled}
+                                    >
+                                      <Icon size={13} aria-hidden />
+                                      <span>{tg.label}</span>
+                                      {view[tg.key] && (
+                                        <span className="viewport-view-menu-check">
+                                          ✓
+                                        </span>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </>
+                            )}
+                            {overflowOverlay.length > 0 && (
+                              <>
+                                <div className="viewport-view-menu-section-label">
+                                  Overlay
+                                </div>
+                                {overflowOverlay.map((tg) => {
+                                  const Icon = tg.Icon;
+                                  return (
+                                    <button
+                                      key={tg.key}
+                                      type="button"
+                                      className={`viewport-view-menu-item ${view[tg.key] ? "active" : ""}`}
+                                      onClick={() => onToggle(tg.key)}
+                                      disabled={tg.disabled}
+                                    >
+                                      <Icon size={13} aria-hidden />
+                                      <span>{tg.label}</span>
+                                      {view[tg.key] && (
+                                        <span className="viewport-view-menu-check">
+                                          ✓
+                                        </span>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
           );
-        })}
-        <div className="viewport-header-divider" />
-        {overlayToggles.map((tg) => {
-          const Icon = tg.Icon;
-          return (
-            <button
-              key={tg.key}
-              type="button"
-              className={`viewport-header-btn ${view[tg.key] ? "active" : ""}`}
-              onClick={() => onToggle(tg.key)}
-              title={tg.title ?? tg.label}
-              disabled={tg.disabled}
-            >
-              <Icon size={13} aria-hidden />
-              <span>{tg.label}</span>
-            </button>
-          );
-        })}
+        })()}
+        <div className="viewport-header-spacer" />
+        <button
+          type="button"
+          className="viewport-header-export-btn"
+          onClick={handleExportMap}
+          disabled={!levelFolder || mapExportPhase !== null}
+          title={
+            !levelFolder
+              ? "Open a level first"
+              : mapExportPhase
+                ? "Exporting…"
+                : "Export the full map (placed mobys + ties) to a single GLB"
+          }
+        >
+          <Download size={14} aria-hidden />
+          <span className="viewport-header-export-label">
+            {mapExportPhase
+              ? `${mapExportPhase.label} ${mapExportPhase.current}/${mapExportPhase.total}`
+              : "Export map"}
+          </span>
+          {mapExportPhase && (
+            <span
+              className="viewport-header-export-progress"
+              style={{
+                width: `${Math.min(100, (mapExportPhase.current / Math.max(1, mapExportPhase.total)) * 100)}%`,
+              }}
+              aria-hidden
+            />
+          )}
+        </button>
       </div>
       <div className="viewport-canvas-wrap">
       {contextLost && (
         <div className="viewport-overlay" style={{ top: 12, right: 12, color: "#ffbc33" }}>
           ⚠ WebGL context lost — reload to recover
+        </div>
+      )}
+      {mapExportError && (
+        <div
+          className="viewport-overlay viewport-export-map-toast error"
+          onClick={() => setMapExportError(null)}
+          title="Click to dismiss"
+        >
+          ❌ {mapExportError}
+        </div>
+      )}
+      {mapExportStatus && !mapExportPhase && (
+        <div
+          className="viewport-overlay viewport-export-map-toast success"
+          onClick={() => setMapExportStatus(null)}
+          title="Click to dismiss"
+        >
+          ✓ {mapExportStatus}
         </div>
       )}
       <Canvas
@@ -1947,6 +2541,10 @@ export function Viewport({
       >
         <CameraFrame center={center} extent={extent} />
         <color attach="background" args={["#050608"]} />
+        <SkyboxBackground
+          textureId={view.skyboxTextureId}
+          levelFolder={levelFolder}
+        />
         <ambientLight intensity={0.6} />
         <directionalLight position={[100, 200, 50]} intensity={1.0} />
         <directionalLight position={[-100, 100, -50]} intensity={0.5} />
@@ -1977,6 +2575,30 @@ export function Viewport({
               edits={edits.edits}
             />
             <ProxyPlacementGroup
+              kind="detail"
+              instances={instances}
+              selectedIds={selection.ids}
+              onPick={onPick}
+              visible={view.showDetails}
+              edits={edits.edits}
+            />
+            <ProxyPlacementGroup
+              kind="shrub"
+              instances={instances}
+              selectedIds={selection.ids}
+              onPick={onPick}
+              visible={view.showShrubs}
+              edits={edits.edits}
+            />
+            <ProxyPlacementGroup
+              kind="foliage"
+              instances={instances}
+              selectedIds={selection.ids}
+              onPick={onPick}
+              visible={view.showFoliage}
+              edits={edits.edits}
+            />
+            <ProxyPlacementGroup
               kind="moby"
               instances={instances}
               selectedIds={selection.ids}
@@ -2001,6 +2623,39 @@ export function Viewport({
               prioritizedAssetTuid={prioritizedAssetTuid}
             />
             <AssetGroup
+              kind="detail"
+              meshes={meshes.detail_assets ?? []}
+              textures={textureMap}
+              instances={instances}
+              selectedIds={selection.ids}
+              onPick={onPick}
+              visible={view.showDetails}
+              edits={edits.edits}
+              prioritizedAssetTuid={prioritizedAssetTuid}
+            />
+            <AssetGroup
+              kind="shrub"
+              meshes={meshes.shrub_assets ?? []}
+              textures={textureMap}
+              instances={instances}
+              selectedIds={selection.ids}
+              onPick={onPick}
+              visible={view.showShrubs}
+              edits={edits.edits}
+              prioritizedAssetTuid={prioritizedAssetTuid}
+            />
+            <AssetGroup
+              kind="foliage"
+              meshes={meshes.foliage_assets ?? []}
+              textures={textureMap}
+              instances={instances}
+              selectedIds={selection.ids}
+              onPick={onPick}
+              visible={view.showFoliage}
+              edits={edits.edits}
+              prioritizedAssetTuid={prioritizedAssetTuid}
+            />
+            <AssetGroup
               kind="moby"
               meshes={meshes.moby_assets}
               textures={textureMap}
@@ -2015,9 +2670,36 @@ export function Viewport({
               meshes={meshes.ufrag_meshes}
               textures={textureMap}
               visible={view.showUFrags}
+              selectedTuid={selection.primary}
+              onPickUFrag={(u, e) => {
+                const synthetic: InstanceData = {
+                  tuid: u.tuid,
+                  asset_tuid: u.tuid,
+                  kind: "ufrag",
+                  name: `UFrag ${u.tuid.slice(-8)}`,
+                  position: u.position,
+                  quaternion: [0, 0, 0, 1],
+                  scale: [1, 1, 1],
+                };
+                selection.select(synthetic, clickMods(e.nativeEvent));
+              }}
             />
           </>
         )}
+
+        <LightGizmoGroup
+          instances={instances}
+          selectedIds={selection.ids}
+          onPick={onPick}
+          visible={view.showLights}
+        />
+
+        <EnvSamplerGizmoGroup
+          instances={instances}
+          selectedIds={selection.ids}
+          onPick={onPick}
+          visible={view.showEnvSamplers}
+        />
 
         <UFragBoundsGroup ufrags={ufrags} visible={view.showUFragBounds} />
 

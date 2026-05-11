@@ -75,6 +75,36 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const assetRows: { key: keyof AssetColors; label: string; hint: string }[] = [
     { key: "moby", label: t("settings.moby"), hint: t("settings.mobyHint") },
     { key: "tie", label: t("settings.tie"), hint: t("settings.tieHint") },
+    {
+      key: "detail",
+      label: "Detail clusters",
+      hint: "Static debris/props (RFOM only)",
+    },
+    {
+      key: "shrub",
+      label: "Shrubs",
+      hint: "Vegetation meshes (RFOM only)",
+    },
+    {
+      key: "foliage",
+      label: "Foliage",
+      hint: "Sprite foliage / grass (RFOM only)",
+    },
+    {
+      key: "light",
+      label: "Lights",
+      hint: "Point/area light placements (RFOM only)",
+    },
+    {
+      key: "envsampler",
+      label: "Env probes",
+      hint: "Cubemap reflection probes (RFOM only)",
+    },
+    {
+      key: "sky",
+      label: "Skybox",
+      hint: "Sky dome badge + viewport tint",
+    },
     { key: "ufrag", label: t("settings.ufrag"), hint: t("settings.ufragHint") },
     {
       key: "selection",

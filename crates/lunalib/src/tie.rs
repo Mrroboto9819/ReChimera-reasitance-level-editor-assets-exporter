@@ -135,6 +135,10 @@ fn parse_tie<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<TieAs
     ig.stream.seek_to(u64::from(isect.offset))?;
     let index_buf = ig.stream.read_bytes(isect.length as usize)?;
 
+    let shader_count = ig
+        .section(SECT_TIE_SHADER_TABLE)
+        .map(|s| s.count as u16)
+        .unwrap_or(0);
     let mut meshes = Vec::with_capacity(mesh_count);
     for m in 0..mesh_count {
         let mesh_base = meshes_ptr + (m as u64) * TIE_MESH_SIZE;
@@ -149,7 +153,55 @@ fn parse_tie<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<TieAs
         let index_count = ig.stream.read_u16()?;
 
         ig.stream.seek_to(mesh_base + 0x28)?;
-        let shader_index = ig.stream.read_u16()?;
+        let si_v2 = ig.stream.read_u16()?;
+        let shader_index = if shader_count > 0 && si_v2 < shader_count {
+            si_v2
+        } else {
+            ig.stream.seek_to(mesh_base + 0x0C)?;
+            let si_acit = ig.stream.read_u16()?;
+            if shader_count > 0 && si_acit < shader_count {
+                si_acit
+            } else {
+                si_v2
+            }
+        };
+
+        if m == 0 && std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static TIE_MESH_DUMP_FIRED: AtomicUsize = AtomicUsize::new(0);
+            let n = TIE_MESH_DUMP_FIRED.fetch_add(1, Ordering::Relaxed);
+            if n < 3 {
+                ig.stream.seek_to(mesh_base)?;
+                let mut bytes = [0u8; 0x40];
+                for b in bytes.iter_mut() {
+                    *b = ig.stream.read_u8().unwrap_or(0);
+                }
+                let mut hex = String::new();
+                for (i, b) in bytes.iter().enumerate() {
+                    if i % 8 == 0 && i > 0 {
+                        hex.push(' ');
+                    }
+                    hex.push_str(&format!("{:02X} ", b));
+                }
+                let mut u16s = String::new();
+                for i in 0..(0x40 / 2) {
+                    let v = u16::from_be_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
+                    u16s.push_str(&format!("[+0x{:02X}]={:5} ", i * 2, v));
+                    if (i + 1) % 4 == 0 {
+                        u16s.push('\n');
+                        u16s.push_str("                  ");
+                    }
+                }
+                let shader_table_count = ig
+                    .section(SECT_TIE_SHADER_TABLE)
+                    .map(|s| s.count as usize)
+                    .unwrap_or(0);
+                eprintln!(
+                    "[tie-mesh-probe] tie 0x{:016X} mesh[0] (TIE_MESH_SIZE=0x{:X}) 0x5600.count={} read_shader_index@+0x28={}\n  raw: {}\n  u16 BE: {}",
+                    tuid, TIE_MESH_SIZE, shader_table_count, shader_index, hex, u16s
+                );
+            }
+        }
 
         meshes.push(decode_tie_mesh(
             &index_buf,
@@ -164,6 +216,30 @@ fn parse_tie<R: Read + Seek>(ig: &mut IgFile<R>, tuid_hint: u64) -> Result<TieAs
     }
 
     let shader_tuids = read_shader_table(ig, SECT_TIE_SHADER_TABLE)?;
+
+    if shader_tuids.is_empty() {
+        use std::sync::Mutex;
+        static SEEN_LAYOUTS: Mutex<Option<std::collections::HashSet<u64>>> = Mutex::new(None);
+        let mut sorted_ids: Vec<u32> = ig.sections.iter().map(|s| s.id).collect();
+        sorted_ids.sort_unstable();
+        let mut hasher: u64 = 0xCBF29CE484222325;
+        for id in &sorted_ids {
+            hasher ^= u64::from(*id);
+            hasher = hasher.wrapping_mul(0x100000001B3);
+        }
+        let mut guard = SEEN_LAYOUTS.lock().unwrap();
+        let set = guard.get_or_insert_with(std::collections::HashSet::new);
+        if set.insert(hasher) && set.len() <= 4 {
+            let summary: Vec<String> = ig.sections
+                .iter()
+                .map(|s| format!("0x{:X}(len={},cnt={})", s.id, s.length, s.count))
+                .collect();
+            eprintln!(
+                "warn: tie 0x{:016X} has no shader table at 0x{:X} — meshes will render gray. sections: [{}]",
+                tuid, SECT_TIE_SHADER_TABLE, summary.join(", ")
+            );
+        }
+    }
 
     Ok(TieAsset {
         tuid,

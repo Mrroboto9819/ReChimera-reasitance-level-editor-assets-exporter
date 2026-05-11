@@ -125,3 +125,28 @@ This matches IT's `GenerateSkeleton` in `extract_gltf.cpp:7-32`.
 `scale_shift` and `translation_shift` aren't used at bind time; they are
 fixed-point divisors used during animation decode (see
 [`06-animation.md`](06-animation.md)).
+
+### The byte-order quirk
+
+IT's `FByteswapper<Skeleton>` deliberately **skips** `scaleShift` and
+`translationShift` (see `common/src/serialize.cpp:186-201`). On PS3
+big-endian files, our `read_u16()` over-swaps them. The recovery rule
+in `skeleton.rs::recover_shift`:
+
+1. If `raw <= 15` — already in the valid 0..15 range, use as-is.
+2. Else try `raw.swap_bytes()` — works for 99% of rigs (`0x0400 → 0x0004 = 4`).
+3. Else mask with `0x1F` (lowest 5 bits) — works for the **14 RFOM viseme
+   head rigs** (soldier / cartwright / Winters etc.) where the raw value
+   is `0x0103`. The swapped value `0x0301 = 769` and `769 & 0x1F = 1`.
+
+Step 3 was discovered after step 2 left these heads animating with
+`pos_scale = 1/32768` (30 000× too small), causing all viseme bones to
+collapse to origin during clip playback. The `& 0x1F` mask matches the
+x86 `SHR` instruction's count-masking behaviour — i.e., what IT's own
+extracted-then-shifted value would compute to on the host CPU.
+
+When `RECHIMERA_LOG_PROBES=1` is set, every viseme rig that took the
+step-3 fallback logs a `[skel-shift]` line documenting the path.
+
+The fix is also captured in the `project_skeleton_shift_byte_quirk`
+memory entry for cross-session continuity.

@@ -96,13 +96,18 @@ extraction already ran in this session).
 
 ### Step 1 — Game
 
-Games are grouped by **franchise** (`FRANCHISES` array) and rendered
-as cards inside per-franchise sections:
+Games are grouped by **franchise** (`FRANCHISES` array). The franchises
+render as a **tab strip** at the top of step 1; clicking a tab swaps
+the game grid below to show only that franchise's games.
 
 | Franchise | Games |
 |---|---|
 | Resistance | Resistance: Fall of Man · Resistance 2 · Resistance 3 |
 | Ratchet & Clank | R&C: Tools of Destruction · R&C: Full Frontal Assault · R&C: All 4 One |
+
+The selected franchise is persisted to `localStorage`
+(`rechimera.wizardFranchiseTab`) so the next time the wizard opens it
+lands on the franchise you last picked. Default is `resistance`.
 
 Each game card carries **capability badges** drawn from
 `GAMES[i].capabilities`. Each capability resolves to one of four
