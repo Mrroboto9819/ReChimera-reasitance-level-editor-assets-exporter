@@ -983,6 +983,71 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
             })
             .map_err(|e| eprintln!("warn: RFOM detail-cluster read failed: {e}"));
 
+        // RFOM Shrubs (0xC700 + 0xC650) — foliage / vegetation. IT calls
+        // these "shrubs" and emits them via gpu-instancing; we route the
+        // meshes through `tie_assets_for_glb` (same Vertex0 path as
+        // details) and expose individual placements as `kind: "shrub"`
+        // tie-instances so they show up in the viewport and exports.
+        let _ = lunalib::read_shrubs_rfom(level_path)
+            .map(|(shrub_assets, _)| {
+                let _ = fs::create_dir_all(root.join("shrubs"));
+                let mut shrub_done = 0usize;
+                for asset in shrub_assets {
+                    tie_assets_for_glb.push(asset.clone());
+                    let submeshes: Vec<_> = asset
+                        .meshes
+                        .into_iter()
+                        .map(|m| {
+                            let (albedo, normal, emissive) = resolve_shader_textures(
+                                &shaders,
+                                &asset.shader_tuids,
+                                m.shader_index as usize,
+                            );
+                            for id in [albedo, normal, emissive].into_iter().flatten() {
+                                needed_textures.insert(id);
+                            }
+                            mesh_dto(
+                                m.positions,
+                                m.uvs,
+                                m.indices,
+                                albedo,
+                                normal,
+                                emissive,
+                                Vec::new(),
+                                Vec::new(),
+                            )
+                        })
+                        .collect();
+                    let dto = AssetMeshesDto {
+                        asset_tuid: format!("0x{:016X}", asset.tuid),
+                        name: format!("shrub_{:016X}", asset.tuid),
+                        submeshes,
+                        skeleton: None,
+                        animset_hash: None,
+                        bind_pose_inverse_offset: 0,
+                        embedded_animation_count: 0,
+                    };
+                    let file_rel = format!("shrubs/0x{:016X}.json", asset.tuid);
+                    let path = root.join(&file_rel);
+                    if let Ok(size_bytes) = write_json(&path, &dto) {
+                        entries.push(CacheManifestEntry {
+                            kind: "shrub".into(),
+                            tuid: dto.asset_tuid.clone(),
+                            name: dto.name.clone(),
+                            file: file_rel,
+                            size_bytes,
+                        });
+                    }
+                    shrub_done += 1;
+                    let _ = on_event.send(CacheEvent::Item {
+                        kind: "tie",
+                        name: dto.name,
+                    });
+                }
+                eprintln!("[cache] RFOM layout: extracted {shrub_done} shrub meshes");
+            })
+            .map_err(|e| eprintln!("warn: RFOM shrub read failed: {e}"));
+
         match lunalib::read_skybox_rfom(level_path) {
             Ok(Some(sky)) => {
                 let sky_dir = root.join("skybox");
@@ -2074,6 +2139,7 @@ fn run_export_level_glb(
         let folder = match kind_name {
             "moby" => "mobys",
             "detail" => "details",
+            "shrub" => "shrubs",
             _ => "ties",
         };
         let primary = cache_root.join(folder).join(format!("{}.json", asset_tuid));
@@ -2127,6 +2193,7 @@ fn run_export_level_glb(
     let mut moby_count = 0usize;
     let mut tie_count = 0usize;
     let mut detail_count = 0usize;
+    let mut shrub_count = 0usize;
 
     for inst in &mobys {
         progress += 1;
@@ -2149,7 +2216,11 @@ fn run_export_level_glb(
         if progress % 16 == 0 {
             let _ = on_event.send(LevelGlbExportEvent::Progress { current: progress });
         }
-        let kind_name: &'static str = if inst.kind == "detail" { "detail" } else { "tie" };
+        let kind_name: &'static str = match inst.kind {
+            "detail" => "detail",
+            "shrub" => "shrub",
+            _ => "tie",
+        };
         if let Some(idx) = load_one(kind_name, &inst.asset_tuid)? {
             instances.push(lunalib::level_glb::LevelGlbInstance {
                 asset_idx: idx,
@@ -2158,10 +2229,10 @@ fn run_export_level_glb(
                 rotation: inst.quaternion,
                 scale: inst.scale,
             });
-            if kind_name == "detail" {
-                detail_count += 1;
-            } else {
-                tie_count += 1;
+            match kind_name {
+                "detail" => detail_count += 1,
+                "shrub" => shrub_count += 1,
+                _ => tie_count += 1,
             }
         }
     }
@@ -2169,8 +2240,8 @@ fn run_export_level_glb(
     let _ = on_event.send(LevelGlbExportEvent::Progress { current: progress });
 
     eprintln!(
-        "[level-glb] placements baked: {} mobys, {} ties, {} details",
-        moby_count, tie_count, detail_count
+        "[level-glb] placements baked: {} mobys, {} ties, {} details, {} shrubs",
+        moby_count, tie_count, detail_count, shrub_count
     );
 
     let ufrag_count = load_ufrags_into_level(

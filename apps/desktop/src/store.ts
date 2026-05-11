@@ -26,6 +26,7 @@ export interface ViewSettingsState {
   showMobys: boolean;
   showTies: boolean;
   showDetails: boolean;
+  showShrubs: boolean;
   showLights: boolean;
   showEnvSamplers: boolean;
   showUFrags: boolean;
@@ -53,6 +54,7 @@ const DEFAULT_VIEW: ViewSettingsState = {
   showMobys: true,
   showTies: true,
   showDetails: true,
+  showShrubs: true,
   showLights: true,
   showEnvSamplers: false,
   showUFrags: true,
@@ -276,6 +278,8 @@ export interface AssetColors {
 
   detail: string;
 
+  shrub: string;
+
   light: string;
 
   envsampler: string;
@@ -304,6 +308,7 @@ const DEFAULT_SETTINGS: SettingsState = {
     moby: "#ff8a3d",
     tie: "#3dd0ff",
     detail: "#b48cff",
+    shrub: "#6bd47b",
     light: "#ffd83d",
     envsampler: "#46e0c8",
     sky: "#5d9bff",

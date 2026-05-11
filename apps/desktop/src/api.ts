@@ -104,7 +104,7 @@ export const buildLevelManifest = (folder: string) =>
 
 
 export interface CacheManifestEntry {
-  kind: "moby" | "tie" | "detail" | "texture" | "ufrag" | "sky";
+  kind: "moby" | "tie" | "detail" | "shrub" | "texture" | "ufrag" | "sky";
   tuid: string;
   name: string;
   file: string;
@@ -367,6 +367,9 @@ export async function loadFromCache(
   const detailEntries = manifest.entries.filter(
     (e) => e.kind === "detail" && e.file.endsWith(".json"),
   );
+  const shrubEntries = manifest.entries.filter(
+    (e) => e.kind === "shrub" && e.file.endsWith(".json"),
+  );
   const ufragEntries = manifest.entries.filter((e) => e.kind === "ufrag");
   const textureEntries = manifest.entries.filter((e) => e.kind === "texture");
 
@@ -408,6 +411,16 @@ export async function loadFromCache(
     }
   }
 
+  const shrub_assets: AssetMeshes[] = [];
+  for (let i = 0; i < shrubEntries.length; i++) {
+    try {
+      const data = (await readCachedAsset(folder, shrubEntries[i]!.file)) as AssetMeshes;
+      shrub_assets.push(data);
+    } catch {
+      /* skip */
+    }
+  }
+
   const ufrag_meshes: UFragMesh[] = [];
   onProgress?.({ phase: "ufrags", current: 0, total: ufragEntries.length });
   for (let i = 0; i < ufragEntries.length; i++) {
@@ -429,7 +442,7 @@ export async function loadFromCache(
   }));
   onProgress?.({ phase: "textures", current: textures.length, total: textures.length });
 
-  return { moby_assets, tie_assets, detail_assets, ufrag_meshes, textures };
+  return { moby_assets, tie_assets, detail_assets, shrub_assets, ufrag_meshes, textures };
 }
 
 export interface UFragBounds {
@@ -555,6 +568,7 @@ export interface LevelMeshes {
   moby_assets: AssetMeshes[];
   tie_assets: AssetMeshes[];
   detail_assets?: AssetMeshes[];
+  shrub_assets?: AssetMeshes[];
   ufrag_meshes: UFragMesh[];
   textures: TexturePayload[];
 }

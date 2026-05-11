@@ -81,6 +81,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       hint: "Static debris/props (RFOM only)",
     },
     {
+      key: "shrub",
+      label: "Shrubs",
+      hint: "Foliage / vegetation (RFOM only)",
+    },
+    {
       key: "light",
       label: "Lights",
       hint: "Point/area light placements (RFOM only)",

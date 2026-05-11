@@ -52,6 +52,7 @@ export function useApplySettings(): void {
     root.style.setProperty("--asset-moby", colors.moby);
     root.style.setProperty("--asset-tie", colors.tie);
     root.style.setProperty("--asset-detail", colors.detail);
+    root.style.setProperty("--asset-shrub", colors.shrub);
     root.style.setProperty("--asset-light", colors.light);
     root.style.setProperty("--asset-envsampler", colors.envsampler);
     root.style.setProperty("--asset-sky", colors.sky);

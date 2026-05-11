@@ -572,6 +572,11 @@ pub(crate) fn real_tie_layout(folder: &str) -> Option<Vec<InstanceDto>> {
                     out.push(detail_instance_dto(&inst));
                 }
             }
+            if let Ok((_, shrub_insts)) = lunalib::read_shrubs_rfom(path) {
+                for inst in shrub_insts {
+                    out.push(shrub_instance_dto(&inst));
+                }
+            }
         }
         _ => {
             for zone in read_zones(path).ok()? {
@@ -601,6 +606,18 @@ fn detail_instance_dto(inst: &lunalib::TieInstance) -> InstanceDto {
         tuid: format!("0x{:016X}", inst.instance_tuid),
         asset_tuid: format!("0x{:016X}", inst.tie_tuid),
         kind: "detail",
+        name: inst.name.clone(),
+        position: inst.position,
+        quaternion: inst.quaternion,
+        scale: inst.scale,
+    }
+}
+
+fn shrub_instance_dto(inst: &lunalib::TieInstance) -> InstanceDto {
+    InstanceDto {
+        tuid: format!("0x{:016X}", inst.instance_tuid),
+        asset_tuid: format!("0x{:016X}", inst.tie_tuid),
+        kind: "shrub",
         name: inst.name.clone(),
         position: inst.position,
         quaternion: inst.quaternion,

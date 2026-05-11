@@ -71,6 +71,7 @@ export interface ViewSettings {
   showMobys: boolean;
   showTies: boolean;
   showDetails: boolean;
+  showShrubs: boolean;
   showLights: boolean;
   showEnvSamplers: boolean;
   showCollision: boolean;
@@ -258,7 +259,9 @@ function ProxyPlacementGroup({
       ? assetColors.moby
       : kind === "detail"
         ? assetColors.detail
-        : assetColors.tie;
+        : kind === "shrub"
+          ? assetColors.shrub
+          : assetColors.tie;
   const selectionColor = assetColors.selection;
 
   useEffect(() => {
@@ -926,8 +929,13 @@ function AssetGroup({
             new THREE.Color("#ffffff"),
             0.55,
           )
-        : new THREE.Color("#ffffff"),
-    [kind, assetColorMap.detail],
+        : kind === "shrub"
+          ? new THREE.Color(assetColorMap.shrub).lerp(
+              new THREE.Color("#ffffff"),
+              0.55,
+            )
+          : new THREE.Color("#ffffff"),
+    [kind, assetColorMap.detail, assetColorMap.shrub],
   );
 
   if (!visible) return null;
@@ -2235,6 +2243,7 @@ export function Viewport({
     { key: "showMobys", label: "Mobys", Icon: Users, disabled: !hasLevel },
     { key: "showTies", label: "Ties", Icon: Box, disabled: !hasLevel },
     { key: "showDetails", label: "Details", Icon: Box, disabled: !hasLevel },
+    { key: "showShrubs", label: "Shrubs", Icon: Box, disabled: !hasLevel },
     { key: "showLights", label: "Lights", Icon: Box, disabled: !hasLevel },
     {
       key: "showEnvSamplers",
@@ -2586,6 +2595,14 @@ export function Viewport({
               edits={edits.edits}
             />
             <ProxyPlacementGroup
+              kind="shrub"
+              instances={instances}
+              selectedIds={selection.ids}
+              onPick={onPick}
+              visible={view.showShrubs}
+              edits={edits.edits}
+            />
+            <ProxyPlacementGroup
               kind="moby"
               instances={instances}
               selectedIds={selection.ids}
@@ -2617,6 +2634,17 @@ export function Viewport({
               selectedIds={selection.ids}
               onPick={onPick}
               visible={view.showDetails}
+              edits={edits.edits}
+              prioritizedAssetTuid={prioritizedAssetTuid}
+            />
+            <AssetGroup
+              kind="shrub"
+              meshes={meshes.shrub_assets ?? []}
+              textures={textureMap}
+              instances={instances}
+              selectedIds={selection.ids}
+              onPick={onPick}
+              visible={view.showShrubs}
               edits={edits.edits}
               prioritizedAssetTuid={prioritizedAssetTuid}
             />
