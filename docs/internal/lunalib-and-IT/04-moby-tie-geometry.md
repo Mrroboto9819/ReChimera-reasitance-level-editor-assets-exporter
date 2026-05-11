@@ -164,3 +164,51 @@ Ties are a strict subset:
 The cache and GLB pipeline treats ties as "single-bangle, no-skeleton
 mobys" via `tie_as_moby` (in `cache.rs`) so the rest of the pipeline
 doesn't have to branch.
+
+## RFOM-specific tie-likes
+
+Three more RFOM-only asset types reuse the tie data path because they
+share the same "static mesh + world transform" shape:
+
+- **`DetailCluster`** (`detail_rfom.rs`, sections `0xB200` / `0xB300` /
+  `0x9500`) — small static debris, signs, and props. Vertex format is
+  the same V1 `Vertex0` stride as ties, surfaced under `kind: "detail"`
+  so the hierarchy and Settings color treat them as their own family.
+- **`Shrub`** (`shrub_rfom.rs`, sections `0xC700` + `0xC650`) — mesh
+  vegetation. Different vertex format (`ShrubVertex`, 16 B with
+  half-float positions despite the IT struct's `int16[4]` declaration
+  — see [chapter 10](10-vegetation-and-sky.md) for the gotcha).
+- **`Foliage`** (`foliage_rfom.rs`, sections `0xC200` + `0x9700`) —
+  branch meshes (`BranchVertex`, 20 B half-float positions) and sprite
+  quads (`SpriteVertex`, 12 B) in one asset.
+
+All three flow through `tie_assets_for_glb` in the cache and pop out
+in the manifest as their own kinds (`detail`, `shrub`, `foliage`). See
+[chapter 10 — Vegetation & sky](10-vegetation-and-sky.md) for the
+struct layouts and the IT `ShrubsToGltf` / `FoliageToGltf` references.
+
+## TOD tie quirks (RE'd from `stratus city`)
+
+Two TOD-specific issues in `tie_old.rs` worth noting:
+
+1. **`vbuf_size` is wildly over-allocated** in the header. For many
+   ties past index 80 it claims 8-20 MB of vertex data when the
+   actual per-tie data is ~100 KB — the read overruns `vertices.dat`
+   and fails with `io: failed to fill whole buffer`. Fix: pre-walk
+   the per-mesh structs to compute `max_v_local_end` (largest
+   `vertex_index + vertex_count` * stride), then slurp only that
+   much. Same pattern `moby_old.rs::parse_one` already uses.
+2. **Per-axis vertex scale required.** Each `OldTie` header has a
+   `Vector3 scale` at `+0x20`. Per-vertex positions must be
+   multiplied by this per-axis (`x * scale[0], y * scale[1], z *
+   scale[2]`) per ReLunacy `Tie.cs:93-95`. Without it, raw `i16`
+   positions produce 30 km buildings. Some ties have `scale =
+   (0,0,0)` — those are placeholder/dummy entries and correctly
+   collapse to origin (matching ReLunacy's behaviour).
+
+`OldTieInstance` placements live in `main.dat:0x9240` (0x80 per
+record). Matrix at `+0x00..+0x40` (row-major, decompose to TRS);
+tie key at `+0x50` is the byte offset of the matching `OldTie`
+header in `main.dat`, which is what `tie_old::TieAsset.tuid`
+carries on the TOD path. Linking instance → prototype is therefore
+a direct lookup by `tuid`.

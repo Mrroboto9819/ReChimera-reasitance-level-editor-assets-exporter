@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Panel,
@@ -42,6 +42,7 @@ import {
   type LevelFile,
   type LevelMeshes,
   type LevelSummary,
+  type AssetMeshes,
   type PhaseId,
   type SoundEntry,
   type TextureBlobMap,
@@ -89,9 +90,10 @@ import {
   toggleHierarchyHidden,
   toggleInspectorHidden,
   toggleView,
+  setSkybox,
   useAppDispatch,
   useAppSelector,
-  type ViewSettingsState,
+  type BooleanViewKey,
 } from "./store";
 
 export function App() {
@@ -293,11 +295,17 @@ export function App() {
   const [cacheManifest, setCacheManifest] =
     useState<import("./api").CacheManifest | null>(null);
   const [cacheProgress, setCacheProgress] = useState<{
-    phase: "mobys" | "ties" | "textures";
+    phase: "mobys" | "ties" | "materials" | "normalmaps" | "textures";
     current: number;
     total: number;
   } | null>(null);
   const [cacheLibraryOpen, setCacheLibraryOpen] = useState(false);
+  const [cacheModalInitialPanel, setCacheModalInitialPanel] =
+    useState<import("./components/CacheLibraryModal").LibraryFilter | null>(null);
+  const [cacheModalInitialTextureId, setCacheModalInitialTextureId] =
+    useState<string | null>(null);
+  const [cacheModalInitialSoundKey, setCacheModalInitialSoundKey] =
+    useState<string | null>(null);
   
   
   
@@ -455,7 +463,7 @@ export function App() {
   
   
   const toggle = useCallback(
-    (key: keyof ViewSettingsState) => dispatch(toggleView(key)),
+    (key: BooleanViewKey) => dispatch(toggleView(key)),
     [dispatch],
   );
 
@@ -717,19 +725,26 @@ export function App() {
             chunkSize: 1,
           });
         });
+
         setMeshes(meshes);
         log(
           "ok",
-          `Loaded from cache: ${meshes.moby_assets.length} mobys, ${meshes.tie_assets.length} ties, ${meshes.ufrag_meshes.length} terrain, ${meshes.textures.length} textures`,
+          `Loaded from cache: ${meshes.moby_assets.length} mobys, ${meshes.tie_assets.length} ties, ${meshes.ufrag_meshes.length} terrain, ${meshes.textures.length} textures, ${meshes.moby_assets.reduce((s, a) => s + (a.embedded_animation_count ?? 0), 0)} anims`,
         );
 
+        // Stream textures in the background so meshes appear instantly.
+        // The Viewport's material cache (`getMaterial` at Viewport.tsx:
+        // ~733) handles late-arriving textures by updating `m.map` and
+        // setting `m.needsUpdate = true` when the texture finally lands,
+        // so materials refresh automatically — no need to block the
+        // mesh render on the full texture set.
         const ids = meshes.textures.map((t) => t.id);
         if (ids.length > 0) {
           loadCachedTextures(sum.folder, ids)
-            .then((map) => {
-              setTextureBlobs(map);
-            })
-            .catch((err) => log("error", `Texture cache fetch failed: ${err}`));
+            .then((blobs) => setTextureBlobs(blobs))
+            .catch((err) =>
+              log("error", `Texture cache fetch failed: ${err}`),
+            );
         } else {
           setTextureBlobs(new Map());
         }
@@ -972,8 +987,41 @@ export function App() {
     log("info", "Level closed");
   }, [log, selection, edits]);
 
+  // Distinct (albedo, normal, emissive) shader triples across every submesh —
+  // matches what the viewport material cache keys by, so the count reflects
+  // what actually renders as a separate material instance.
+  const materialCount = useMemo(() => {
+    if (!meshes) return 0;
+    const seen = new Set<string>();
+    const visit = (assets: AssetMeshes[]) => {
+      for (const a of assets) {
+        for (const s of a.submeshes) {
+          seen.add(`${s.albedo_id ?? "_"}|${s.normal_id ?? "_"}|${s.emissive_id ?? "_"}`);
+        }
+      }
+    };
+    visit(meshes.moby_assets);
+    visit(meshes.tie_assets);
+    if (meshes.detail_assets) visit(meshes.detail_assets);
+    if (meshes.shrub_assets) visit(meshes.shrub_assets);
+    if (meshes.foliage_assets) visit(meshes.foliage_assets);
+    for (const u of meshes.ufrag_meshes) {
+      seen.add(`${u.mesh.albedo_id ?? "_"}|${u.mesh.normal_id ?? "_"}|${u.mesh.emissive_id ?? "_"}`);
+    }
+    return seen.size;
+  }, [meshes]);
+
+  // Total animation clips embedded across all mobys (ties/ufrags have none).
+  const animationCount = useMemo(() => {
+    if (!meshes) return 0;
+    return meshes.moby_assets.reduce(
+      (sum, a) => sum + (a.embedded_animation_count ?? 0),
+      0,
+    );
+  }, [meshes]);
+
   const toolbarInfo = meshes
-    ? `${meshes.moby_assets.length} mobys · ${meshes.tie_assets.length} ties · ${meshes.ufrag_meshes.length} terrain · ${meshes.textures.length} textures`
+    ? `${meshes.moby_assets.length} mobys · ${meshes.tie_assets.length} ties · ${meshes.ufrag_meshes.length} terrain · ${materialCount} materials · ${meshes.textures.length} textures · ${animationCount} anims`
     : summary
       ? `${instances.length.toLocaleString()} instances · ${ufrags.length.toLocaleString()} UFrags`
       : "";
@@ -986,10 +1034,19 @@ export function App() {
       <Hierarchy
         instances={instances}
         selection={selection}
-        mobyAssets={meshes?.moby_assets}
-        tieAssets={meshes?.tie_assets}
         cacheManifest={cacheManifest}
+        sounds={levelSounds}
         onPreviewRawAsset={(tuid) => setPreviewAssetTuid(tuid)}
+        onSelectCacheSound={(key) => {
+          setCacheModalInitialPanel("sound");
+          setCacheModalInitialSoundKey(key);
+          setCacheLibraryOpen(true);
+        }}
+        onSelectCacheTexture={(texId) => {
+          setCacheModalInitialPanel("texture");
+          setCacheModalInitialTextureId(texId);
+          setCacheLibraryOpen(true);
+        }}
       />
     ),
     inspector: (
@@ -1034,6 +1091,10 @@ export function App() {
           meshLoadPhase={meshLoadPhase}
           levelFolder={summary?.folder ?? null}
           overrideAnimsetHash={overrideAnimsetHash}
+          hasCachedSky={
+            cacheManifest?.entries.some((e) => e.kind === "sky") ?? false
+          }
+          cacheVersion={cacheManifest?.entries.length ?? 0}
         />
       </div>
     ),
@@ -1120,12 +1181,50 @@ export function App() {
               Ties
             </MenuCheckItem>
             <MenuCheckItem
+              checked={view.showDetails}
+              onToggle={() => toggle("showDetails")}
+              disabled={!summary}
+            >
+              Details
+            </MenuCheckItem>
+            <MenuCheckItem
+              checked={view.showLights}
+              onToggle={() => toggle("showLights")}
+              disabled={!summary}
+            >
+              Lights
+            </MenuCheckItem>
+            <MenuCheckItem
+              checked={view.showEnvSamplers}
+              onToggle={() => toggle("showEnvSamplers")}
+              disabled={!summary}
+            >
+              Env Probes
+            </MenuCheckItem>
+            <MenuCheckItem
               checked={view.showUFrags}
               onToggle={() => toggle("showUFrags")}
               disabled={!summary}
             >
               UFrag Terrain
             </MenuCheckItem>
+            <MenuSpacer />
+            <MenuItem
+              onSelect={() => {
+                setCacheModalInitialPanel("texture");
+                setCacheLibraryOpen(true);
+              }}
+              disabled={!summary}
+            >
+              {view.skyboxTextureId != null
+                ? `Skybox: tex ${view.skyboxTextureId}`
+                : "Skybox: pick texture…"}
+            </MenuItem>
+            {view.skyboxTextureId != null && (
+              <MenuItem onSelect={() => dispatch(setSkybox(null))}>
+                Clear skybox
+              </MenuItem>
+            )}
             <MenuCheckItem
               checked={view.showUFragBounds}
               onToggle={() => toggle("showUFragBounds")}
@@ -1413,9 +1512,23 @@ export function App() {
         onClose={() => {
           setCacheLibraryOpen(false);
           setPreviewAssetTuid(null);
+          setCacheModalInitialPanel(null);
+          setCacheModalInitialTextureId(null);
+          setCacheModalInitialSoundKey(null);
         }}
         folder={summary?.folder ?? null}
         initialAssetTuid={previewAssetTuid}
+        initialPanel={cacheModalInitialPanel}
+        initialTextureId={cacheModalInitialTextureId}
+        initialSoundKey={cacheModalInitialSoundKey}
+        sounds={levelSounds}
+        currentSkyboxTextureId={view.skyboxTextureId}
+        onUseAsSkybox={(id) => {
+          dispatch(setSkybox(id < 0 ? null : id));
+          if (id >= 0) {
+            setCacheModalInitialPanel("sky");
+          }
+        }}
         onRequestExtract={() => {
           if (!summary) return;
           console.log("[cache-modal] user requested extract", summary.folder);
@@ -1638,12 +1751,37 @@ export function App() {
         {cacheProgress && (
           <>
             <div className="cache-progress-phases">
-              {(["mobys", "ties", "textures"] as const).map((p) => {
-                const order = ["mobys", "ties", "textures"];
-                const idx = order.indexOf(cacheProgress.phase);
-                const myIdx = order.indexOf(p);
-                const state =
-                  myIdx < idx ? "done" : myIdx === idx ? "active" : "pending";
+              {(
+                [
+                  "mobys",
+                  "ties",
+                  "materials",
+                  "normalmaps",
+                  "textures",
+                  "animations",
+                ] as const
+              ).map((p) => {
+                // Backend emits real progress for mobys/ties/materials/
+                // normalmaps/textures. "animations" is cosmetic — anims are
+                // decoded inline during the mobys phase, so it flips done as
+                // soon as we've moved past mobys.
+                const realOrder = [
+                  "mobys",
+                  "ties",
+                  "materials",
+                  "normalmaps",
+                  "textures",
+                ];
+                const realIdx = realOrder.indexOf(cacheProgress.phase);
+                const cosmetic = p === "animations";
+                let state: "done" | "active" | "pending";
+                if (cosmetic) {
+                  state = realIdx >= realOrder.indexOf("ties") ? "done" : "pending";
+                } else {
+                  const myIdx = realOrder.indexOf(p);
+                  state =
+                    myIdx < realIdx ? "done" : myIdx === realIdx ? "active" : "pending";
+                }
                 return (
                   <div
                     key={p}

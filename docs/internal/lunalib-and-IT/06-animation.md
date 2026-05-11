@@ -8,7 +8,7 @@ Source: `crates/lunalib/src/animation.rs`.
 |---|---|---|---|
 | V2 | `animsets.dat` (each animset = one IGHW file) | by animset hash + clip index | `decode_clips_for_moby` (cache.rs) |
 | RFOM | inline inside `ps3levelmain.dat`, per-moby offset list | by absolute byte offset | `decode_clips_for_moby_inline("ps3levelmain.dat")` |
-| TOD | inline inside `main.dat` | unsolved — currently disabled, always returns T-pose | `decode_clips_for_moby_inline("main.dat")` early-returns `[]` |
+| TOD | inline inside `main.dat` | per-moby offset list, partial decoder | `decode_clips_for_moby_inline("main.dat")` — see "TOD pair-frame" below |
 
 The header / control / per-frame track decoder below is shared between
 V2 and RFOM. Only the *addressing* differs — RFOM mobys carry a list
@@ -16,11 +16,28 @@ of absolute offsets into `ps3levelmain.dat` instead of an animset
 hash, so the inline path opens the per-engine `.dat` and seeks to
 each offset before running the same decode logic.
 
-TOD is the holdout. Its per-frame track format doesn't match the V2
-or RFOM layout (frame strides have wildly inconsistent sparse
-patterns), neither IT nor ReLunacy implement it, and four candidate
-hypotheses are open in memory (`project_tod_anim_format`). Until one
-lands, TOD mobys export at their bind pose.
+## TOD pair-frame encoding (partial)
+
+Neither IT (`Version::TOD` exists in the enum but has no decoder
+module) nor ReLunacy (no animation code at all) supports TOD anims.
+This project RE'd one of the two TOD encodings from raw bytes:
+
+- **Simple anims** (`num_8bit_tracks == 0` AND `frame_stride ==
+  min_data_size`): TOD stores keyframes as **(zero-filler,
+  real-data) pairs** at half the apparent rate. To decode we offset
+  `frames_ptr` by one stride, double the stride, halve `num_frames`
+  and `frame_rate`, then run the standard IT-style decoder. Example:
+  `animate_spin` (4 bones, 6 rotation tracks, 8001 disk frames → 4000
+  real keyframes at 15 fps).
+- **Complex anims** (`num_8bit_tracks > 0`): the per-frame i8 delta
+  track encoding remains unsolved. Applying the IT-style decoder
+  produces wildly distorted bones radiating from origin. Until this
+  is cracked, all TOD anims with `n8 > 0` skip decode and the
+  character renders the bind pose. Probe scaffold logs
+  `[tod-anim] T-POSE moby_XXXX 'anim_name' n16=N n8=N ...`.
+
+See memory `project_tod_anim_format` for the RE state and the byte
+dumps that led to the pair-frame discovery.
 
 ## The animset → clips relationship (V2)
 
@@ -100,6 +117,18 @@ gltf-validator caught it as `ACCESSOR_INVALID_FLOAT`.
 
 We guard against shifts ≥ 15 to avoid `0x8000 >> 15 = 1` then divide-by-1
 producing huge multipliers; in practice valid skeletons have small shifts.
+
+**RFOM viseme rigs** (soldier / cartwright / Winters head rigs — 14 of
+them per typical level) ship with a raw `translationShift = 0x0103` that
+doesn't fit either the raw or byte-swapped 0..15 range. The recovery
+chain (in `skeleton.rs::recover_shift`) falls through to
+`swapped & 0x1F`, which mirrors what IT's effective behaviour on x86
+ends up being (the `SHR` instruction masks the count to 5 bits). For
+the viseme rigs this yields shift = 1 → `pos_scale = 1/16384`, giving
+sensible head-bone translation magnitudes. Without this mask the
+animations decoded with `pos_scale = 1/32768` (3× too small) and the
+viseme bones visibly collapsed to origin during playback. See chapter
+[03 — Skeleton & bind matrices](03-skeleton.md#the-byte-order-quirk).
 
 ## Decode flow
 

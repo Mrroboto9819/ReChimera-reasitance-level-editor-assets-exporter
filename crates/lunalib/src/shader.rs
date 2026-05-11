@@ -69,10 +69,47 @@ fn parse_shader<R: Read + Seek>(ig: &mut IgFile<R>, tuid: u64) -> Result<ShaderI
     };
 
     let base = u64::from(refs.offset);
+    let section_len = refs.length;
     ig.stream.seek_to(base + 0x10)?;
     let albedo = ig.stream.read_u32()?;
     let normal = ig.stream.read_u32()?;
     let expensive = ig.stream.read_u32()?;
+
+    if std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static FIRED: AtomicUsize = AtomicUsize::new(0);
+        let n = FIRED.fetch_add(1, Ordering::Relaxed);
+        if n < 3 {
+            let take = (section_len as usize).min(0x80);
+            ig.stream.seek_to(base)?;
+            let mut bytes = vec![0u8; take];
+            for b in bytes.iter_mut() {
+                *b = ig.stream.read_u8().unwrap_or(0);
+            }
+            let mut hex = String::new();
+            for (i, b) in bytes.iter().enumerate() {
+                if i % 16 == 0 && i > 0 {
+                    hex.push('\n');
+                    hex.push_str("            ");
+                }
+                hex.push_str(&format!("{:02X} ", b));
+            }
+            let mut u32s = String::new();
+            for i in 0..(take / 4) {
+                let off = i * 4;
+                let v = u32::from_be_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]);
+                if i % 4 == 0 && i > 0 {
+                    u32s.push('\n');
+                    u32s.push_str("            ");
+                }
+                u32s.push_str(&format!("+0x{:02X}=0x{:08X} ", off, v));
+            }
+            eprintln!(
+                "[shader-probe] tuid=0x{:016X} 0x5D00 length={} take={}\n  raw: {}\n  u32 BE: {}",
+                tuid, section_len, take, hex, u32s
+            );
+        }
+    }
 
     Ok(ShaderInfo {
         tuid,

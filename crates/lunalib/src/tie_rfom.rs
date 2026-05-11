@@ -61,6 +61,18 @@ pub fn read_tie_assets_rfom<F>(level_folder: &Path, mut on_each: F) -> Result<()
 where
     F: FnMut(TieAsset),
 {
+    read_tie_assets_rfom_with_total(level_folder, |_| {}, |a| on_each(a))
+}
+
+pub fn read_tie_assets_rfom_with_total<T, F>(
+    level_folder: &Path,
+    mut on_total: T,
+    mut on_each: F,
+) -> Result<()>
+where
+    T: FnMut(usize),
+    F: FnMut(TieAsset),
+{
     let main_path = level_folder.join("ps3levelmain.dat");
     let mut main_ig = IgFile::open(BufReader::new(File::open(&main_path)?))?;
 
@@ -96,7 +108,10 @@ where
         .ok_or(Error::SectionNotFound(SECT_LEVEL_INDEX_BUFFER))?;
 
     let count = tie_section.count as usize;
-    eprintln!("[rfom] ties section: {count} ties");
+    on_total(count);
+    if std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+        eprintln!("[rfom] ties section: {count} ties");
+    }
     for i in 0..count {
         let header_off = u64::from(tie_section.offset) + (i as u64) * RFOM_TIE_HEADER_SIZE;
         match parse_one(
@@ -195,6 +210,8 @@ fn parse_one<R1: Read + Seek, R2: Read + Seek>(
 
         let mut positions: Vec<f32> = Vec::with_capacity(vertex_count as usize * 3);
         let mut uvs: Vec<f32> = Vec::with_capacity(vertex_count as usize * 2);
+        let mut min_xyz = [f32::INFINITY; 3];
+        let mut max_xyz = [f32::NEG_INFINITY; 3];
         for k in 0..(vertex_count as usize) {
             let v_off = k * RFOM_TIE_VERTEX_STRIDE;
             let raw_x = i16::from_be_bytes([vertex_block[v_off], vertex_block[v_off + 1]]) as f32;
@@ -202,9 +219,24 @@ fn parse_one<R1: Read + Seek, R2: Read + Seek>(
                 i16::from_be_bytes([vertex_block[v_off + 2], vertex_block[v_off + 3]]) as f32;
             let raw_z =
                 i16::from_be_bytes([vertex_block[v_off + 4], vertex_block[v_off + 5]]) as f32;
-            positions.push(raw_x);
-            positions.push(raw_y);
-            positions.push(raw_z);
+            // IT `levelmain/extract.cpp:693`:
+            //   `AttributeMul attributeMul{tie.meshScale * 0x7fff}`
+            // applied via R16G16B16A16 NORM, i.e.
+            //   world_local = (raw_i16 / 32767) * (meshScale * 32767)
+            //              = raw_i16 * meshScale  (per-axis)
+            // `meshScale` is the `Vector meshScale` at `+0x20..+0x2C`.
+            let x = raw_x * scale_x;
+            let y = raw_y * scale_y;
+            let z = raw_z * scale_z;
+            positions.push(x);
+            positions.push(y);
+            positions.push(z);
+            if x < min_xyz[0] { min_xyz[0] = x; }
+            if x > max_xyz[0] { max_xyz[0] = x; }
+            if y < min_xyz[1] { min_xyz[1] = y; }
+            if y > max_xyz[1] { max_xyz[1] = y; }
+            if z < min_xyz[2] { min_xyz[2] = z; }
+            if z > max_xyz[2] { max_xyz[2] = z; }
 
             let uv_base = v_off + 0x08;
             let u = half_to_f32(u16::from_be_bytes([
@@ -217,6 +249,14 @@ fn parse_one<R1: Read + Seek, R2: Read + Seek>(
             ]));
             uvs.push(u);
             uvs.push(v);
+        }
+
+        if header_off < 0x100000 && m < 2 {
+            eprintln!(
+                "[rfom-tie-mesh] tie@0x{header_off:X} mesh[{m}] scale=({:.4}, {:.4}, {:.4}) verts={vertex_count} idx={index_count} local_aabb=[{:.2}..{:.2}, {:.2}..{:.2}, {:.2}..{:.2}]",
+                scale_x, scale_y, scale_z,
+                min_xyz[0], max_xyz[0], min_xyz[1], max_xyz[1], min_xyz[2], max_xyz[2],
+            );
         }
 
         meshes.push(TieMeshGeom {

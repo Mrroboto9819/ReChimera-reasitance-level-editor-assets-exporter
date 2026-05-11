@@ -26,6 +26,39 @@ pub const SECT_SOUND_STREAMS: u32 = SECT_SOUND_STREAMS_V1;
 pub const SECT_SOUND_NAMES: u32 = SECT_SOUND_NAMES_V1;
 pub const SECT_SOUNDS: u32 = SECT_SOUNDS_V1;
 
+use std::cell::Cell;
+
+thread_local! {
+    static SCREAM_DIAG_FIRED: Cell<bool> = const { Cell::new(false) };
+    static SCREAM_ENTRY_DIAG_FIRED: Cell<bool> = const { Cell::new(false) };
+    static SCREAM_GAIN_DIAG_FIRED: Cell<bool> = const { Cell::new(false) };
+    static SCREAM_WAVE_DIAG_FIRED: Cell<bool> = const { Cell::new(false) };
+    static SCREAM_RESULT_DIAG_FIRED: Cell<bool> = const { Cell::new(false) };
+}
+
+pub fn reset_scream_diag() {
+    SCREAM_DIAG_FIRED.with(|c| c.set(false));
+    SCREAM_ENTRY_DIAG_FIRED.with(|c| c.set(false));
+    SCREAM_GAIN_DIAG_FIRED.with(|c| c.set(false));
+    SCREAM_WAVE_DIAG_FIRED.with(|c| c.set(false));
+    SCREAM_RESULT_DIAG_FIRED.with(|c| c.set(false));
+}
+
+fn scream_diag(args: std::fmt::Arguments) {
+    SCREAM_DIAG_FIRED.with(|c| {
+        if !c.replace(true) {
+            eprintln!("[scream] {}", args);
+        }
+    });
+}
+fn scream_entry_diag(args: std::fmt::Arguments) {
+    SCREAM_ENTRY_DIAG_FIRED.with(|c| {
+        if !c.replace(true) {
+            eprintln!("[scream-entry] {}", args);
+        }
+    });
+}
+
 
 #[derive(Debug, Clone, Copy)]
 pub struct SoundIds {
@@ -303,26 +336,113 @@ pub fn list_sounds<R: Read + Seek>(ig: &mut IgFile<R>) -> Result<Vec<SoundSummar
 pub fn extract_bank_sounds<R: Read + Seek>(
     ig: &mut IgFile<R>,
 ) -> Result<Vec<ExtractedSound>> {
+    if ig.section(SECT_SOUNDS_V2).is_some() {
+        extract_bank_sounds_v2(ig)
+    } else {
+        extract_bank_sounds_v1(ig)
+    }
+}
+
+pub fn extract_bank_sounds_for_file<R: Read + Seek>(
+    ig: &mut IgFile<R>,
+    filename: &str,
+) -> Result<Vec<ExtractedSound>> {
+    let lower = filename.to_ascii_lowercase();
+    let prefer_v1 =
+        lower.starts_with("ps3sound") || lower.starts_with("ps3dialogue");
+    let primary = if prefer_v1 {
+        extract_bank_sounds_v1(ig)
+    } else {
+        extract_bank_sounds_v2(ig)
+    };
+    if let Ok(ref out) = primary {
+        if !out.is_empty() {
+            return primary;
+        }
+    }
+    let fallback = if prefer_v1 {
+        extract_bank_sounds_v2(ig)
+    } else {
+        extract_bank_sounds_v1(ig)
+    };
+    if let Ok(ref out) = fallback {
+        if !out.is_empty() {
+            eprintln!(
+                "[scream] {} fell through {} primary path; using {} fallback ({} sounds)",
+                filename,
+                if prefer_v1 { "V1" } else { "V2" },
+                if prefer_v1 { "V2" } else { "V1" },
+                out.len()
+            );
+            return fallback;
+        }
+    }
+    primary
+}
+
+fn extract_bank_sounds_v2<R: Read + Seek>(
+    ig: &mut IgFile<R>,
+) -> Result<Vec<ExtractedSound>> {
+    extract_bank_sounds_with_offset(ig, 144, GainBase::BankData)
+}
+
+fn extract_bank_sounds_v1<R: Read + Seek>(
+    ig: &mut IgFile<R>,
+) -> Result<Vec<ExtractedSound>> {
+    extract_bank_sounds_with_offset(ig, 144, GainBase::BankGainsArray)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum GainBase {
+    BankData,
+    BankGainsArray,
+}
+
+fn extract_bank_sounds_with_offset<R: Read + Seek>(
+    ig: &mut IgFile<R>,
+    header_skip: u64,
+    gain_base: GainBase,
+) -> Result<Vec<ExtractedSound>> {
     let ids = detect_sound_ids(ig);
+    eprintln!(
+        "[scream-step] entry: header_skip={} gain_base={:?} ids={{bank=0x{:X} names=0x{:X} sounds=0x{:X}}} all_sections={:?}",
+        header_skip,
+        gain_base,
+        ids.bank, ids.names, ids.sounds,
+        ig.sections.iter().map(|s| format!("0x{:X}@0x{:X}+{}", s.id, s.offset, s.length)).collect::<Vec<_>>()
+    );
     let bank_section = match ig.section(ids.bank) {
         Some(s) => s,
-        None => return Ok(Vec::new()),
+        None => {
+            scream_diag(format_args!("missing 0x{:X} SoundBank", ids.bank));
+            return Ok(Vec::new());
+        }
     };
     let names_section = match ig.section(ids.names) {
         Some(s) => s,
-        None => return Ok(Vec::new()),
+        None => {
+            scream_diag(format_args!("missing 0x{:X} names", ids.names));
+            return Ok(Vec::new());
+        }
     };
     let sounds_section = match ig.section(ids.sounds) {
         Some(s) => s,
-        None => return Ok(Vec::new()),
+        None => {
+            scream_diag(format_args!("missing 0x{:X} sounds", ids.sounds));
+            return Ok(Vec::new());
+        }
     };
 
 
     let bank_base = u64::from(bank_section.offset);
-    let header_base = bank_base + 144;
+    let header_base = bank_base + header_skip;
     ig.stream.seek_to(header_base + 4)?;
     let num_sections = ig.stream.read_u32()? as usize;
     if num_sections < 2 {
+        scream_diag(format_args!(
+            "header_skip={} → numSections={} (<2), bailing",
+            header_skip, num_sections
+        ));
         return Ok(Vec::new());
     }
     let bank_data_ptr_rel = u64::from(ig.stream.read_u32()?);
@@ -360,6 +480,41 @@ pub fn extract_bank_sounds<R: Read + Seek>(
         entries.push((kind, idx));
     }
 
+    let kind_zero_count = entries.iter().filter(|(k, _)| *k == 0).count();
+    let kind_nonzero_count = entries.len() - kind_zero_count;
+    let kind_sample: Vec<(u16, i16)> = entries.iter().take(8).copied().collect();
+
+    let bank_gains_pos = bank_data_pos + _bank_gains_ptr_rel;
+    let read_dump = |ig: &mut IgFile<R>, pos: u64, len: usize| -> String {
+        if ig.stream.seek_to(pos).is_err() {
+            return "(seek failed)".into();
+        }
+        match ig.stream.read_bytes(len) {
+            Ok(bytes) => bytes
+                .iter()
+                .map(|b| format!("{:02X}", b))
+                .collect::<Vec<_>>()
+                .join(" "),
+            Err(_) => "(read failed)".into(),
+        }
+    };
+    let bank_dump = read_dump(ig, bank_data_pos, 64);
+    let sounds_dump = read_dump(ig, bank_sounds_pos, 48);
+    let bank_gains_dump = read_dump(ig, bank_gains_pos, 32);
+
+    scream_diag(format_args!(
+        "header_skip={} bank_base=0x{:X} bank_data=0x{:X} data_data=0x{:X} \
+         bank_sounds=0x{:X} bank_gains=0x{:X} bank_gain_data=0x{:X} \
+         num_bank_sounds={} num_sounds={} kind=0:{} other:{} sample={:?}\n\
+         [scream]   bank_data+0..64: {}\n\
+         [scream]   sounds+0..48: {}\n\
+         [scream]   bank_gains+0..32: {}",
+        header_skip, bank_base, bank_data_pos, data_data_pos,
+        bank_sounds_pos, bank_gains_pos, bank_gain_data_pos,
+        num_bank_sounds, num_sounds, kind_zero_count, kind_nonzero_count, kind_sample,
+        bank_dump, sounds_dump, bank_gains_dump,
+    ));
+
     let mut out = Vec::new();
     for (i, (kind, idx)) in entries.iter().enumerate() {
         if *idx < 0 || *kind != 0 {
@@ -378,13 +533,21 @@ pub fn extract_bank_sounds<R: Read + Seek>(
         let _flags = ig.stream.read_u16()?;
         let gains_ptr_rel = u64::from(ig.stream.read_u32()?);
 
-        let sound_gains_pos = bank_data_pos + gains_ptr_rel;
+        let sound_gains_pos = match gain_base {
+            GainBase::BankData => bank_data_pos + gains_ptr_rel,
+            GainBase::BankGainsArray => bank_gains_pos + gains_ptr_rel,
+        };
 
 
         ig.stream.seek_to(u64::from(names_section.offset) + (i as u64) * 64)?;
         let name_buf = ig.stream.read_bytes(64)?;
         let nul = name_buf.iter().position(|b| *b == 0).unwrap_or(name_buf.len());
         let name = String::from_utf8_lossy(&name_buf[..nul]).into_owned();
+
+        scream_entry_diag(format_args!(
+            "first valid entry: i={} bank_idx={} name='{}' sound_off=0x{:X} num_gains={} gains_ptr_rel=0x{:X} sound_gains_pos=0x{:X}",
+            i, bank_idx, name, sound_off, num_gains, gains_ptr_rel, sound_gains_pos
+        ));
 
         for g in 0..num_gains {
 
@@ -393,6 +556,16 @@ pub fn extract_bank_sounds<R: Read + Seek>(
             let stream_offset = packed & 0x00FFFFFF;
             let gain_type = (packed >> 24) & 0xFF;
             let _ = ig.stream.read_u32()?;
+            if g == 0 {
+                SCREAM_GAIN_DIAG_FIRED.with(|c| {
+                    if !c.replace(true) {
+                        eprintln!(
+                            "[scream-gain] first gain: packed=0x{:08X} stream_offset=0x{:X} gain_type={} (skip if !=1)",
+                            packed, stream_offset, gain_type
+                        );
+                    }
+                });
+            }
             if gain_type != 1 {
                 continue;
             }
@@ -406,6 +579,14 @@ pub fn extract_bank_sounds<R: Read + Seek>(
             let wf_flags = ig.stream.read_u16()?;
             let wf_stream_offset = u64::from(ig.stream.read_u32()?);
             let wf_stream_size = ig.stream.read_u32()? as usize;
+            SCREAM_WAVE_DIAG_FIRED.with(|c| {
+                if !c.replace(true) {
+                    eprintln!(
+                        "[scream-wave] first waveform: wform_off=0x{:X} center_note={} center_fine={} wf_flags=0x{:04X} wf_stream_offset=0x{:X} wf_stream_size={}",
+                        wform_off, center_note, center_fine, wf_flags, wf_stream_offset, wf_stream_size
+                    );
+                }
+            });
             if wf_stream_size == 0 {
                 continue;
             }
@@ -448,6 +629,17 @@ pub fn extract_bank_sounds<R: Read + Seek>(
             });
         }
     }
+    SCREAM_RESULT_DIAG_FIRED.with(|c| {
+        if !c.replace(true) {
+            let first_3_names: Vec<String> = out.iter().take(3).map(|s| s.name.clone()).collect();
+            eprintln!(
+                "[scream-result] header_skip={} returned {} ExtractedSound items, first 3 names={:?}",
+                header_skip,
+                out.len(),
+                first_3_names
+            );
+        }
+    });
     Ok(out)
 }
 

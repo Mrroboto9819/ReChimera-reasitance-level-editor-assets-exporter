@@ -92,3 +92,25 @@ hierarchy's "Sounds" section lists every sound (from the bank's
 `SoundNames` table) plus a row per orphan stream entry found via
 brute-force header scan. Clicking a row plays it; the ⤓ button exports
 to WAV via the native save dialog.
+
+## SFX / Dialog / Music categorisation
+
+The `CacheLibraryModal` Sound tab adds **sub-tabs** above the playlist
+to filter by category. Classification lives in `api.ts::classifySound`
+and runs entirely on the source filename — works for all 4 supported
+games because Insomniac's naming is consistent across versions:
+
+| Pattern in `SoundEntry.source` | Category |
+|---|---|
+| contains `dialogue` or `voice` | **Dialog** |
+| contains `music` | **Music** |
+| anything else (typically `*sound*`) | **SFX** |
+
+Each sub-tab shows a count badge of how many entries fall into that
+category. The active filter is reflected in the playlist + the
+"Save N WAVs" batch button (so you can bulk-export e.g. all dialog
+files in one operation without dragging through a flat list).
+
+When the active sound entry falls out of the new filter (e.g. you had
+a Dialog selected, then switched to Music), the selection auto-clears
+to prevent a phantom "selected but invisible" state in the playlist.

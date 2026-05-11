@@ -123,6 +123,9 @@
     "subtitle": "Décodage des mobys, ties et textures dans _rechimera_cache/ — les GLB pré-cuits accélèrent les exports.",
     "phase_mobys": "Mobys",
     "phase_ties": "Ties",
+    "phase_materials": "Matériaux",
+    "phase_normalmaps": "Normal maps",
+    "phase_animations": "Animations",
     "phase_textures": "Textures",
     "hint": "Cela s'exécute en arrière-plan. Ne fermez pas l'application — la prochaine ouverture sera instantanée."
   },

@@ -365,6 +365,7 @@ fn emit_skin(
         name: Some("skeleton".into()),
         skeleton: None,
     });
+    let _ = resolved_parents;
     skin_idx
 }
 
@@ -461,6 +462,22 @@ fn push_submesh(
         let real_skin = !mesh.bone_indices.is_empty()
             && mesh.bone_weights.len() == mesh.bone_indices.len()
             && mesh.bone_indices.len() == vertex_count * 4;
+
+        let oversize = mesh.bone_indices.iter().filter(|&&v| v > 255).count();
+        if oversize > 0 && std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+            eprintln!(
+                "warn: [glb-skin] {} joint indices > 255 will be clamped (JOINTS_0 accessor is u8). \
+                 Rig has > 256 bones — accessor should switch to u16 component type.",
+                oversize,
+            );
+        }
+        if !real_skin {
+            eprintln!(
+                "warn: [glb-skin] mesh skinned=true but weights/indices not vertex-aligned \
+                 (verts={} bone_idx_len={} bone_wgt_len={}). Emitting bone0/weight=255 fallback.",
+                vertex_count, mesh.bone_indices.len(), mesh.bone_weights.len(),
+            );
+        }
 
         let joints_bytes = if real_skin {
             joints_u8_bytes(&mesh.bone_indices, vertex_count)
@@ -707,7 +724,7 @@ fn position_bounds(positions: &[f32]) -> ([f32; 3], [f32; 3]) {
     }
 }
 
-fn serialize_glb(root: &gltf_json::Root, bin: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn serialize_glb(root: &gltf_json::Root, bin: &[u8]) -> Result<Vec<u8>> {
     let json_string =
         serde_json::to_vec(root).map_err(|e| Error::GltfWrite(e.to_string()))?;
     let mut json_chunk = json_string;
@@ -754,7 +771,8 @@ fn emit_animations(
     bone_node_base: u32,
     bone_count: usize,
 ) {
-    for clip in clips {
+    let detail_log = std::env::var("RECHIMERA_LOG_ANIM_DETAIL").is_ok();
+    for (clip_idx, clip) in clips.iter().enumerate() {
         let dt = if clip.frame_rate > 0.0 {
             1.0 / clip.frame_rate
         } else {
@@ -785,8 +803,31 @@ fn emit_animations(
                 } else {
                     static_time_acc
                 };
+                // Quaternion double-cover fixup: q and -q represent the
+                // same rotation but linear interpolation between them
+                // sweeps through the singular point at the antipode,
+                // causing visible 180° flips ("shaking"). For every pair
+                // of consecutive keyframes, if dot(prev, curr) < 0 we
+                // negate curr so adjacent quats stay in the same
+                // hemisphere and Linear interpolation takes the short path.
+                let mut fixed = bone.rotations.clone();
+                let frames = fixed.len() / 4;
+                for f in 1..frames {
+                    let p = (f - 1) * 4;
+                    let c = f * 4;
+                    let dot = fixed[p] * fixed[c]
+                        + fixed[p + 1] * fixed[c + 1]
+                        + fixed[p + 2] * fixed[c + 2]
+                        + fixed[p + 3] * fixed[c + 3];
+                    if dot < 0.0 {
+                        fixed[c] = -fixed[c];
+                        fixed[c + 1] = -fixed[c + 1];
+                        fixed[c + 2] = -fixed[c + 2];
+                        fixed[c + 3] = -fixed[c + 3];
+                    }
+                }
                 let val_acc =
-                    push_vec4_f32_accessor(bin, accessors, views, &bone.rotations);
+                    push_vec4_f32_accessor(bin, accessors, views, &fixed);
                 let sampler_idx = samplers.len() as u32;
                 samplers.push(Sampler {
                     extensions: Default::default(),
@@ -873,6 +914,12 @@ fn emit_animations(
             }
         }
 
+        if detail_log {
+            eprintln!(
+                "[glb-anim] clip[{}] '{}' frames={} fps={:.1} channels={} samplers={} bones_used={}",
+                clip_idx, clip.name, clip.num_frames, clip.frame_rate, channels.len(), samplers.len(), bones_to_use,
+            );
+        }
         if !channels.is_empty() {
             animations.push(gltf_json::Animation {
                 channels,

@@ -23,6 +23,21 @@ const NAME_POINTER_SIZE: u64 = 0x10;
 const UFRAG_SIZE: u64 = 0x80;
 const UFRAG_VERTEX_STRIDE: usize = 0x18;
 
+/// IT's `RegionToGltf` (extract_gltf.cpp:881-884) decodes V2 region
+/// vertex positions as `R16G16B16A16_NORM`, then applies
+/// `world = normalized * mul + add` where:
+///   `mul = (0x7FFF / 0x100) * YARD_TO_M`
+///   `add = (item.position / 0x100) * YARD_TO_M`
+///
+/// Algebraically that simplifies to
+/// `world_xyz = (raw_i16 + position_xyz) * YARD_TO_M / 256`.
+/// `YARD_TO_M = 0.9144`, divisor = 256.
+///
+/// This V2 path serves R2 / R3 / RCFFA / A4O. RFOM uses
+/// `region_rfom.rs` which intentionally does NOT scale (raw values
+/// match the moby/tie placement unit system on that game).
+const UFRAG_VERTEX_SCALE: f32 = 0.9144 / 256.0;
+
 #[derive(Debug, Clone)]
 pub struct Zone {
 
@@ -237,8 +252,13 @@ fn parse_ufrags<R: Read + Seek>(zone: &mut IgFile<R>) -> Result<Vec<UFrag>> {
         let tuid = zone.stream.read_u64()?;
 
         zone.stream.seek_to(base + 0x30)?;
-        let position = zone.stream.read_vec3()?;
-        let radius = zone.stream.read_f32()?;
+        let position_raw = zone.stream.read_vec3()?;
+        let position = [
+            position_raw[0] * UFRAG_VERTEX_SCALE,
+            position_raw[1] * UFRAG_VERTEX_SCALE,
+            position_raw[2] * UFRAG_VERTEX_SCALE,
+        ];
+        let radius = zone.stream.read_f32()? * UFRAG_VERTEX_SCALE;
 
         zone.stream.seek_to(base + 0x40)?;
         let index_offset = zone.stream.read_u32()?;
@@ -291,9 +311,12 @@ fn decode_ufrag_mesh(
         let mut uvs = Vec::with_capacity((vertex_count as usize) * 2);
         for k in 0..(vertex_count as usize) {
             let base = v_start + k * UFRAG_VERTEX_STRIDE;
-            let x = i16::from_be_bytes([vertex_buf[base], vertex_buf[base + 1]]) as f32;
-            let y = i16::from_be_bytes([vertex_buf[base + 2], vertex_buf[base + 3]]) as f32;
-            let z = i16::from_be_bytes([vertex_buf[base + 4], vertex_buf[base + 5]]) as f32;
+            let x = i16::from_be_bytes([vertex_buf[base], vertex_buf[base + 1]]) as f32
+                * UFRAG_VERTEX_SCALE;
+            let y = i16::from_be_bytes([vertex_buf[base + 2], vertex_buf[base + 3]]) as f32
+                * UFRAG_VERTEX_SCALE;
+            let z = i16::from_be_bytes([vertex_buf[base + 4], vertex_buf[base + 5]]) as f32
+                * UFRAG_VERTEX_SCALE;
             positions.push(x);
             positions.push(y);
             positions.push(z);

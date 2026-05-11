@@ -1,11 +1,11 @@
 import { RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { ViewSettings } from "./Viewport";
+import type { BooleanViewSetting, ViewSettings } from "./Viewport";
 import { IconButton } from "../ui";
 
 interface ToolbarProps {
   view: ViewSettings;
-  onToggle: (key: keyof ViewSettings) => void;
+  onToggle: (key: BooleanViewSetting) => void;
   hasLevel: boolean;
   info?: string;
   modifiedCount: number;

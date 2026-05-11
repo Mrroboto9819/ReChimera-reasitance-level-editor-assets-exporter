@@ -36,7 +36,9 @@ export function ExportOptionsModal({
   assetName,
   hasSkeleton,
   primaryAnimsetHash,
-  initialExtraPicks,
+  // initialExtraPicks intentionally unused — animations always start
+  // unselected, see the listAnimsets effect below.
+  initialExtraPicks: _initialExtraPicks,
   onClose,
   onExported,
 }: ExportOptionsModalProps) {
@@ -69,30 +71,14 @@ export function ExportOptionsModal({
     listAnimsets(folder)
       .then((list) => {
         setAnimsets(list);
-        const init: Record<string, PerAnimsetSelection> = {};
-        if (primaryAnimsetHash) {
-          const primary = list.find(
-            (s) => s.hash.toLowerCase() === primaryAnimsetHash.toLowerCase(),
-          );
-          if (primary) {
-            init[primary.hash] = {
-              hash: primary.hash,
-              pickedIndices: new Set(primary.clips.map((_, i) => i)),
-            };
-          }
-        }
-        if (initialExtraPicks) {
-          for (const [hash, indices] of Object.entries(initialExtraPicks)) {
-            const cur =
-              init[hash] ?? { hash, pickedIndices: new Set<number>() };
-            for (const i of indices) cur.pickedIndices.add(i);
-            init[hash] = cur;
-          }
-        }
-        setPicks(init);
+        // Start with no animation clips selected. The user explicitly
+        // ticks the ones they want included in the export — avoids
+        // accidentally bloating GLBs with the asset's full animset
+        // when they only wanted geometry.
+        setPicks({});
       })
       .catch((e) => setAnimsetsError(`${e}`));
-  }, [open, folder, animsets, primaryAnimsetHash, initialExtraPicks]);
+  }, [open, folder, animsets]);
 
   const totalClipsPicked = useMemo(() => {
     return Object.values(picks).reduce(
