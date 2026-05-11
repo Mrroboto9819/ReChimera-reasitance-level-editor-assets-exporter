@@ -76,15 +76,15 @@ pub use skybox_rfom::{
     read_skybox_rfom, write_skybox_glb, write_skybox_obj, write_skybox_ply, SkyboxMesh,
 };
 pub use rfom_probe::probe_rfom_unknowns;
-pub use moby_old::read_moby_assets_old;
-pub use moby_rfom::read_moby_assets_rfom;
+pub use moby_old::{read_moby_assets_old, read_moby_assets_old_with_total};
+pub use moby_rfom::{read_moby_assets_rfom, read_moby_assets_rfom_with_total};
 pub use shader_old::read_shaders_old;
 pub use shader_rfom::read_shaders_rfom;
 pub use texture::decode_format;
 pub use texture_old::{read_textures_old, texture_to_png};
 pub use texture_rfom::{read_textures_rfom, texture_rfom_to_png};
-pub use tie_old::read_tie_assets_old;
-pub use tie_rfom::read_tie_assets_rfom;
+pub use tie_old::{read_tie_assets_old, read_tie_assets_old_with_total};
+pub use tie_rfom::{read_tie_assets_rfom, read_tie_assets_rfom_with_total};
 pub use zone_old::read_zones_old;
 pub use region_rfom::read_regions_rfom;
 pub use shader::{read_shaders, ShaderInfo};

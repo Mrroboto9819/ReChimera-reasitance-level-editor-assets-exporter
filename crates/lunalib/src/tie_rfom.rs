@@ -61,6 +61,18 @@ pub fn read_tie_assets_rfom<F>(level_folder: &Path, mut on_each: F) -> Result<()
 where
     F: FnMut(TieAsset),
 {
+    read_tie_assets_rfom_with_total(level_folder, |_| {}, |a| on_each(a))
+}
+
+pub fn read_tie_assets_rfom_with_total<T, F>(
+    level_folder: &Path,
+    mut on_total: T,
+    mut on_each: F,
+) -> Result<()>
+where
+    T: FnMut(usize),
+    F: FnMut(TieAsset),
+{
     let main_path = level_folder.join("ps3levelmain.dat");
     let mut main_ig = IgFile::open(BufReader::new(File::open(&main_path)?))?;
 
@@ -96,6 +108,7 @@ where
         .ok_or(Error::SectionNotFound(SECT_LEVEL_INDEX_BUFFER))?;
 
     let count = tie_section.count as usize;
+    on_total(count);
     if std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
         eprintln!("[rfom] ties section: {count} ties");
     }

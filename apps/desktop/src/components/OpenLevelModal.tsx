@@ -14,7 +14,7 @@ interface OpenLevelModalProps {
   onOpen: (folderPath: string) => void;
 }
 
-type GameId = "r1" | "r2" | "r3" | "rc_tod" | "rc_ffa" | "rc_a4o";
+type GameId = "r1" | "r2" | "r3" | "rc_tod" | "rc_acit" | "rc_ffa" | "rc_a4o";
 type Step = "game" | "source" | "psarc" | "folder";
 
 interface PsarcExtractStatus {
@@ -55,7 +55,7 @@ const GAMES: GameSpec[] = [
     franchise: "resistance",
     supported: true,
     logoSrc: "/RFOM.webp",
-    byline: "Tested ✓ — meshes, textures, materials, skeletons, animations.",
+    byline: "Full pipeline: meshes, textures, skeletons, animations, ufrags, ties, foliage, shrubs, details, skybox dome, sounds, visemes.",
     entryFile: "ps3levelmain.dat",
     hint: "RFOM ships `game.psarc` archives — extract them first with PSARC tooling so you get the loose file tree (e.g. `extract_psarc.cmd` from the InsomniaToolset bundle, or any PSARC unpacker). Once unpacked, levels live in `<game>/PS3_GAME/USRDIR/packed/levels/<levelN>/`. Pick a folder that contains `ps3levelmain.dat` plus its siblings (`ps3leveltexs.dat`, `ps3levelverts.dat`, `ps3levelcoll.dat`, …). Note: some level folders (e.g. `level22`) only ship dialogue/sound and are NOT playable on their own.",
     capabilities: {
@@ -72,7 +72,7 @@ const GAMES: GameSpec[] = [
     franchise: "resistance",
     supported: true,
     logoSrc: "/Resistance_2.webp",
-    byline: "Tested ✓ — full support: meshes, textures, materials, skeletons, animations.",
+    byline: "Stable end-to-end: meshes, textures, materials, skeletons, animations, ufrags, sounds (SFX / Dialog / Music).",
     entryFile: "assetlookup.dat",
     hint: "R2 levels are V2 layout — assetlookup.dat plus mobys.dat / ties.dat / shaders.dat / textures.dat / highmips.dat / animsets.dat / zones.dat side-by-side.",
     capabilities: {
@@ -89,7 +89,7 @@ const GAMES: GameSpec[] = [
     franchise: "resistance",
     supported: true,
     logoSrc: "/Resistance_3.png",
-    byline: "Tested ✓ — full support: meshes, textures, materials, skeletons, animations.",
+    byline: "Stable end-to-end: meshes, textures, materials, skeletons, animations, ufrags, sounds (SFX / Dialog / Music).",
     entryFile: "assetlookup.dat",
     hint: "R3 levels are V2 layout — same sibling .dat set as R2.",
     capabilities: {
@@ -106,7 +106,7 @@ const GAMES: GameSpec[] = [
     franchise: "ratchet_clank",
     supported: true,
     logoSrc: "/R&C_FTD.webp",
-    byline: "Meshes, textures, materials and skeletons supported. Animations export in T-pose only — frame format unsolved.",
+    byline: "Meshes, textures, materials, skeletons, ufrags and tie instances load. Animations export in T-pose (complex frame format unsolved). No skybox — no IT/ReLunacy reference.",
     entryFile: "main.dat",
     hint: "ToD levels are TOD layout — main.dat embeds asset tables, with vertices.dat / textures.dat / texstream.dat / system.tp / system.tph as siblings. There is no assetlookup.dat.",
     capabilities: {
@@ -117,13 +117,30 @@ const GAMES: GameSpec[] = [
     },
   },
   {
+    id: "rc_acit",
+    label: "Ratchet & Clank Future: A Crack in Time",
+    short: "R&C ACiT",
+    franchise: "ratchet_clank",
+    supported: false,
+    logoSrc: "/R&Clank_A_Crack_in_Time.png",
+    byline: "Not yet supported. Same TOD-era engine family as Tools of Destruction; parser path not investigated yet.",
+    entryFile: "main.dat",
+    hint: "A Crack in Time is on the same engine generation as Tools of Destruction. The TOD parser path would be the starting point, but it has not been tested against ACiT assets yet.",
+    capabilities: {
+      meshes: "missing",
+      textures: "missing",
+      armatures: "missing",
+      animations: "missing",
+    },
+  },
+  {
     id: "rc_ffa",
     label: "Ratchet & Clank: Full Frontal Assault",
     short: "R&C FFA",
     franchise: "ratchet_clank",
     supported: true,
     logoSrc: "/R&C_FA.png",
-    byline: "V2 layout (same family as R2/R3). Meshes, textures, skeletons and animations work; some textures may render as placeholders.",
+    byline: "V2 layout (same family as R2/R3). Meshes, skeletons and animations work; a few textures may still render as placeholders.",
     entryFile: "assetlookup.dat",
     hint: "FFA levels are V2 layout — same sibling .dat set as R2 / R3.",
     capabilities: {
@@ -140,7 +157,7 @@ const GAMES: GameSpec[] = [
     franchise: "ratchet_clank",
     supported: true,
     logoSrc: "/maxresdefault.jpg",
-    byline: "V2 layout. Meshes, textures, materials, skeletons and animations all working.",
+    byline: "V2 layout. Meshes, textures, materials, skeletons, animations and sounds all working.",
     entryFile: "assetlookup.dat",
     hint: "All 4 One levels use V2 layout — assetlookup.dat plus mobys.dat / ties.dat / shaders.dat / textures.dat / highmips.dat / animsets.dat / zones.dat side-by-side. Same as R2/R3/FFA.",
     capabilities: {

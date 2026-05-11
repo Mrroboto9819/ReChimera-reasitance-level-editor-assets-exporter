@@ -152,16 +152,29 @@ pub fn read_skeleton_at<R: Read + Seek>(
         return Ok(None);
     }
 
-    if (scale_shift_raw > 15 && scale_shift_raw.swap_bytes() > 15
-        || translation_shift_raw > 15 && translation_shift_raw.swap_bytes() > 15)
-        && std::env::var("RECHIMERA_LOG_PROBES").is_ok()
-    {
-        eprintln!(
-            "[skel-shift] hdr=0x{:X} bones={} viseme-rig: raw {:#06X}/{:#06X} → swap & 0x1F = {}/{} \
-             (matching IT's x86 SHR mask). pos_scale = 1/(0x8000 >> {}).",
-            header_off, num_bones, scale_shift_raw, translation_shift_raw,
-            scale_shift, translation_shift, translation_shift,
-        );
+    // Log every DISTINCT (scale_raw, trans_raw) combination once per
+    // process so we can see which skeletons trigger the viseme-style
+    // quirk vs which use normal shifts. Helps distinguish "normal"
+    // rigs from outliers that need different handling.
+    if std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
+        use std::sync::Mutex;
+        static SEEN_SHIFTS: Mutex<Option<std::collections::HashSet<u32>>> = Mutex::new(None);
+        let key = ((scale_shift_raw as u32) << 16) | (translation_shift_raw as u32);
+        let mut guard = SEEN_SHIFTS.lock().unwrap();
+        let set = guard.get_or_insert_with(std::collections::HashSet::new);
+        if set.insert(key) && set.len() <= 20 {
+            let viseme = scale_shift_raw > 15 && scale_shift_raw.swap_bytes() > 15
+                || translation_shift_raw > 15 && translation_shift_raw.swap_bytes() > 15;
+            eprintln!(
+                "[skel-shift] hdr=0x{:X} bones={} raw=(scale {:#06X}, trans {:#06X}) recovered=(scale {}, trans {}) pos_scale=1/{} scale_scale=1/{} {}",
+                header_off, num_bones,
+                scale_shift_raw, translation_shift_raw,
+                scale_shift, translation_shift,
+                if (translation_shift as u32) < 15 { (0x8000u32 >> translation_shift) as i64 } else { 32768 },
+                if (scale_shift as u32) < 15 { (0x8000u32 >> scale_shift) as i64 } else { 32768 },
+                if viseme { "[VISEME-STYLE]" } else { "" }
+            );
+        }
     }
 
     let mut bones = Vec::with_capacity(num_bones);

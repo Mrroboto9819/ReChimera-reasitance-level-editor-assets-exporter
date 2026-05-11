@@ -464,7 +464,7 @@ fn push_submesh(
             && mesh.bone_indices.len() == vertex_count * 4;
 
         let oversize = mesh.bone_indices.iter().filter(|&&v| v > 255).count();
-        if oversize > 0 {
+        if oversize > 0 && std::env::var("RECHIMERA_LOG_PROBES").is_ok() {
             eprintln!(
                 "warn: [glb-skin] {} joint indices > 255 will be clamped (JOINTS_0 accessor is u8). \
                  Rig has > 256 bones — accessor should switch to u16 component type.",
@@ -803,8 +803,31 @@ fn emit_animations(
                 } else {
                     static_time_acc
                 };
+                // Quaternion double-cover fixup: q and -q represent the
+                // same rotation but linear interpolation between them
+                // sweeps through the singular point at the antipode,
+                // causing visible 180° flips ("shaking"). For every pair
+                // of consecutive keyframes, if dot(prev, curr) < 0 we
+                // negate curr so adjacent quats stay in the same
+                // hemisphere and Linear interpolation takes the short path.
+                let mut fixed = bone.rotations.clone();
+                let frames = fixed.len() / 4;
+                for f in 1..frames {
+                    let p = (f - 1) * 4;
+                    let c = f * 4;
+                    let dot = fixed[p] * fixed[c]
+                        + fixed[p + 1] * fixed[c + 1]
+                        + fixed[p + 2] * fixed[c + 2]
+                        + fixed[p + 3] * fixed[c + 3];
+                    if dot < 0.0 {
+                        fixed[c] = -fixed[c];
+                        fixed[c + 1] = -fixed[c + 1];
+                        fixed[c + 2] = -fixed[c + 2];
+                        fixed[c + 3] = -fixed[c + 3];
+                    }
+                }
                 let val_acc =
-                    push_vec4_f32_accessor(bin, accessors, views, &bone.rotations);
+                    push_vec4_f32_accessor(bin, accessors, views, &fixed);
                 let sampler_idx = samplers.len() as u32;
                 samplers.push(Sampler {
                     extensions: Default::default(),

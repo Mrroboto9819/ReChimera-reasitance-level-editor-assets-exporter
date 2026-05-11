@@ -186,3 +186,29 @@ All three flow through `tie_assets_for_glb` in the cache and pop out
 in the manifest as their own kinds (`detail`, `shrub`, `foliage`). See
 [chapter 10 — Vegetation & sky](10-vegetation-and-sky.md) for the
 struct layouts and the IT `ShrubsToGltf` / `FoliageToGltf` references.
+
+## TOD tie quirks (RE'd from `stratus city`)
+
+Two TOD-specific issues in `tie_old.rs` worth noting:
+
+1. **`vbuf_size` is wildly over-allocated** in the header. For many
+   ties past index 80 it claims 8-20 MB of vertex data when the
+   actual per-tie data is ~100 KB — the read overruns `vertices.dat`
+   and fails with `io: failed to fill whole buffer`. Fix: pre-walk
+   the per-mesh structs to compute `max_v_local_end` (largest
+   `vertex_index + vertex_count` * stride), then slurp only that
+   much. Same pattern `moby_old.rs::parse_one` already uses.
+2. **Per-axis vertex scale required.** Each `OldTie` header has a
+   `Vector3 scale` at `+0x20`. Per-vertex positions must be
+   multiplied by this per-axis (`x * scale[0], y * scale[1], z *
+   scale[2]`) per ReLunacy `Tie.cs:93-95`. Without it, raw `i16`
+   positions produce 30 km buildings. Some ties have `scale =
+   (0,0,0)` — those are placeholder/dummy entries and correctly
+   collapse to origin (matching ReLunacy's behaviour).
+
+`OldTieInstance` placements live in `main.dat:0x9240` (0x80 per
+record). Matrix at `+0x00..+0x40` (row-major, decompose to TRS);
+tie key at `+0x50` is the byte offset of the matching `OldTie`
+header in `main.dat`, which is what `tie_old::TieAsset.tuid`
+carries on the TOD path. Linking instance → prototype is therefore
+a direct lookup by `tuid`.

@@ -103,8 +103,8 @@ matching parser family. The three layouts are:
 | Layout | Marker file | Shaders | Mobys | Textures | Anims |
 |---|---|---|---|---|---|
 | `V2` | `assetlookup.dat` | `read_shaders` | `read_moby_assets_with_total` | `bulk_extract_pngs` | animset-based (`decode_clips_for_moby`) |
-| `Rfom` | `ps3levelmain.dat` | `read_shaders_rfom` | `read_mobys_rfom` (inside `ps3levelmain.dat`) | `read_textures_rfom` | inline offsets (`decode_clips_for_moby_inline`) |
-| `Tod` | `main.dat` | `read_shaders_old` | `read_mobys_old` (inside `main.dat`) | `read_textures_old` | currently disabled — `decode_clips_for_moby_inline` early-returns for TOD because the per-frame format is unsolved (T-pose only) |
+| `Rfom` | `ps3levelmain.dat` | `read_shaders_rfom` | `read_moby_assets_rfom_with_total` | `read_textures_rfom` | inline offsets (`decode_clips_for_moby_inline`) |
+| `Tod` | `main.dat` | `read_shaders_old` | `read_moby_assets_old_with_total` | `read_textures_old` | inline offsets — pair-frame transform applied when `n8==0 && stride==min_data`, all other TOD anims skip decode (T-pose). See chapter 06. |
 
 The DTOs are unified: V2 / RFOM / TOD all surface a `MobyAsset` with
 the same `meshes`, `skeleton`, and `shader_ids` shape, so once the
@@ -126,8 +126,9 @@ Phase: mobys     → V2/Rfom/Tod: layout-specific reader
                       collect needed texture ids (via shader resolve)
                       write mobys/0x{tuid}.json
                       remember the asset for the GLB step
-Phase: ties      → V2/Rfom: layout-specific tie reader
-                   Tod: skipped (no tie support yet)
+Phase: ties      → V2/Rfom/Tod: layout-specific tie reader
+                   Tod: read_tie_assets_old_with_total
+                        (with the vbuf_size overrun fix + per-axis vertex scale)
 RFOM-only follow-on phases (after the tie loop, before textures):
   → details  : read_detail_clusters_rfom  → details/0x{tuid}.json
   → shrubs   : read_shrubs_rfom           → shrubs/0x{tuid}.json
@@ -136,14 +137,22 @@ RFOM-only follow-on phases (after the tie loop, before textures):
   → gameplay : read_gameplay_rfom (probe-only, discards result)
 Phase: ufrags    → V2: read_zones
                    Rfom: read_regions_rfom
-                   Tod: read_zones_old
-Phase: textures  → V2:    bulk_extract_pngs
-                   Rfom:  read_textures_rfom + PNG encode
-                   Tod:   read_textures_old + PNG encode
+                   Tod: read_zones_old (also reads tie_instances at 0x9240)
+Phase: materials, normalmaps, textures (split, per role):
+       collect needed texture ids categorised by shader role
+         (albedo → materials, normal → normalmaps, emissive → textures).
+       decode the union from source once, then write in three sequential
+       phases, each emitting its own CacheEvent::Phase + Progress. Each
+       unique PNG written exactly once via a `written` set.
+       V2:   bulk_extract_pngs(union)
+       Rfom: read_textures_rfom + PNG encode + downsample
+       Tod:  read_textures_old + PNG encode + downsample
 Phase: mobys (G1-G4) → for each moby:
                        V2:    decode_clips_for_moby(animset)
                        Rfom:  decode_clips_for_moby_inline("ps3levelmain.dat")
-                       Tod:   decode_clips_for_moby_inline("main.dat")  → early returns []
+                       Tod:   decode_clips_for_moby_inline("main.dat")
+                              (pair-frame transform when n8==0 && stride==min_data;
+                               all other TOD anims skip decode → bind pose)
                        write_moby_glb_full(asset, &clips, &shaders, &texture_pngs)
                        write mobys/0x{tuid}.glb
 Phase: ties (G1-G4)  → tie_as_moby + write_moby_glb_full → ties/0x{tuid}.glb

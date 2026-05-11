@@ -1,11 +1,14 @@
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::{Error, Result};
 use crate::igfile::IgFile;
 use crate::moby::{decode_moby_mesh, MobyAsset, MobyBangle, MobyMesh};
 use crate::skeleton::read_skeleton_at;
+
+static TOD_BONE_WEIGHT_PROBE_FIRED: AtomicBool = AtomicBool::new(false);
 
 const OLD_MOBY_HEADER_SIZE: u64 = 0xC0;
 const OLD_MOBY_MESH_SIZE: u64 = 0x40;
@@ -19,6 +22,18 @@ const FLAG_USE_VERTICES_DAT: u32 = 0x8000_0000;
 
 pub fn read_moby_assets_old<F>(level_folder: &Path, mut on_each: F) -> Result<()>
 where
+    F: FnMut(MobyAsset),
+{
+    read_moby_assets_old_with_total(level_folder, |_| {}, |a| on_each(a))
+}
+
+pub fn read_moby_assets_old_with_total<T, F>(
+    level_folder: &Path,
+    mut on_total: T,
+    mut on_each: F,
+) -> Result<()>
+where
+    T: FnMut(usize),
     F: FnMut(MobyAsset),
 {
     let main_path = level_folder.join("main.dat");
@@ -59,6 +74,7 @@ where
 
     let log_probes = std::env::var("RECHIMERA_LOG_PROBES").is_ok();
     let count = moby_section.count as usize;
+    on_total(count);
     if log_probes {
         eprintln!(
             "[tod-moby] section 0xD100: count={} offset=0x{:X} length={} (stride 0x{:X})",
@@ -310,6 +326,67 @@ fn parse_one<R: Read + Seek>(
                 }
             }
         }
+    }
+
+    if std::env::var("RECHIMERA_LOG_PROBES").is_ok()
+        && skeleton.is_some()
+        && !bangles.is_empty()
+        && !bangles[0].meshes.is_empty()
+        && TOD_BONE_WEIGHT_PROBE_FIRED
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    {
+        let skel = skeleton.as_ref().unwrap();
+        let mesh = &bangles[0].meshes[0];
+        eprintln!(
+            "[tod-bone-probe] moby_{:04X}: skeleton.bones.len()={} translation_shift={} scale_shift={}",
+            index, skel.bones.len(), skel.translation_shift, skel.scale_shift,
+        );
+        for b in 0..skel.bones.len().min(8) {
+            let bone = &skel.bones[b];
+            let parent = if bone.parent_index == b as i16 {
+                "ROOT".to_string()
+            } else {
+                format!("{}", bone.parent_index)
+            };
+            let t = skel.bind_local.get(b).map(|m| [m[12], m[13], m[14]]).unwrap_or([0.0; 3]);
+            eprintln!(
+                "[tod-bone-probe]   bone[{}] parent={} flags=0x{:04X} bind_local.t=({:.4},{:.4},{:.4})",
+                b, parent, bone.flags, t[0], t[1], t[2]
+            );
+        }
+        eprintln!(
+            "[tod-weight-probe] moby_{:04X} bangle[0].mesh[0]: v_cnt={} stride={} skinned={}",
+            index,
+            mesh.vertex_count,
+            mesh.vertex_stride,
+            mesh.vertex_stride == 0x1C
+        );
+        for v in 0..(mesh.vertex_count as usize).min(8) {
+            let bi: [u16; 4] = [
+                mesh.bone_indices.get(v * 4).copied().unwrap_or(0),
+                mesh.bone_indices.get(v * 4 + 1).copied().unwrap_or(0),
+                mesh.bone_indices.get(v * 4 + 2).copied().unwrap_or(0),
+                mesh.bone_indices.get(v * 4 + 3).copied().unwrap_or(0),
+            ];
+            let bw: [u8; 4] = [
+                mesh.bone_weights.get(v * 4).copied().unwrap_or(0),
+                mesh.bone_weights.get(v * 4 + 1).copied().unwrap_or(0),
+                mesh.bone_weights.get(v * 4 + 2).copied().unwrap_or(0),
+                mesh.bone_weights.get(v * 4 + 3).copied().unwrap_or(0),
+            ];
+            let wsum: u32 = bw.iter().map(|&w| w as u32).sum();
+            eprintln!(
+                "[tod-weight-probe]   v[{}] bones={:?} weights={:?} sum={} (255 = normalized)",
+                v, bi, bw, wsum,
+            );
+        }
+        eprintln!(
+            "[tod-weight-probe] moby_{:04X}: max_bone_index in mesh[0] = {} (skel has {} bones)",
+            index,
+            mesh.bone_indices.iter().copied().max().unwrap_or(0),
+            skel.bones.len(),
+        );
     }
 
     Ok(MobyAsset {
