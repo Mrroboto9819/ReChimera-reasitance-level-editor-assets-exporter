@@ -140,7 +140,7 @@ export interface CacheStatus {
 }
 
 export type CacheEvent =
-  | { type: "phase"; phase: "mobys" | "ties" | "textures"; total: number }
+  | { type: "phase"; phase: "mobys" | "ties" | "materials" | "normalmaps" | "textures"; total: number }
   | { type: "item"; kind: "moby" | "tie" | "texture"; name: string }
   | { type: "progress"; current: number }
   | { type: "done"; entry_count: number }

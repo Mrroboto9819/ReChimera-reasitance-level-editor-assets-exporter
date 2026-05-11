@@ -465,17 +465,6 @@ function SkyboxBackground({
   return null;
 }
 
-function CollisionWireframeGroup({
-  visible,
-  cacheFolder: _cacheFolder,
-}: {
-  visible: boolean;
-  cacheFolder: string | null;
-}) {
-  if (!visible) return null;
-  return null;
-}
-
 function EnvSamplerGizmoGroup({
   instances,
   selectedIds,
@@ -2261,12 +2250,6 @@ export function Viewport({
       disabled: !hasLevel,
     },
     {
-      key: "showCollision",
-      label: "Collision",
-      Icon: Box,
-      disabled: !hasLevel,
-    },
-    {
       key: "showUFrags",
       label: tr("toolbar.terrain"),
       Icon: Mountain,
@@ -2561,10 +2544,6 @@ export function Viewport({
         <SkyboxBackground
           textureId={view.skyboxTextureId}
           levelFolder={levelFolder}
-        />
-        <CollisionWireframeGroup
-          visible={view.showCollision}
-          cacheFolder={levelFolder}
         />
         <ambientLight intensity={0.6} />
         <directionalLight position={[100, 200, 50]} intensity={1.0} />

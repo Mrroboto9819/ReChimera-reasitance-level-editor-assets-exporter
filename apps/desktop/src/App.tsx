@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Panel,
@@ -42,6 +42,7 @@ import {
   type LevelFile,
   type LevelMeshes,
   type LevelSummary,
+  type AssetMeshes,
   type PhaseId,
   type SoundEntry,
   type TextureBlobMap,
@@ -294,7 +295,7 @@ export function App() {
   const [cacheManifest, setCacheManifest] =
     useState<import("./api").CacheManifest | null>(null);
   const [cacheProgress, setCacheProgress] = useState<{
-    phase: "mobys" | "ties" | "textures";
+    phase: "mobys" | "ties" | "materials" | "normalmaps" | "textures";
     current: number;
     total: number;
   } | null>(null);
@@ -724,19 +725,26 @@ export function App() {
             chunkSize: 1,
           });
         });
+
         setMeshes(meshes);
         log(
           "ok",
-          `Loaded from cache: ${meshes.moby_assets.length} mobys, ${meshes.tie_assets.length} ties, ${meshes.ufrag_meshes.length} terrain, ${meshes.textures.length} textures`,
+          `Loaded from cache: ${meshes.moby_assets.length} mobys, ${meshes.tie_assets.length} ties, ${meshes.ufrag_meshes.length} terrain, ${meshes.textures.length} textures, ${meshes.moby_assets.reduce((s, a) => s + (a.embedded_animation_count ?? 0), 0)} anims`,
         );
 
+        // Stream textures in the background so meshes appear instantly.
+        // The Viewport's material cache (`getMaterial` at Viewport.tsx:
+        // ~733) handles late-arriving textures by updating `m.map` and
+        // setting `m.needsUpdate = true` when the texture finally lands,
+        // so materials refresh automatically — no need to block the
+        // mesh render on the full texture set.
         const ids = meshes.textures.map((t) => t.id);
         if (ids.length > 0) {
           loadCachedTextures(sum.folder, ids)
-            .then((map) => {
-              setTextureBlobs(map);
-            })
-            .catch((err) => log("error", `Texture cache fetch failed: ${err}`));
+            .then((blobs) => setTextureBlobs(blobs))
+            .catch((err) =>
+              log("error", `Texture cache fetch failed: ${err}`),
+            );
         } else {
           setTextureBlobs(new Map());
         }
@@ -979,8 +987,41 @@ export function App() {
     log("info", "Level closed");
   }, [log, selection, edits]);
 
+  // Distinct (albedo, normal, emissive) shader triples across every submesh —
+  // matches what the viewport material cache keys by, so the count reflects
+  // what actually renders as a separate material instance.
+  const materialCount = useMemo(() => {
+    if (!meshes) return 0;
+    const seen = new Set<string>();
+    const visit = (assets: AssetMeshes[]) => {
+      for (const a of assets) {
+        for (const s of a.submeshes) {
+          seen.add(`${s.albedo_id ?? "_"}|${s.normal_id ?? "_"}|${s.emissive_id ?? "_"}`);
+        }
+      }
+    };
+    visit(meshes.moby_assets);
+    visit(meshes.tie_assets);
+    if (meshes.detail_assets) visit(meshes.detail_assets);
+    if (meshes.shrub_assets) visit(meshes.shrub_assets);
+    if (meshes.foliage_assets) visit(meshes.foliage_assets);
+    for (const u of meshes.ufrag_meshes) {
+      seen.add(`${u.mesh.albedo_id ?? "_"}|${u.mesh.normal_id ?? "_"}|${u.mesh.emissive_id ?? "_"}`);
+    }
+    return seen.size;
+  }, [meshes]);
+
+  // Total animation clips embedded across all mobys (ties/ufrags have none).
+  const animationCount = useMemo(() => {
+    if (!meshes) return 0;
+    return meshes.moby_assets.reduce(
+      (sum, a) => sum + (a.embedded_animation_count ?? 0),
+      0,
+    );
+  }, [meshes]);
+
   const toolbarInfo = meshes
-    ? `${meshes.moby_assets.length} mobys · ${meshes.tie_assets.length} ties · ${meshes.ufrag_meshes.length} terrain · ${meshes.textures.length} textures`
+    ? `${meshes.moby_assets.length} mobys · ${meshes.tie_assets.length} ties · ${meshes.ufrag_meshes.length} terrain · ${materialCount} materials · ${meshes.textures.length} textures · ${animationCount} anims`
     : summary
       ? `${instances.length.toLocaleString()} instances · ${ufrags.length.toLocaleString()} UFrags`
       : "";
@@ -1159,13 +1200,6 @@ export function App() {
               disabled={!summary}
             >
               Env Probes
-            </MenuCheckItem>
-            <MenuCheckItem
-              checked={view.showCollision}
-              onToggle={() => toggle("showCollision")}
-              disabled={!summary}
-            >
-              Collision (wireframe)
             </MenuCheckItem>
             <MenuCheckItem
               checked={view.showUFrags}
@@ -1717,12 +1751,37 @@ export function App() {
         {cacheProgress && (
           <>
             <div className="cache-progress-phases">
-              {(["mobys", "ties", "textures"] as const).map((p) => {
-                const order = ["mobys", "ties", "textures"];
-                const idx = order.indexOf(cacheProgress.phase);
-                const myIdx = order.indexOf(p);
-                const state =
-                  myIdx < idx ? "done" : myIdx === idx ? "active" : "pending";
+              {(
+                [
+                  "mobys",
+                  "ties",
+                  "materials",
+                  "normalmaps",
+                  "textures",
+                  "animations",
+                ] as const
+              ).map((p) => {
+                // Backend emits real progress for mobys/ties/materials/
+                // normalmaps/textures. "animations" is cosmetic — anims are
+                // decoded inline during the mobys phase, so it flips done as
+                // soon as we've moved past mobys.
+                const realOrder = [
+                  "mobys",
+                  "ties",
+                  "materials",
+                  "normalmaps",
+                  "textures",
+                ];
+                const realIdx = realOrder.indexOf(cacheProgress.phase);
+                const cosmetic = p === "animations";
+                let state: "done" | "active" | "pending";
+                if (cosmetic) {
+                  state = realIdx >= realOrder.indexOf("ties") ? "done" : "pending";
+                } else {
+                  const myIdx = realOrder.indexOf(p);
+                  state =
+                    myIdx < realIdx ? "done" : myIdx === realIdx ? "active" : "pending";
+                }
                 return (
                   <div
                     key={p}

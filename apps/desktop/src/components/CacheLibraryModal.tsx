@@ -964,7 +964,7 @@ export function CacheLibraryModal({
     setSelectedAsset(null);
     setManifest(null);
     const channel = new Channel<CacheEvent>();
-    let phase: "mobys" | "ties" | "textures" = "mobys";
+    let phase: "mobys" | "ties" | "materials" | "normalmaps" | "textures" = "mobys";
     channel.onmessage = (event) => {
       switch (event.type) {
         case "phase":

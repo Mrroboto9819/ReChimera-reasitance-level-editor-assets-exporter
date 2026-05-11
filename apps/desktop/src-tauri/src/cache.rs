@@ -2,11 +2,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use lunalib::{
     animation_section_offsets, decode_animation, decode_animation_with_skeleton, detect_layout,
-    read_animation_control, read_animation_header_at, read_moby_assets_old,
+    read_animation_control, read_animation_header_at,
     read_moby_assets_with_total, read_shaders, read_tie_assets_with_total, read_zones, AssetKind,
     AssetLookup, DecodedClip, IgFile, LevelLayout, ShaderInfo, Skeleton, UFrag, Zone,
 };
@@ -167,6 +169,145 @@ impl AnimsetIndex {
     }
 }
 
+// One-shot probe to dump the raw bytes of the first anim's first 3 frames
+// for byte-level comparison between layouts. Fires at most once per process
+// per layout. Gated on `RECHIMERA_LOG_PROBES=1`.
+static TOD_ANIM_BYTES_PROBE_FIRED: AtomicBool = AtomicBool::new(false);
+static RFOM_ANIM_BYTES_PROBE_FIRED: AtomicBool = AtomicBool::new(false);
+
+// Returns true if this anim's pair-frame decision should be logged.
+// Dedupe key is (moby_tuid, anim_name) so each moby gets to log all of
+// its anims even if the names appear on other mobys too. Cap at 250
+// rows to keep the audit large enough for a full level but not unbounded.
+fn should_log_tod_anim_decision(moby_tuid: u64, name: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<HashSet<(u64, String)>>> = Mutex::new(None);
+    let mut guard = SEEN.lock().unwrap();
+    let set = guard.get_or_insert_with(HashSet::new);
+    if set.len() >= 250 {
+        return false;
+    }
+    set.insert((moby_tuid, name.to_string()))
+}
+// Fires once for the first TOD anim that has at least one Position OR Scale
+// track (not pure rotation), so we can probe the suspected translation/scale
+// decode bug separately from the rotation-only animate_spin case.
+static TOD_TRANS_PROBE_FIRED: AtomicBool = AtomicBool::new(false);
+
+fn probe_anim_bytes<R: Read + Seek>(
+    ig: &mut IgFile<R>,
+    tag: &str,
+    anim_off: u64,
+) {
+    let header = match read_animation_header_at(ig, anim_off) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("[anim-bytes] {tag} header read failed: {e}");
+            return;
+        }
+    };
+    eprintln!(
+        "[anim-bytes] {tag} name='{}' frames={} bones={} flags=0x{:04X} stride={} n16={} n8={} nrv={} frames_ptr=0x{:08X} ctrl_ptr=0x{:08X}",
+        header.name,
+        header.num_frames,
+        header.num_bones,
+        header.flags,
+        header.frame_stride,
+        header.num_16bit_tracks,
+        header.num_8bit_tracks,
+        header.num_reference_values,
+        header.frames_ptr,
+        header.control_ptr,
+    );
+
+    // Dump the AnimationControl block to recover (bone_index, component,
+    // kind) for each track. Same parse our `read_animation_control` does.
+    if let Ok(ctrl) = read_animation_control(ig, &header) {
+        for (i, m) in ctrl.track16_masks.iter().enumerate() {
+            eprintln!(
+                "[anim-bytes] {tag} track16[{i}] bone={} comp={} kind={:?}",
+                m.bone_index, m.component, m.kind
+            );
+        }
+        for (i, m) in ctrl.track8_masks.iter().enumerate() {
+            eprintln!(
+                "[anim-bytes] {tag} track8[{i}] bone={} comp={} kind={:?} base={}",
+                m.bone_index,
+                m.component,
+                m.kind,
+                ctrl.track8_base_values.get(i).copied().unwrap_or(0)
+            );
+        }
+        for (i, m) in ctrl.ref_pose_masks.iter().enumerate() {
+            eprintln!(
+                "[anim-bytes] {tag} refpose[{i}] bone={} comp={} kind={:?} val={}",
+                m.bone_index,
+                m.component,
+                m.kind,
+                ctrl.ref_pose_values.get(i).copied().unwrap_or(0)
+            );
+        }
+    } else {
+        eprintln!("[anim-bytes] {tag} (control block read failed)");
+    }
+
+    if header.frames_ptr == 0 || header.frame_stride == 0 || header.num_frames == 0 {
+        eprintln!("[anim-bytes] {tag} (no frame data — skipping byte dump)");
+        return;
+    }
+    let stride = header.frame_stride as usize;
+    let n_frames_to_dump = header.num_frames.min(16) as usize;
+    for f in 0..n_frames_to_dump {
+        let off = u64::from(header.frames_ptr) + (f as u64) * (stride as u64);
+        if ig.stream.seek_to(off).is_err() {
+            eprintln!("[anim-bytes] {tag} frame[{f}] seek failed");
+            continue;
+        }
+        let bytes = match ig.stream.read_bytes(stride) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("[anim-bytes] {tag} frame[{f}] read failed: {e}");
+                continue;
+            }
+        };
+        // Hex dump
+        let hex: String = bytes
+            .iter()
+            .take(64)
+            .map(|b| format!("{:02X}", b))
+            .collect::<Vec<_>>()
+            .join("");
+        eprintln!(
+            "[anim-bytes] {tag} frame[{f}] @ 0x{:08X} hex(64)={}",
+            off, hex
+        );
+        // i16 BE view of the 16-bit track region (first 16 values)
+        let n16_dump = (header.num_16bit_tracks as usize).min(16);
+        let i16_view: Vec<i16> = (0..n16_dump)
+            .map(|k| {
+                let i = k * 2;
+                i16::from_be_bytes([bytes[i], bytes[i + 1]])
+            })
+            .collect();
+        eprintln!(
+            "[anim-bytes] {tag} frame[{f}] i16[{}..{}]={:?}",
+            0, n16_dump, i16_view
+        );
+        // i8 view of the 8-bit track region (first 16 values), starts after pad-to-16 of n16*2
+        let n16_bytes = (header.num_16bit_tracks as usize) * 2;
+        let off8 = (n16_bytes + 15) & !15;
+        let n8_dump = (header.num_8bit_tracks as usize).min(16);
+        if off8 + n8_dump <= bytes.len() {
+            let i8_view: Vec<i8> = (0..n8_dump).map(|k| bytes[off8 + k] as i8).collect();
+            eprintln!(
+                "[anim-bytes] {tag} frame[{f}] i8[off8=0x{:X} 0..{}]={:?}",
+                off8, n8_dump, i8_view
+            );
+        }
+    }
+}
+
 fn decode_clips_for_moby_inline(
     level_folder: &Path,
     main_dat_filename: &str,
@@ -175,15 +316,37 @@ fn decode_clips_for_moby_inline(
     scale_scale: f32,
     skeleton: &Skeleton,
     layout: LevelLayout,
+    moby_tuid: u64,
 ) -> Vec<DecodedClip> {
     if anim_offsets.is_empty() {
         return Vec::new();
     }
-    if matches!(layout, LevelLayout::Tod) {
-        eprintln!(
-            "[cache] TOD inline anim decode skipped — frame format unsolved (see project_tod_anim_format.md)"
-        );
-        return Vec::new();
+    let log_probes = std::env::var("RECHIMERA_LOG_PROBES").is_ok();
+    // Frame-bytes probe — fires once per process per layout, ahead of any
+    // decode so the TOD early-return still gets a dump. The probe needs to
+    // open main.dat itself since the TOD branch otherwise short-circuits.
+    if log_probes {
+        let probe_flag = match layout {
+            LevelLayout::Tod => &TOD_ANIM_BYTES_PROBE_FIRED,
+            LevelLayout::Rfom => &RFOM_ANIM_BYTES_PROBE_FIRED,
+            LevelLayout::V2 => return Vec::new(), // shouldn't reach inline path
+        };
+        if probe_flag
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            let probe_path = level_folder.join(main_dat_filename);
+            if let Ok(file) = std::fs::File::open(&probe_path) {
+                if let Ok(mut probe_ig) = IgFile::open(std::io::BufReader::new(file)) {
+                    let tag = match layout {
+                        LevelLayout::Tod => "tod",
+                        LevelLayout::Rfom => "rfom",
+                        _ => "?",
+                    };
+                    probe_anim_bytes(&mut probe_ig, tag, anim_offsets[0]);
+                }
+            }
+        }
     }
     let main_path = level_folder.join(main_dat_filename);
     let file = match std::fs::File::open(&main_path) {
@@ -236,6 +399,69 @@ fn decode_clips_for_moby_inline(
         if skel_bones > 0 {
             header.num_bones = skel_bones;
         }
+        // TOD pair-frame encoding: each logical keyframe is stored as TWO
+        // consecutive frame_stride rows — even-index = zero filler,
+        // odd-index = real values. To consume with the standard IT decoder
+        // we halve the frame count, double the stride, and offset the
+        // frames_ptr by one stride so frame[0] lands on the first real
+        // keyframe. RE'd from `animate_spin` probe (see
+        // `project_tod_anim_format` memory). RFOM/V2 anims are left alone.
+        // TOD pair-frame transform — but ONLY for anims that actually
+        // need it. The encoding is: every other disk frame is zero-filler
+        // (real keyframes at odd indices). This shows up only when the
+        // disk frame_stride equals the minimum data-size required for
+        // the per-frame i16/i8 tracks. If the disk stride is larger than
+        // the data size (e.g. 192 stride for ~96 bytes of data), the
+        // anim already packs real keyframes into every disk frame and
+        // applying the pair-frame halving WRECKS it by dropping every
+        // other keyframe.
+        if matches!(layout, LevelLayout::Tod)
+            && header.num_frames >= 2
+            && header.frame_stride > 0
+            && header.frames_ptr != 0
+        {
+            let n16_bytes = (header.num_16bit_tracks as usize) * 2;
+            let padded_i16 = (n16_bytes + 15) & !15;
+            let n8_bytes = header.num_8bit_tracks as usize;
+            let min_data = ((padded_i16 + n8_bytes) + 15) & !15;
+            let stride_usize = header.frame_stride as usize;
+            // Pair-frame encoding only applies when (a) the disk stride
+            // equals the minimum data size AND (b) the anim has zero
+            // 8-bit delta tracks. Anims with n8 > 0 use the i8 delta
+            // tracks as their compression mechanism and store one real
+            // keyframe per disk frame regardless of stride/min_data ratio.
+            // RE'd from the [tod-anim] APPLIED/SKIPPED audit:
+            //   animate_spin (n8=0): pair-framed, smooth Y rotation in odd frames
+            //   pterodactyl_fly / wasp_idle / wasp_attack_full (n8 > 0):
+            //     NOT pair-framed; pair-frame transform produced distorted
+            //     bones radiating from origin.
+            // TOD animation decoding is disabled across the board until
+            // we RE the format properly. Neither IT nor ReLunacy supports
+            // TOD anims; our probes showed that pair-frame works for
+            // n8=0 anims but the n8>0 i8-delta encoding produces wild
+            // distortion. Rather than ship a mix of working + visibly
+            // broken anims, T-pose every TOD anim and surface bind-pose
+            // characters. Simple anims (animate_spin, doors, kerchu_roller_roll)
+            // can be re-enabled later by removing this guard once the
+            // full TOD decode path is solved.
+            if log_probes && should_log_tod_anim_decision(moby_tuid, &header.name) {
+                let kind = if min_data > 0
+                    && stride_usize == min_data
+                    && header.num_8bit_tracks == 0
+                {
+                    "n8=0 simple"
+                } else {
+                    "n8>0 complex"
+                };
+                eprintln!(
+                    "[tod-anim] T-POSE   moby_{:04X} '{}' n16={} n8={} stride={} min_data={} ({}) → skip decode",
+                    moby_tuid, header.name,
+                    header.num_16bit_tracks, header.num_8bit_tracks,
+                    stride_usize, min_data, kind,
+                );
+            }
+            continue;
+        }
         let ctrl = match read_animation_control(&mut ig, &header) {
             Ok(c) => c,
             Err(e) => {
@@ -246,6 +472,69 @@ fn decode_clips_for_moby_inline(
                 continue;
             }
         };
+
+        // One-shot diagnostic probe for the first TOD anim that has at
+        // least one Position OR Scale track. Dumps the actual scale
+        // values being applied + raw track[0..n] mask info + first 3
+        // frames of raw i16 values. This lets us see if pos_scale is
+        // amplifying the data to absurd levels.
+        if log_probes
+            && matches!(layout, LevelLayout::Tod)
+        {
+            let has_non_rotation = ctrl.track16_masks.iter().any(|m| {
+                !matches!(m.kind, lunalib::TrackKind::Rotation)
+            }) || ctrl.track8_masks.iter().any(|m| {
+                !matches!(m.kind, lunalib::TrackKind::Rotation)
+            });
+            if has_non_rotation
+                && TOD_TRANS_PROBE_FIRED
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                eprintln!(
+                    "[tod-trans-probe] moby_{:04X} '{}' has non-rotation tracks. nb={} nf={} stride={} n16={} n8={} pos_scale={:.8} scale_scale={:.8} skel.trans_shift={} skel.scale_shift={}",
+                    moby_tuid, header.name,
+                    header.num_bones,
+                    header.num_frames,
+                    header.frame_stride,
+                    header.num_16bit_tracks,
+                    header.num_8bit_tracks,
+                    position_scale,
+                    scale_scale,
+                    skeleton.translation_shift,
+                    skeleton.scale_shift,
+                );
+                // List the non-rotation track masks
+                for (idx, m) in ctrl.track16_masks.iter().enumerate() {
+                    if !matches!(m.kind, lunalib::TrackKind::Rotation) {
+                        eprintln!(
+                            "[tod-trans-probe]   t16[{}] bone={} comp={} kind={:?}",
+                            idx, m.bone_index, m.component, m.kind
+                        );
+                        if idx >= 20 { eprintln!("[tod-trans-probe]   …"); break; }
+                    }
+                }
+                // First 3 frames raw i16 values
+                for f in 0..(header.num_frames as usize).min(3) {
+                    let off = u64::from(header.frames_ptr)
+                        + (f as u64) * (header.frame_stride as u64);
+                    if ig.stream.seek_to(off).is_ok() {
+                        let take = (header.num_16bit_tracks as usize).min(20);
+                        let mut vals: Vec<i16> = Vec::with_capacity(take);
+                        for _ in 0..take {
+                            if let Ok(v) = ig.stream.read_i16() {
+                                vals.push(v);
+                            }
+                        }
+                        eprintln!(
+                            "[tod-trans-probe]   frame[{f}] @ 0x{:08X} i16[0..{}]={:?}",
+                            off, take, vals
+                        );
+                    }
+                }
+            }
+        }
+
         let result = decode_animation_with_skeleton(
             &mut ig,
             &header,
@@ -553,7 +842,13 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
     let mut animsets_file = std::fs::File::open(&animsets_path).ok();
 
     let mut entries: Vec<CacheManifestEntry> = Vec::new();
-    let mut needed_textures: HashSet<u32> = HashSet::new();
+    // Track texture IDs by role so the cache phase can be split into
+    // Materials (albedos) → Normal maps → Textures (emissive/other) for the
+    // progress UI. Same convention across V2 / RFOM / TOD since the
+    // categorisation happens here, not in the per-game decoders below.
+    let mut needed_albedos: HashSet<u32> = HashSet::new();
+    let mut needed_normals: HashSet<u32> = HashSet::new();
+    let mut needed_emissives: HashSet<u32> = HashSet::new();
 
     let mut moby_assets_for_glb: Vec<lunalib::MobyAsset> = Vec::new();
     let mut tie_assets_for_glb: Vec<lunalib::TieAsset> = Vec::new();
@@ -566,20 +861,20 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         });
     };
     if matches!(layout, LevelLayout::Tod) {
-        let mut tod_total_emitted = false;
         let mut tod_count = 0usize;
-        if let Err(e) = read_moby_assets_old(level_path, |asset| {
+        if let Err(e) = lunalib::read_moby_assets_old_with_total(
+            level_path,
+            |total| {
+                let _ = on_event.send(CacheEvent::Phase {
+                    phase: "mobys",
+                    total,
+                });
+            },
+            |asset| {
             if let Some(suffixes) = &debug_filter {
                 if !debug_moby_match(asset.tuid, suffixes) {
                     return;
                 }
-            }
-            if !tod_total_emitted {
-                let _ = on_event.send(CacheEvent::Phase {
-                    phase: "mobys",
-                    total: 1,
-                });
-                tod_total_emitted = true;
             }
             tod_count += 1;
             moby_assets_for_glb.push(asset.clone());
@@ -592,9 +887,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         &asset.shader_tuids,
                         m.shader_index as usize,
                     );
-                    for id in [albedo, normal, emissive].into_iter().flatten() {
-                        needed_textures.insert(id);
-                    }
+                    if let Some(id) = albedo { needed_albedos.insert(id); }
+                    if let Some(id) = normal { needed_normals.insert(id); }
+                    if let Some(id) = emissive { needed_emissives.insert(id); }
                     submeshes.push(mesh_dto(
                         m.positions.clone(),
                         m.uvs.clone(),
@@ -632,7 +927,8 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 name: dto.name,
             });
             let _ = on_event.send(CacheEvent::Progress { current: tod_count });
-        }) {
+        },
+        ) {
             return Err(format!("TOD moby read failed: {e}"));
         }
         eprintln!("[cache] TOD layout: extracted {tod_count} mobys");
@@ -642,20 +938,20 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         // ps3levelverts.dat. Shaders/textures/skeleton are not ported
         // yet so submeshes carry None texture ids and the skeleton/
         // animset fields stay empty.
-        let mut rfom_total_emitted = false;
         let mut rfom_count = 0usize;
-        if let Err(e) = lunalib::read_moby_assets_rfom(level_path, |asset| {
+        if let Err(e) = lunalib::read_moby_assets_rfom_with_total(
+            level_path,
+            |total| {
+                let _ = on_event.send(CacheEvent::Phase {
+                    phase: "mobys",
+                    total,
+                });
+            },
+            |asset| {
             if let Some(suffixes) = &debug_filter {
                 if !debug_moby_match(asset.tuid, suffixes) {
                     return;
                 }
-            }
-            if !rfom_total_emitted {
-                let _ = on_event.send(CacheEvent::Phase {
-                    phase: "mobys",
-                    total: 1,
-                });
-                rfom_total_emitted = true;
             }
             rfom_count += 1;
             moby_assets_for_glb.push(asset.clone());
@@ -668,9 +964,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         &asset.shader_tuids,
                         m.shader_index as usize,
                     );
-                    for id in [albedo, normal, emissive].into_iter().flatten() {
-                        needed_textures.insert(id);
-                    }
+                    if let Some(id) = albedo { needed_albedos.insert(id); }
+                    if let Some(id) = normal { needed_normals.insert(id); }
+                    if let Some(id) = emissive { needed_emissives.insert(id); }
                     submeshes.push(mesh_dto(
                         m.positions.clone(),
                         m.uvs.clone(),
@@ -708,7 +1004,8 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 name: dto.name,
             });
             let _ = on_event.send(CacheEvent::Progress { current: rfom_count });
-        }) {
+        },
+        ) {
             eprintln!("warn: RFOM moby read failed: {e}");
         }
         eprintln!("[cache] RFOM layout: extracted {rfom_count} mobys");
@@ -733,9 +1030,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                             &asset.shader_tuids,
                             m.shader_index as usize,
                         );
-                        for id in [albedo, normal, emissive].into_iter().flatten() {
-                            needed_textures.insert(id);
-                        }
+                        if let Some(id) = albedo { needed_albedos.insert(id); }
+                        if let Some(id) = normal { needed_normals.insert(id); }
+                        if let Some(id) = emissive { needed_emissives.insert(id); }
                         submeshes.push(mesh_dto(
                             m.positions,
                             m.uvs,
@@ -783,15 +1080,15 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
     if debug_filter.is_some() {
         eprintln!("[cache] debug mode: skipping ties / details / ufrags / sky / lights / envsamplers");
     } else if matches!(layout, LevelLayout::Tod) {
-        let mut tod_total_emitted = false;
-        if let Err(e) = lunalib::read_tie_assets_old(level_path, |asset| {
-            if !tod_total_emitted {
+        if let Err(e) = lunalib::read_tie_assets_old_with_total(
+            level_path,
+            |total| {
                 let _ = on_event.send(CacheEvent::Phase {
                     phase: "ties",
-                    total: 1,
+                    total,
                 });
-                tod_total_emitted = true;
-            }
+            },
+            |asset| {
             tie_assets_for_glb.push(asset.clone());
 
             let submeshes: Vec<_> = asset
@@ -803,9 +1100,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         &asset.shader_tuids,
                         m.shader_index as usize,
                     );
-                    for id in [albedo, normal, emissive].into_iter().flatten() {
-                        needed_textures.insert(id);
-                    }
+                    if let Some(id) = albedo { needed_albedos.insert(id); }
+                    if let Some(id) = normal { needed_normals.insert(id); }
+                    if let Some(id) = emissive { needed_emissives.insert(id); }
                     mesh_dto(
                         m.positions,
                         m.uvs,
@@ -844,20 +1141,21 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 name: dto.name,
             });
             let _ = on_event.send(CacheEvent::Progress { current: tie_done });
-        }) {
+        },
+        ) {
             eprintln!("warn: TOD tie read failed: {e}");
         }
         eprintln!("[cache] TOD layout: extracted {tie_done} ties");
     } else if matches!(layout, LevelLayout::Rfom) {
-        let mut rfom_total_emitted = false;
-        if let Err(e) = lunalib::read_tie_assets_rfom(level_path, |asset| {
-            if !rfom_total_emitted {
+        if let Err(e) = lunalib::read_tie_assets_rfom_with_total(
+            level_path,
+            |total| {
                 let _ = on_event.send(CacheEvent::Phase {
                     phase: "ties",
-                    total: 1,
+                    total,
                 });
-                rfom_total_emitted = true;
-            }
+            },
+            |asset| {
             tie_assets_for_glb.push(asset.clone());
 
             let submeshes: Vec<_> = asset
@@ -869,9 +1167,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         &asset.shader_tuids,
                         m.shader_index as usize,
                     );
-                    for id in [albedo, normal, emissive].into_iter().flatten() {
-                        needed_textures.insert(id);
-                    }
+                    if let Some(id) = albedo { needed_albedos.insert(id); }
+                    if let Some(id) = normal { needed_normals.insert(id); }
+                    if let Some(id) = emissive { needed_emissives.insert(id); }
                     mesh_dto(
                         m.positions,
                         m.uvs,
@@ -910,7 +1208,8 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 name: dto.name,
             });
             let _ = on_event.send(CacheEvent::Progress { current: tie_done });
-        }) {
+        },
+        ) {
             eprintln!("warn: RFOM tie read failed: {e}");
         }
         eprintln!("[cache] RFOM layout: extracted {tie_done} ties");
@@ -938,9 +1237,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                                 &asset.shader_tuids,
                                 m.shader_index as usize,
                             );
-                            for id in [albedo, normal, emissive].into_iter().flatten() {
-                                needed_textures.insert(id);
-                            }
+                            if let Some(id) = albedo { needed_albedos.insert(id); }
+                            if let Some(id) = normal { needed_normals.insert(id); }
+                            if let Some(id) = emissive { needed_emissives.insert(id); }
                             mesh_dto(
                                 m.positions,
                                 m.uvs,
@@ -1003,9 +1302,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                                 &asset.shader_tuids,
                                 m.shader_index as usize,
                             );
-                            for id in [albedo, normal, emissive].into_iter().flatten() {
-                                needed_textures.insert(id);
-                            }
+                            if let Some(id) = albedo { needed_albedos.insert(id); }
+                            if let Some(id) = normal { needed_normals.insert(id); }
+                            if let Some(id) = emissive { needed_emissives.insert(id); }
                             mesh_dto(
                                 m.positions,
                                 m.uvs,
@@ -1069,9 +1368,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                                 &asset.shader_tuids,
                                 m.shader_index as usize,
                             );
-                            for id in [albedo, normal, emissive].into_iter().flatten() {
-                                needed_textures.insert(id);
-                            }
+                            if let Some(id) = albedo { needed_albedos.insert(id); }
+                            if let Some(id) = normal { needed_normals.insert(id); }
+                            if let Some(id) = emissive { needed_emissives.insert(id); }
                             mesh_dto(
                                 m.positions,
                                 m.uvs,
@@ -1202,9 +1501,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         &asset.shader_tuids,
                         m.shader_index as usize,
                     );
-                    for id in [albedo, normal, emissive].into_iter().flatten() {
-                        needed_textures.insert(id);
-                    }
+                    if let Some(id) = albedo { needed_albedos.insert(id); }
+                    if let Some(id) = normal { needed_normals.insert(id); }
+                    if let Some(id) = emissive { needed_emissives.insert(id); }
                     mesh_dto(
                         m.positions,
                         m.uvs,
@@ -1258,10 +1557,21 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 Vec::new()
             }
         },
-        LevelLayout::Tod => {
-            eprintln!("[cache] TOD layout: zone reader not yet ported");
-            Vec::new()
-        }
+        LevelLayout::Tod => match lunalib::read_zones_old(level_path) {
+            Ok(z) => {
+                eprintln!(
+                    "[cache] TOD layout: read {} zone(s) with {} tie instances, {} ufrags",
+                    z.len(),
+                    z.iter().map(|x| x.tie_instances.len()).sum::<usize>(),
+                    z.iter().map(|x| x.ufrags.len()).sum::<usize>()
+                );
+                z
+            }
+            Err(e) => {
+                eprintln!("warn: TOD zone read failed ({e}); skipping ufrag/tie-instance phase");
+                Vec::new()
+            }
+        },
         LevelLayout::Rfom => {
             match lunalib::read_regions_rfom(level_path) {
                 Ok(z) => {
@@ -1317,9 +1627,9 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
             let albedo = shader_info.and_then(|s| s.albedo_tex_id);
             let normal = shader_info.and_then(|s| s.normal_tex_id);
             let emissive = shader_info.and_then(|s| s.expensive_tex_id);
-            for id in [albedo, normal, emissive].into_iter().flatten() {
-                needed_textures.insert(id);
-            }
+            if let Some(id) = albedo { needed_albedos.insert(id); }
+            if let Some(id) = normal { needed_normals.insert(id); }
+            if let Some(id) = emissive { needed_emissives.insert(id); }
             let dto = UFragMeshDto {
                 tuid: format!("0x{:016X}", tuid),
                 zone_tuid: zone_tuid_hex.clone(),
@@ -1341,12 +1651,55 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         }
     }
 
-    let needed_ids: Vec<u32> = needed_textures.iter().copied().collect();
-    let _ = on_event.send(CacheEvent::Phase {
-        phase: "textures",
-        total: needed_ids.len(),
-    });
-    let pngs = match layout {
+    // Union of all roles — the actual set we decode from source files once.
+    let needed_union: HashSet<u32> = needed_albedos
+        .iter()
+        .chain(needed_normals.iter())
+        .chain(needed_emissives.iter())
+        .copied()
+        .collect();
+    let needed_ids: Vec<u32> = needed_union.iter().copied().collect();
+    // Treat "0", "false", "no", "" as off — `.is_ok()` alone would
+    // make any value (including "0") enable the skip.
+    let skip_textures = std::env::var("RECHIMERA_SKIP_TEXTURES")
+        .ok()
+        .map(|v| {
+            let lower = v.to_ascii_lowercase();
+            !lower.is_empty() && lower != "0" && lower != "false" && lower != "no"
+        })
+        .unwrap_or(false);
+
+    // Single decode pass from source (V2 / RFOM / TOD diverge only here).
+    // Categorised writes happen below in 3 progress phases.
+    let pngs: Vec<(u32, Vec<u8>)> = if skip_textures {
+        // Fast iteration mode for the anim probe — skip the slow decode and
+        // just re-use whatever PNG files are already on disk in the cache
+        // textures/ directory from a previous extraction.
+        let tex_dir = root.join("textures");
+        let mut reused: Vec<(u32, Vec<u8>)> = Vec::new();
+        if tex_dir.is_dir() {
+            let needed_set: HashSet<u32> = needed_ids.iter().copied().collect();
+            for entry in fs::read_dir(&tex_dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let Ok(id) = stem.parse::<u32>() else { continue };
+                if !needed_set.is_empty() && !needed_set.contains(&id) {
+                    continue;
+                }
+                if let Ok(bytes) = fs::read(&path) {
+                    reused.push((id, bytes));
+                }
+            }
+        }
+        eprintln!(
+            "[cache] RECHIMERA_SKIP_TEXTURES=1 — skipping texture decode, reused {} cached PNGs (needed={})",
+            reused.len(),
+            needed_ids.len()
+        );
+        reused
+    } else { match layout {
         LevelLayout::V2 => lunalib::bulk_extract_pngs(level_path, Some(&needed_ids), TEXTURE_MAX_DIM)
             .map_err(|e| e.to_string())?,
         LevelLayout::Tod => match lunalib::read_textures_old(level_path) {
@@ -1401,30 +1754,55 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                 Vec::new()
             }
         },
-    };
-    let mut texture_pngs: HashMap<u32, Vec<u8>> = HashMap::with_capacity(pngs.len());
-    let mut tex_done = 0usize;
-    let progress_every = (pngs.len() / 50).max(1);
-    for (id, png) in pngs.into_iter() {
-        let file_rel = format!("textures/{id}.png");
-        let path = root.join(&file_rel);
-        let size_bytes = png.len() as u64;
-        if fs::write(&path, &png).is_ok() {
-            entries.push(CacheManifestEntry {
-                kind: "texture".into(),
-                tuid: id.to_string(),
-                name: String::new(),
-                file: file_rel,
-                size_bytes,
-            });
+    }};
+
+    // Write in 3 progress phases so the UI shows Materials → Normal maps →
+    // Textures. Each unique texture ID is written exactly once — IDs present
+    // in multiple roles land in the first phase they appear in.
+    let mut pngs_map: HashMap<u32, Vec<u8>> = pngs.into_iter().collect();
+    let mut texture_pngs: HashMap<u32, Vec<u8>> = HashMap::with_capacity(pngs_map.len());
+    let mut written: HashSet<u32> = HashSet::new();
+    let phases: [(&'static str, &HashSet<u32>); 3] = [
+        ("materials", &needed_albedos),
+        ("normalmaps", &needed_normals),
+        ("textures", &needed_emissives),
+    ];
+    for (phase_name, ids) in phases.iter() {
+        let pending: Vec<u32> = ids
+            .iter()
+            .filter(|id| !written.contains(id))
+            .copied()
+            .collect();
+        let _ = on_event.send(CacheEvent::Phase {
+            phase: phase_name,
+            total: pending.len(),
+        });
+        let progress_every = (pending.len() / 50).max(1);
+        let mut done = 0usize;
+        for id in pending {
+            written.insert(id);
+            if let Some(png) = pngs_map.remove(&id) {
+                let file_rel = format!("textures/{id}.png");
+                let path = root.join(&file_rel);
+                let size_bytes = png.len() as u64;
+                if fs::write(&path, &png).is_ok() {
+                    entries.push(CacheManifestEntry {
+                        kind: "texture".into(),
+                        tuid: id.to_string(),
+                        name: String::new(),
+                        file: file_rel,
+                        size_bytes,
+                    });
+                }
+                texture_pngs.insert(id, png);
+            }
+            done += 1;
+            if done % progress_every == 0 {
+                let _ = on_event.send(CacheEvent::Progress { current: done });
+            }
         }
-        texture_pngs.insert(id, png);
-        tex_done += 1;
-        if tex_done % progress_every == 0 {
-            let _ = on_event.send(CacheEvent::Progress { current: tex_done });
-        }
+        let _ = on_event.send(CacheEvent::Progress { current: done });
     }
-    let _ = on_event.send(CacheEvent::Progress { current: tex_done });
 
     let _ = on_event.send(CacheEvent::Phase {
         phase: "mobys",
@@ -1469,6 +1847,7 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         scale_scale,
                         skel,
                         layout,
+                        asset.tuid,
                     );
                     if matches!(layout, LevelLayout::Rfom)
                         && decoded.len() != asset.rfom_anim_offsets.len()
@@ -2033,6 +2412,7 @@ pub fn export_moby_glb_with_options(
                     scale_scale,
                     skel,
                     layout,
+                    asset.tuid,
                 ));
             }
         }
