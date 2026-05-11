@@ -365,6 +365,13 @@ fn emit_skin(
         name: Some("skeleton".into()),
         skeleton: None,
     });
+    let asset_roots = resolved_parents.iter().filter(|p| p.is_none()).count();
+    if bone_count >= 8 || std::env::var("RECHIMERA_LOG_ANIM_DETAIL").is_ok() {
+        eprintln!(
+            "[glb-skin] bones={} roots={} ibm_bytes={} node_base={} skin_idx={}",
+            bone_count, asset_roots, bone_count * 64, bone_node_base, skin_idx,
+        );
+    }
     skin_idx
 }
 
@@ -461,6 +468,22 @@ fn push_submesh(
         let real_skin = !mesh.bone_indices.is_empty()
             && mesh.bone_weights.len() == mesh.bone_indices.len()
             && mesh.bone_indices.len() == vertex_count * 4;
+
+        let oversize = mesh.bone_indices.iter().filter(|&&v| v > 255).count();
+        if oversize > 0 {
+            eprintln!(
+                "warn: [glb-skin] {} joint indices > 255 will be clamped (JOINTS_0 accessor is u8). \
+                 Rig has > 256 bones — accessor should switch to u16 component type.",
+                oversize,
+            );
+        }
+        if !real_skin {
+            eprintln!(
+                "warn: [glb-skin] mesh skinned=true but weights/indices not vertex-aligned \
+                 (verts={} bone_idx_len={} bone_wgt_len={}). Emitting bone0/weight=255 fallback.",
+                vertex_count, mesh.bone_indices.len(), mesh.bone_weights.len(),
+            );
+        }
 
         let joints_bytes = if real_skin {
             joints_u8_bytes(&mesh.bone_indices, vertex_count)
@@ -754,7 +777,11 @@ fn emit_animations(
     bone_node_base: u32,
     bone_count: usize,
 ) {
-    for clip in clips {
+    let detail_log = std::env::var("RECHIMERA_LOG_ANIM_DETAIL").is_ok();
+    let mut total_channels = 0usize;
+    let mut total_samplers = 0usize;
+    let mut total_frames = 0u32;
+    for (clip_idx, clip) in clips.iter().enumerate() {
         let dt = if clip.frame_rate > 0.0 {
             1.0 / clip.frame_rate
         } else {
@@ -873,6 +900,17 @@ fn emit_animations(
             }
         }
 
+        let nchan = channels.len();
+        let nsamp = samplers.len();
+        total_channels += nchan;
+        total_samplers += nsamp;
+        total_frames += clip.num_frames as u32;
+        if detail_log {
+            eprintln!(
+                "[glb-anim] clip[{}] '{}' frames={} fps={:.1} channels={} samplers={} bones_used={}",
+                clip_idx, clip.name, clip.num_frames, clip.frame_rate, nchan, nsamp, bones_to_use,
+            );
+        }
         if !channels.is_empty() {
             animations.push(gltf_json::Animation {
                 channels,
@@ -883,6 +921,10 @@ fn emit_animations(
             });
         }
     }
+    eprintln!(
+        "[glb-anim] {} clip(s) emitted: {} channels, {} samplers, {} total frames (skel_bones={}, node_base={})",
+        clips.len(), total_channels, total_samplers, total_frames, bone_count, bone_node_base,
+    );
 }
 
 fn push_scalar_f32_accessor(

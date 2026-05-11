@@ -400,6 +400,21 @@ pub(crate) fn decode_moby_mesh(
 
     }
 
+    if !bone_indices.is_empty() && std::env::var("RECHIMERA_LOG_WEIGHTS").is_ok() {
+        let verts = vertex_count as usize;
+        let max_bone = bone_indices.iter().copied().max().unwrap_or(0);
+        let oversize = bone_indices.iter().filter(|&&v| v > 255).count();
+        let zero_weight_first_slot = bone_weights.iter().step_by(4).filter(|&&w| w == 0).count();
+        let unnormalized = (0..verts).filter(|&v| {
+            let s: u32 = (0..4).map(|i| bone_weights[v * 4 + i] as u32).sum();
+            s == 0 || (s as i32 - 255).abs() > 4
+        }).count();
+        eprintln!(
+            "[mesh-weights] stride=0x{:02X} verts={} max_bone_idx={} oversize_u8={} zero_first_slot={} unnormalized={} bone_map_len={}",
+            stride, verts, max_bone, oversize, zero_weight_first_slot, unnormalized, bone_map.len(),
+        );
+    }
+
     Ok(MobyMesh {
         shader_index,
         vertex_count,

@@ -130,7 +130,7 @@ pub(crate) struct AssetMeshesDto {
     pub(crate) embedded_animation_count: u32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct UFragMeshDto {
     pub tuid: String,
     pub zone_tuid: String,

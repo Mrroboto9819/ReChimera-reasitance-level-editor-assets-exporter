@@ -202,21 +202,46 @@ fn decode_clips_for_moby_inline(
     };
     let skel_bones = skeleton.bones.len() as u16;
     let mut out = Vec::with_capacity(anim_offsets.len());
+    let probe_layout = matches!(layout, LevelLayout::Rfom);
     for (i, off) in anim_offsets.iter().enumerate() {
+        if probe_layout && i == 0 {
+            eprintln!("[rfom-anim-probe] anim[0] @ file_off=0x{:08X}", off);
+        }
         let mut header = match read_animation_header_at(&mut ig, *off) {
             Ok(h) => h,
             Err(e) => {
-                eprintln!("warn: inline anim[{i}] header read failed: {e}");
+                eprintln!(
+                    "warn: inline anim[{i}] header read failed @ 0x{:08X}: {e}",
+                    off
+                );
                 continue;
             }
         };
+        if probe_layout && i == 0 {
+            eprintln!(
+                "[rfom-anim-probe] header name='{}' frames={} bones={} flags=0x{:04X} fps={} stride={} 16bit={} 8bit={} ctrl_ptr=0x{:08X} frames_ptr=0x{:08X}",
+                header.name,
+                header.num_frames,
+                header.num_bones,
+                header.flags,
+                header.frame_rate,
+                header.frame_stride,
+                header.num_16bit_tracks,
+                header.num_8bit_tracks,
+                header.control_ptr,
+                header.frames_ptr
+            );
+        }
         if skel_bones > 0 {
             header.num_bones = skel_bones;
         }
         let ctrl = match read_animation_control(&mut ig, &header) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("warn: inline anim[{i}] '{}' control read failed: {e}", header.name);
+                eprintln!(
+                    "warn: inline anim[{i}] '{}' control read failed: {e}",
+                    header.name
+                );
                 continue;
             }
         };
@@ -231,7 +256,10 @@ fn decode_clips_for_moby_inline(
         match result {
             Ok(clip) => out.push(clip),
             Err(e) => {
-                eprintln!("warn: inline anim[{i}] '{}' decode failed: {e}", header.name);
+                eprintln!(
+                    "warn: inline anim[{i}] '{}' decode failed: {e}",
+                    header.name
+                );
             }
         }
     }
@@ -1221,11 +1249,12 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
         let clips: Vec<DecodedClip> = if !asset.rfom_anim_offsets.is_empty() {
             match asset.skeleton.as_ref() {
                 Some(skel) => {
+                    lunalib::skeleton::dump_skeleton_bind(asset.tuid, skel);
                     let main_dat = match layout {
                         LevelLayout::Tod => "main.dat",
                         _ => "ps3levelmain.dat",
                     };
-                    decode_clips_for_moby_inline(
+                    let decoded = decode_clips_for_moby_inline(
                         level_path,
                         main_dat,
                         &asset.rfom_anim_offsets,
@@ -1233,9 +1262,30 @@ fn run_extract(folder: &str, on_event: &Channel<CacheEvent>) -> Result<usize, St
                         scale_scale,
                         skel,
                         layout,
-                    )
+                    );
+                    if matches!(layout, LevelLayout::Rfom) {
+                        eprintln!(
+                            "[rfom-anim] moby_{:04X}: {} offsets → {} clips decoded (skel_bones={})",
+                            asset.tuid,
+                            asset.rfom_anim_offsets.len(),
+                            decoded.len(),
+                            skel.bones.len()
+                        );
+                    }
+                    decoded
                 }
-                None => Vec::new(),
+                None => {
+                    if matches!(layout, LevelLayout::Rfom)
+                        && !asset.rfom_anim_offsets.is_empty()
+                    {
+                        eprintln!(
+                            "[rfom-anim] moby_{:04X}: {} offsets but no skeleton — skipping",
+                            asset.tuid,
+                            asset.rfom_anim_offsets.len()
+                        );
+                    }
+                    Vec::new()
+                }
             }
         } else {
             match (
@@ -1761,6 +1811,7 @@ pub fn export_moby_glb_with_options(
             && !asset.rfom_anim_offsets.is_empty()
         {
             if let Some(skel) = asset.skeleton.as_ref() {
+                lunalib::skeleton::dump_skeleton_bind(asset.tuid, skel);
                 let main_dat = match layout {
                     LevelLayout::Tod => "main.dat",
                     _ => "ps3levelmain.dat",
@@ -2013,6 +2064,9 @@ fn run_export_level_glb(
 
     let mut instances: Vec<lunalib::level_glb::LevelGlbInstance> = Vec::new();
     let mut progress: usize = 0;
+    let mut moby_count = 0usize;
+    let mut tie_count = 0usize;
+    let mut detail_count = 0usize;
 
     for inst in &mobys {
         progress += 1;
@@ -2027,6 +2081,7 @@ fn run_export_level_glb(
                 rotation: inst.quaternion,
                 scale: inst.scale,
             });
+            moby_count += 1;
         }
     }
     for inst in &ties {
@@ -2043,10 +2098,40 @@ fn run_export_level_glb(
                 rotation: inst.quaternion,
                 scale: inst.scale,
             });
+            if kind_name == "detail" {
+                detail_count += 1;
+            } else {
+                tie_count += 1;
+            }
         }
     }
 
     let _ = on_event.send(LevelGlbExportEvent::Progress { current: progress });
+
+    eprintln!(
+        "[level-glb] placements baked: {} mobys, {} ties, {} details",
+        moby_count, tie_count, detail_count
+    );
+
+    let ufrag_count = load_ufrags_into_level(
+        &cache_root,
+        &mut assets,
+        &mut instances,
+        &mut needed_textures,
+        on_event,
+    )?;
+    eprintln!("[level-glb] terrain baked: {} ufrags", ufrag_count);
+
+    let sky_added = load_skybox_into_level(
+        level_folder,
+        &mut assets,
+        &mut instances,
+        on_event,
+    );
+    eprintln!(
+        "[level-glb] skybox baked: {}",
+        if sky_added { "yes (dome geometry)" } else { "no" }
+    );
 
     let _ = on_event.send(LevelGlbExportEvent::Phase {
         label: "Loading textures",
@@ -2085,6 +2170,141 @@ fn run_export_level_glb(
     });
 
     Ok(())
+}
+
+fn load_ufrags_into_level(
+    cache_root: &Path,
+    assets: &mut Vec<lunalib::level_glb::LevelGlbAsset>,
+    instances: &mut Vec<lunalib::level_glb::LevelGlbInstance>,
+    needed_textures: &mut HashSet<u32>,
+    on_event: &Channel<LevelGlbExportEvent>,
+) -> Result<usize, String> {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+
+    let ufrags_dir = cache_root.join("ufrags");
+    if !ufrags_dir.is_dir() {
+        return Ok(0);
+    }
+
+    let entries: Vec<PathBuf> = match fs::read_dir(&ufrags_dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+            .collect(),
+        Err(_) => return Ok(0),
+    };
+
+    let _ = on_event.send(LevelGlbExportEvent::Phase {
+        label: "Loading terrain",
+        total: entries.len(),
+    });
+
+    let mut done = 0usize;
+    for path in entries {
+        done += 1;
+        if done % 32 == 0 {
+            let _ = on_event.send(LevelGlbExportEvent::Progress { current: done });
+        }
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let dto: crate::UFragMeshDto = match serde_json::from_slice(&bytes) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("warn: parse {}: {e}", path.display());
+                continue;
+            }
+        };
+        let positions = decode_f32_b64(&dto.mesh.positions_b64, &BASE64)?;
+        let uvs = decode_f32_b64(&dto.mesh.uvs_b64, &BASE64)?;
+        let indices = decode_u32_b64(&dto.mesh.indices_b64, &BASE64)?;
+        if positions.is_empty() || indices.is_empty() {
+            continue;
+        }
+        if let Some(id) = dto.mesh.albedo_id {
+            needed_textures.insert(id);
+        }
+        let asset_idx = assets.len();
+        assets.push(lunalib::level_glb::LevelGlbAsset {
+            name: format!("ufrag_{}", dto.tuid),
+            submeshes: vec![lunalib::level_glb::LevelGlbSubmesh {
+                positions,
+                uvs,
+                indices,
+                albedo_id: dto.mesh.albedo_id,
+            }],
+        });
+        instances.push(lunalib::level_glb::LevelGlbInstance {
+            asset_idx,
+            name: format!("ufrag:{}", dto.tuid),
+            translation: dto.position,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [1.0, 1.0, 1.0],
+        });
+    }
+    let _ = on_event.send(LevelGlbExportEvent::Progress { current: done });
+    Ok(done)
+}
+
+fn load_skybox_into_level(
+    level_folder: &str,
+    assets: &mut Vec<lunalib::level_glb::LevelGlbAsset>,
+    instances: &mut Vec<lunalib::level_glb::LevelGlbInstance>,
+    on_event: &Channel<LevelGlbExportEvent>,
+) -> bool {
+    let _ = on_event.send(LevelGlbExportEvent::Phase {
+        label: "Loading sky",
+        total: 1,
+    });
+
+    let sky = match lunalib::read_skybox_rfom(Path::new(level_folder)) {
+        Ok(Some(s)) => s,
+        Ok(None) => return false,
+        Err(e) => {
+            eprintln!("warn: skybox read for export: {e}");
+            return false;
+        }
+    };
+
+    if sky.vertices.is_empty() || sky.indices.is_empty() {
+        return false;
+    }
+
+    let mut positions: Vec<f32> = Vec::with_capacity(sky.vertices.len() * 3);
+    let mut uvs: Vec<f32> = Vec::with_capacity(sky.vertices.len() * 2);
+    for v in &sky.vertices {
+        positions.extend_from_slice(v);
+        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-6);
+        let nx = v[0] / len;
+        let ny = v[1] / len;
+        let nz = v[2] / len;
+        let u = 0.5 + nz.atan2(nx) / (2.0 * std::f32::consts::PI);
+        let vv = 0.5 - ny.asin() / std::f32::consts::PI;
+        uvs.push(u);
+        uvs.push(vv);
+    }
+
+    let asset_idx = assets.len();
+    assets.push(lunalib::level_glb::LevelGlbAsset {
+        name: "skybox_dome".into(),
+        submeshes: vec![lunalib::level_glb::LevelGlbSubmesh {
+            positions,
+            uvs,
+            indices: sky.indices.clone(),
+            albedo_id: None,
+        }],
+    });
+    instances.push(lunalib::level_glb::LevelGlbInstance {
+        asset_idx,
+        name: "skybox".into(),
+        translation: [0.0, 0.0, 0.0],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        scale: [1.0, 1.0, 1.0],
+    });
+    let _ = on_event.send(LevelGlbExportEvent::Progress { current: 1 });
+    true
 }
 
 fn decode_f32_b64(

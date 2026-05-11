@@ -19,6 +19,7 @@ against the canonical reference.
 | 06 | [Animation](internal/lunalib-and-IT/06-animation.md) | `animation.rs` | `classes/animation.hpp`, `common/src/gltf_shared.cpp` |
 | 07 | [Sound](internal/lunalib-and-IT/07-sound.md) | `sound.rs` | `sound/extract_sound.cpp` |
 | 08 | [GLB writer](internal/lunalib-and-IT/08-gltf-export.md) | `gltf_export.rs`, `math.rs` | `extract/extract_gltf.cpp`, `common/src/gltf_shared.cpp` |
+| 09 | [Debugging methodology](internal/lunalib-and-IT/09-debugging-methodology.md) | (cross-cutting — every new decoder) | IT + ReLunacy as canonical references; probe → log → re-extract loop |
 
 ## [`internal/app/`](internal/app/)
 Documentation of the **Tauri 2 + React + Three.js desktop app** that

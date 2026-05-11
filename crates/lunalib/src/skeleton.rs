@@ -60,6 +60,45 @@ impl Skeleton {
     }
 }
 
+/// Dump per-bone bind-pose data for a single moby. Gated by env var
+/// `RECHIMERA_DEBUG_MOBY=<hex>` matching the trailing hex of the moby tuid
+/// (e.g. `=00CD` matches `0x00000000000000CD`).
+pub fn dump_skeleton_bind(moby_tuid: u64, skel: &Skeleton) {
+    let want = match std::env::var("RECHIMERA_DEBUG_MOBY") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let want_norm = want.trim_start_matches("0x").to_ascii_uppercase();
+    let tuid_hex = format!("{:016X}", moby_tuid);
+    if !tuid_hex.ends_with(&want_norm) {
+        return;
+    }
+    eprintln!(
+        "[skel-dump] === moby_{:04X} ({} bones, root={}, scaleShift={}, translationShift={}) ===",
+        moby_tuid & 0xFFFF,
+        skel.bones.len(),
+        skel.root_bone,
+        skel.scale_shift,
+        skel.translation_shift,
+    );
+    eprintln!(
+        "[skel-dump]  layout: tms0_t = raw bone-to-world translation; tms1_t = raw world-to-bone (inv-bind) translation; bind_local_t = current mul-order result"
+    );
+    for i in 0..skel.bones.len() {
+        let p = skel.bones[i].parent_index;
+        let t0 = skel.tms0_col.get(i).map(|m| [m[12], m[13], m[14]]).unwrap_or([0.0; 3]);
+        let t1 = skel.tms1_col.get(i).map(|m| [m[12], m[13], m[14]]).unwrap_or([0.0; 3]);
+        let tb = skel.bind_local.get(i).map(|m| [m[12], m[13], m[14]]).unwrap_or([0.0; 3]);
+        eprintln!(
+            "[skel-dump] bone[{:3}] parent={:4} flags=0x{:04X} tms0_t=[{:>8.3},{:>8.3},{:>8.3}] tms1_t=[{:>8.3},{:>8.3},{:>8.3}] bind_local_t=[{:>8.3},{:>8.3},{:>8.3}]",
+            i, p, skel.bones[i].flags,
+            t0[0], t0[1], t0[2],
+            t1[0], t1[1], t1[2],
+            tb[0], tb[1], tb[2],
+        );
+    }
+}
+
 pub fn read_skeleton<R: Read + Seek>(ig: &mut IgFile<R>) -> Result<Option<Skeleton>> {
     let Some(section) = ig.section(SECT_MOBY_SKELETON) else {
         return Ok(None);
@@ -92,6 +131,24 @@ pub fn read_skeleton_at<R: Read + Seek>(
         return Ok(None);
     }
 
+    eprintln!(
+        "[skel-read] hdr_off=0x{:X} numBones={} rootBone={} bones_ptr=0x{:X} \
+         tms0_ptr=0x{:X} tms1_ptr=0x{:X} scaleShift={} translationShift={}",
+        header_off, num_bones, root_bone, bones_ptr, tms0_ptr, tms1_ptr,
+        scale_shift, translation_shift,
+    );
+    if scale_shift > 15 || translation_shift > 15 {
+        eprintln!(
+            "warn: [skel-shift] scaleShift={} translationShift={} look byte-swapped \
+             (IT's FByteswapper<Skeleton> skips these; PS3 BE files need raw read). \
+             swapped guesses: scale={} translation={} — see skeleton_shift_byte_quirk memory",
+            scale_shift,
+            translation_shift,
+            scale_shift.swap_bytes(),
+            translation_shift.swap_bytes(),
+        );
+    }
+
     let mut bones = Vec::with_capacity(num_bones);
     for i in 0..num_bones {
         ig.stream.seek_to(bones_ptr + (i as u64) * BONE_BYTES)?;
@@ -111,12 +168,21 @@ pub fn read_skeleton_at<R: Read + Seek>(
     let tms1_raw = read_matrix_array(ig, tms1_ptr, num_bones).unwrap_or_default();
 
     let mut bind_local = Vec::with_capacity(num_bones);
+    let mut root_count = 0usize;
+    let mut self_parent_count = 0usize;
     if tms0_raw.len() == num_bones && tms1_raw.len() == num_bones {
         for i in 0..num_bones {
             let parent = bones[i].parent_index;
+            let is_self_parent = parent >= 0 && (parent as usize) == i;
             let is_root = parent < 0
                 || (parent as usize) >= num_bones
                 || (parent as usize) == i;
+            if is_self_parent {
+                self_parent_count += 1;
+            }
+            if is_root {
+                root_count += 1;
+            }
             let local_col = if is_root {
                 tms0_raw[i]
             } else {
@@ -124,6 +190,21 @@ pub fn read_skeleton_at<R: Read + Seek>(
             };
             bind_local.push(clean_rigid_col_major(local_col));
         }
+    }
+
+    if !bind_local.is_empty() {
+        let m = bind_local[0];
+        let tx_yard = m[12];
+        let ty_yard = m[13];
+        let tz_yard = m[14];
+        eprintln!(
+            "[skel-bind] bones={} roots={} self_parent_roots={} bone0_translation_yards=[{:.3}, {:.3}, {:.3}] (IT applies *YARD_TO_M=0.9144 — we DO NOT, downstream callers expect yards)",
+            num_bones, root_count, self_parent_count, tx_yard, ty_yard, tz_yard,
+        );
+        eprintln!(
+            "[skel-bind] mul-order: ours = tms0[i] * tms1[parent]; IT (extract_gltf.cpp:18) = tms1[parent] * tms0[i]. \
+             If first-bone TRS looks wrong in GLB, swap the args in skeleton.rs::mat4_mul_row_major call."
+        );
     }
 
     let bind_world_inverse: Vec<[f32; 16]> =
